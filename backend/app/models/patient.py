@@ -1,5 +1,3 @@
-"""Patient model - core patient information."""
-
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
@@ -23,29 +21,24 @@ class Patient(Base, TimestampMixin):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     
-    # Identification
     external_id: Mapped[Optional[str]] = mapped_column(
         String(100), unique=True, index=True, nullable=True,
         comment="External patient ID from source system"
     )
     
-    # Demographics
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     
-    # Contact
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    # Medical
     blood_type: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     allergies: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     medical_conditions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    # Relationships
     lab_results: Mapped[list["LabResult"]] = relationship(
         back_populates="patient", cascade="all, delete-orphan"
     )
