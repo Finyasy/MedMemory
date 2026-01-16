@@ -1,5 +1,3 @@
-"""Pydantic schemas for API request/response validation."""
-
 from app.schemas.patient import (
     PatientBase,
     PatientCreate,
