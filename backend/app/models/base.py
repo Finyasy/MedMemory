@@ -1,5 +1,3 @@
-"""Base model and database utilities."""
-
 from datetime import datetime
 from typing import Any
 
