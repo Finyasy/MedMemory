@@ -1,5 +1,30 @@
 services:
   # ============================================
+  # PostgreSQL Database with pgvector
+  # ============================================
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: medmemory-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: medmemory
+      POSTGRES_PASSWORD: medmemory_secret
+      POSTGRES_DB: medmemory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medmemory -d medmemory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - medmemory-network
+
+  # ============================================
   # Backend Service (FastAPI)
   # ============================================
   backend:
@@ -12,13 +37,19 @@ services:
       - "8000:8000"
     environment:
       - DEBUG=false
+      - DATABASE_URL=postgresql+asyncpg://medmemory:medmemory_secret@db:5432/medmemory
       - CORS_ORIGINS=["http://localhost", "http://localhost:3000", "http://frontend"]
+    volumes:
+      - upload_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     networks:
       - medmemory-network
 
@@ -44,6 +75,15 @@ services:
       start_period: 10s
     networks:
       - medmemory-network
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  postgres_data:
+    driver: local
+  upload_data:
+    driver: local
 
 # ============================================
 # Networks
