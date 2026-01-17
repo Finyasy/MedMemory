@@ -39,7 +39,7 @@ services:
     environment:
       - DEBUG=true
       - DATABASE_URL=postgresql+asyncpg://medmemory:medmemory_dev@db:5432/medmemory
-      - CORS_ORIGINS=["http://localhost:5173", "http://localhost:3000"]
+      - CORS_ORIGINS=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
     volumes:
       - ./backend/app:/app/app:ro
       - upload_data_dev:/app/uploads
