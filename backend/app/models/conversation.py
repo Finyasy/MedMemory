@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
+from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -12,7 +14,9 @@ class Conversation(Base, TimestampMixin):
     
     __tablename__ = "conversations"
     
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     patient_id: Mapped[int] = mapped_column(
         ForeignKey("patients.id", ondelete="CASCADE"),
         nullable=False,
@@ -39,7 +43,7 @@ class ConversationMessage(Base, TimestampMixin):
     __tablename__ = "conversation_messages"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    conversation_id: Mapped[int] = mapped_column(
+    conversation_id: Mapped[UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
