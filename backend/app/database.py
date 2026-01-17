@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
@@ -11,19 +12,16 @@ from app.config import settings
 from app.models import Base
 
 
-# Create engine with connection pooling for production performance
-# pool_size: number of connections to maintain
-# max_overflow: additional connections beyond pool_size
-# pool_timeout: seconds to wait for connection from pool
-# pool_recycle: seconds before recreating connection (prevents stale connections)
+logger = logging.getLogger("medmemory.database")
+
 engine = create_async_engine(
     settings.database_url,
     echo=settings.database_echo,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=settings.database_pool_size,
+    max_overflow=settings.database_max_overflow,
     pool_timeout=30,
-    pool_recycle=3600,  # 1 hour
-    pool_pre_ping=True,  # Verify connections before using
+    pool_recycle=settings.database_pool_recycle,
+    pool_pre_ping=settings.database_pool_pre_ping,
 )
 
 async_session_maker = async_sessionmaker(
@@ -44,10 +42,12 @@ async def init_db() -> None:
     try:
         async with engine.begin() as conn:
             await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
-            await conn.run_sync(Base.metadata.create_all)
-    except Exception as e:
-        # Log error and re-raise to prevent server from starting with broken DB
-        print(f"❌ Database initialization failed: {e}")
+            if settings.debug:
+                await conn.run_sync(Base.metadata.create_all)
+            else:
+                logger.info("Skipping create_all in non-debug mode; run Alembic migrations.")
+    except Exception:
+        logger.exception("Database initialization failed")
         raise
 
 
