@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from app.models.medication import Medication
     from app.models.document import Document
     from app.models.memory_chunk import MemoryChunk
+    from app.models.record import Record
+    from app.models.record import Record
 
 
 class Patient(Base, TimestampMixin):
@@ -52,6 +54,12 @@ class Patient(Base, TimestampMixin):
         back_populates="patient", cascade="all, delete-orphan"
     )
     memory_chunks: Mapped[list["MemoryChunk"]] = relationship(
+        back_populates="patient", cascade="all, delete-orphan"
+    )
+    records: Mapped[list["Record"]] = relationship(
+        back_populates="patient", cascade="all, delete-orphan"
+    )
+    records: Mapped[list["Record"]] = relationship(
         back_populates="patient", cascade="all, delete-orphan"
     )
     
