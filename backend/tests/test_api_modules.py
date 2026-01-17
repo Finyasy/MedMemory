@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from app.schemas.ingestion import LabResultIngest
 from app.schemas.memory import IndexTextRequest
 from app.schemas.chat import ChatRequest
+from app.models import User
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -78,11 +79,22 @@ class FakeDB:
         return None
 
 
+def _fake_user():
+    return User(
+        id=1,
+        email="tester@example.com",
+        hashed_password="hashed",
+        full_name="Test User",
+        is_active=True,
+    )
+
+
 @pytest.mark.anyio
 async def test_ingestion_lab_success(monkeypatch):
     class FakeLabService:
-        def __init__(self, db):
+        def __init__(self, db, user_id=None):
             self.db = db
+            self.user_id = user_id
 
         async def ingest_single(self, data):
             return SimpleNamespace(
@@ -105,7 +117,8 @@ async def test_ingestion_lab_success(monkeypatch):
     monkeypatch.setattr(ingestion_api, "LabIngestionService", FakeLabService)
 
     payload = LabResultIngest(patient_id=1, test_name="CBC")
-    result = await ingestion_api.ingest_lab_result(payload, db=FakeDB())
+    db = FakeDB(results=[FakeResult(scalar=SimpleNamespace(id=1, user_id=1))])
+    result = await ingestion_api.ingest_lab_result(payload, db=db, current_user=_fake_user())
 
     assert result.test_name == "CBC"
 
@@ -113,8 +126,9 @@ async def test_ingestion_lab_success(monkeypatch):
 @pytest.mark.anyio
 async def test_ingestion_lab_error(monkeypatch):
     class FakeLabService:
-        def __init__(self, db):
+        def __init__(self, db, user_id=None):
             self.db = db
+            self.user_id = user_id
 
         async def ingest_single(self, data):
             raise ValueError("bad input")
@@ -123,7 +137,8 @@ async def test_ingestion_lab_error(monkeypatch):
 
     payload = LabResultIngest(patient_id=1, test_name="CBC")
     with pytest.raises(HTTPException) as exc:
-        await ingestion_api.ingest_lab_result(payload, db=FakeDB())
+        db = FakeDB(results=[FakeResult(scalar=SimpleNamespace(id=1, user_id=1))])
+        await ingestion_api.ingest_lab_result(payload, db=db, current_user=_fake_user())
 
     assert exc.value.status_code == 400
 
@@ -140,7 +155,8 @@ async def test_memory_index_text(monkeypatch):
     monkeypatch.setattr(memory_api, "MemoryIndexingService", FakeIndexingService)
 
     request = IndexTextRequest(patient_id=1, content="hello")
-    response = await memory_api.index_custom_text(request, db=FakeDB())
+    db = FakeDB(results=[FakeResult(scalar=SimpleNamespace(id=1, user_id=1))])
+    response = await memory_api.index_custom_text(request, db=db, current_user=_fake_user())
 
     assert response.total_chunks == 2
 
@@ -149,7 +165,14 @@ async def test_memory_index_text(monkeypatch):
 async def test_memory_search_patient_missing():
     db = FakeDB(results=[FakeResult(scalar=None)])
     with pytest.raises(HTTPException) as exc:
-        await memory_api.search_patient_history(1, query="x", limit=10, min_similarity=0.3, db=db)
+        await memory_api.search_patient_history(
+            1,
+            query="x",
+            limit=10,
+            min_similarity=0.3,
+            db=db,
+            current_user=_fake_user(),
+        )
 
     assert exc.value.status_code == 404
 
@@ -201,7 +224,7 @@ async def test_context_analyze_query(monkeypatch):
 
     monkeypatch.setattr(context_api, "ContextEngine", FakeEngine)
 
-    response = await context_api.analyze_query(query="Hello", db=FakeDB())
+    response = await context_api.analyze_query(query="Hello", db=FakeDB(), current_user=_fake_user())
 
     assert response.intent == "general"
 
@@ -212,7 +235,7 @@ async def test_chat_ask_patient_missing():
     payload = ChatRequest(question="Q", patient_id=1)
 
     with pytest.raises(HTTPException) as exc:
-        await chat_api.ask_question(payload, db=db)
+        await chat_api.ask_question(payload, db=db, current_user=_fake_user())
 
     assert exc.value.status_code == 404
 
@@ -260,13 +283,13 @@ async def test_documents_list_and_text_error():
     )
 
     db = FakeDB(results=[FakeResult(scalars=[document])])
-    listed = await documents_api.list_documents(db=db, skip=0, limit=100)
+    listed = await documents_api.list_documents(db=db, skip=0, limit=100, current_user=_fake_user())
 
     assert len(listed) == 1
 
     db = FakeDB(results=[FakeResult(scalar=document)])
     with pytest.raises(HTTPException) as exc:
-        await documents_api.get_document_text(1, db=db)
+        await documents_api.get_document_text(1, db=db, current_user=_fake_user())
 
     assert exc.value.status_code == 400
 

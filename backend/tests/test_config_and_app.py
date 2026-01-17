@@ -1,7 +1,11 @@
-from app import config
+import importlib
+import os
 
 
 def test_settings_defaults_and_cache():
+    os.environ["DEBUG"] = "true"
+    config = importlib.import_module("app.config")
+    importlib.reload(config)
     settings = config.get_settings()
     second = config.get_settings()
 
@@ -25,6 +29,10 @@ def test_main_app_metadata():
     db_mod.init_db = init_db
     db_mod.close_db = close_db
     sys.modules["app.database"] = db_mod
+
+    os.environ["DEBUG"] = "true"
+    config = importlib.import_module("app.config")
+    importlib.reload(config)
 
     from app.main import app
 

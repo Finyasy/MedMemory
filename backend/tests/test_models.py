@@ -7,14 +7,14 @@ from app.models.patient import Patient
 def test_patient_full_name_and_age():
     today = date.today()
     birth_date = date(today.year - 30, today.month, today.day)
-    patient = Patient(first_name="Ada", last_name="Lovelace", date_of_birth=birth_date)
+    patient = Patient(first_name="Ada", last_name="Lovelace", date_of_birth=birth_date, user_id=1)
 
     assert patient.full_name == "Ada Lovelace"
     assert patient.age == 30
 
 
 def test_patient_age_without_birth_date():
-    patient = Patient(first_name="Ada", last_name="Lovelace", date_of_birth=None)
+    patient = Patient(first_name="Ada", last_name="Lovelace", date_of_birth=None, user_id=1)
 
     assert patient.age is None
 

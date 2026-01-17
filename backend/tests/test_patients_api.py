@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -42,9 +42,9 @@ def _expected_age(birth_date: date) -> int:
 @pytest.fixture(scope="session")
 def database_url():
     pytest.importorskip("pgvector.sqlalchemy")
-    url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
+    url = os.getenv("TEST_DATABASE_URL")
     if not url:
-        pytest.skip("TEST_DATABASE_URL or DATABASE_URL is required for DB tests")
+        pytest.skip("TEST_DATABASE_URL is required for DB tests")
     return url
 
 
@@ -99,6 +99,8 @@ async def client(async_session_maker):
     patients_module = _load_module("medmemory_patients_api", API_DIR / "patients.py")
     app.include_router(patients_module.router, prefix="/api/v1")
     database = _load_database()
+    from app.api.deps import get_authenticated_user
+    from app.models import User
 
     async def _override_get_db():
         async with async_session_maker() as session:
@@ -113,7 +115,29 @@ async def client(async_session_maker):
 
     app.dependency_overrides[database.get_db] = _override_get_db
 
-    async with AsyncClient(app=app, base_url="http://test") as async_client:
+    async with async_session_maker() as session:
+        user = User(
+            id=1,
+            email="tester@example.com",
+            hashed_password="hashed",
+            full_name="Test User",
+            is_active=True,
+        )
+        session.add(user)
+        await session.commit()
+
+    async def _override_get_authenticated_user():
+        return User(
+            id=1,
+            email="tester@example.com",
+            hashed_password="hashed",
+            full_name="Test User",
+            is_active=True,
+        )
+
+    app.dependency_overrides[get_authenticated_user] = _override_get_authenticated_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as async_client:
         yield async_client
 
     app.dependency_overrides.clear()

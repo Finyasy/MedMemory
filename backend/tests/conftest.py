@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import importlib.metadata
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -15,6 +16,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 API_DIR = PROJECT_ROOT / "app" / "api"
+
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://medmemory:medmemory_dev@localhost:5432/medmemory_test",
+)
+os.environ.setdefault("DEBUG", "true")
 
 
 
@@ -126,7 +133,7 @@ def _install_fitz_stub():
 
 def _install_multipart_stub():
     try:
-        import multipart  # noqa: F401
+        import python_multipart  # noqa: F401
         return
     except Exception:
         pass
@@ -165,7 +172,7 @@ _install_multipart_stub()
 collect_ignore = ["test_model.py"]
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
 
@@ -185,6 +192,39 @@ def client(record_repository):
     app.include_router(RECORDS_MODULE.router, prefix="/api/v1")
     
     app.dependency_overrides[RECORDS_MODULE.get_record_repo] = lambda: record_repository
+    from app.database import get_db
+    from app.api.deps import get_authenticated_user
+
+    async def _override_get_db():
+        yield None
+
+    app.dependency_overrides[get_db] = _override_get_db
+
+    async def _override_get_authenticated_user():
+        from app.models import User
+
+        return User(
+            id=1,
+            email="tester@example.com",
+            hashed_password="hashed",
+            full_name="Test User",
+            is_active=True,
+        )
+
+    app.dependency_overrides[get_authenticated_user] = _override_get_authenticated_user
+
+    async def _fake_get_patient_for_user(*_args, **_kwargs):
+        from app.models import Patient
+
+        return Patient(
+            id=1,
+            user_id=1,
+            first_name="Test",
+            last_name="Patient",
+        )
+
+    RECORDS_MODULE.get_patient_for_user = _fake_get_patient_for_user
+
     return TestClient(app, raise_server_exceptions=False)
 
 
