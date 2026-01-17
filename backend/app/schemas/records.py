@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RecordBase(BaseModel):
@@ -19,8 +19,9 @@ class RecordCreate(RecordBase):
 class RecordResponse(RecordBase):
     """Schema for medical record response."""
     
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
+    patient_id: int
     created_at: datetime = Field(default_factory=datetime.now)
-
-    class Config:
-        from_attributes = True
+    updated_at: datetime = Field(default_factory=datetime.now)
