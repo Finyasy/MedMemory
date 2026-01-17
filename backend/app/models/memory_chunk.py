@@ -5,6 +5,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.config import settings
 from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
 
 # Embedding dimension for sentence-transformers models
 # all-MiniLM-L6-v2: 384, all-mpnet-base-v2: 768
-EMBEDDING_DIMENSION = 384
+EMBEDDING_DIMENSION = settings.embedding_dimension
 
 
 class MemoryChunk(Base, TimestampMixin):
