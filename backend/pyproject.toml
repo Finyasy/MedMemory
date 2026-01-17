@@ -5,11 +5,36 @@ description = "MedMemory: A Unified, Local-First Medical Memory for Human-Center
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # Web Framework
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     "python-multipart>=0.0.12",
+    
+    # Database - PostgreSQL + pgvector
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "pgvector>=0.3.0",
+    "alembic>=1.14.0",
+    
+    # ML & Embeddings
+    "sentence-transformers>=3.3.0",
+    "transformers>=4.47.0",
+    "torch>=2.5.0",
+    "accelerate>=1.2.0",
+    
+    # Document Processing
+    "pymupdf>=1.25.0",
+    "python-docx>=1.1.0",
+    "pillow>=11.0.0",
+    "pytesseract>=0.3.13",
+    
+    # Utilities
+    "python-dateutil>=2.9.0",
+    "aiofiles>=24.1.0",
+    "numpy>=2.0.0",
+    "email-validator>=2.3.0",
 ]
 
 [project.optional-dependencies]
@@ -33,3 +58,6 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
