@@ -5,7 +5,9 @@ from app.models.medication import Medication
 from app.models.encounter import Encounter
 from app.models.document import Document
 from app.models.memory_chunk import MemoryChunk, EMBEDDING_DIMENSION
+from app.models.record import Record
 from app.models.conversation import Conversation, ConversationMessage
+from app.models.record import Record
 
 __all__ = [
     # Base
@@ -19,8 +21,10 @@ __all__ = [
     "Encounter",
     "Document",
     "MemoryChunk",
+    "Record",
     "Conversation",
     "ConversationMessage",
+    "Record",
     # Constants
     "EMBEDDING_DIMENSION",
 ]
