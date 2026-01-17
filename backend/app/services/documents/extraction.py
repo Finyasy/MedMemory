@@ -1,5 +1,6 @@
 """Document text extraction services (PDF, Images, etc.)."""
 
+import asyncio
 import io
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -69,52 +70,48 @@ class PDFExtractor(DocumentExtractor):
         return mime_type in self.SUPPORTED_TYPES
     
     async def extract(self, file_path: str) -> ExtractionResult:
-        """Extract text from PDF.
-        
-        Args:
-            file_path: Path to the PDF file
-            
-        Returns:
-            ExtractionResult with extracted text
-        """
+        """Extract text from PDF."""
+        return await asyncio.to_thread(self._extract_sync, file_path)
+
+    def _extract_sync(self, file_path: str) -> ExtractionResult:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"PDF file not found: {file_path}")
-        
+
         doc = fitz.open(file_path)
-        
+
         try:
             pages_text = []
             page_count = len(doc)
-            
+
             for page_num in range(page_count):
                 page = doc[page_num]
-                
+
                 # Try direct text extraction first
                 text = page.get_text("text")
-                
+
                 # If no text and OCR fallback enabled, try OCR
                 if not text.strip() and self.ocr_fallback:
-                    text = await self._ocr_page(page)
-                
+                    text = self._ocr_page_sync(page)
+
                 if text.strip():
                     pages_text.append(f"--- Page {page_num + 1} ---\n{text}")
-            
+
             # Extract metadata
             metadata = self._extract_metadata(doc)
-            
+
             full_text = "\n\n".join(pages_text)
-            
+
             return ExtractionResult(
                 text=full_text,
                 page_count=page_count,
                 metadata=metadata,
             )
-        
+
         finally:
             doc.close()
     
-    async def _ocr_page(self, page: fitz.Page) -> str:
+    def _ocr_page_sync(self, page: fitz.Page) -> str:
         """OCR a PDF page by rendering it as an image.
         
         Args:
@@ -130,7 +127,7 @@ class PDFExtractor(DocumentExtractor):
             
             # Use ImageExtractor for OCR
             image_extractor = ImageExtractor()
-            result = await image_extractor.extract_from_bytes(img_bytes, "image/png")
+            result = image_extractor.extract_from_bytes_sync(img_bytes, "image/png")
             
             return result.text
         
@@ -161,17 +158,20 @@ class PDFExtractor(DocumentExtractor):
         Returns:
             Text from the specified page
         """
+        return await asyncio.to_thread(self._extract_page_sync, file_path, page_number)
+
+    def _extract_page_sync(self, file_path: str, page_number: int) -> str:
         doc = fitz.open(file_path)
         try:
             if page_number < 1 or page_number > len(doc):
                 raise ValueError(f"Invalid page number: {page_number}")
-            
+
             page = doc[page_number - 1]
             text = page.get_text("text")
-            
+
             if not text.strip() and self.ocr_fallback:
-                text = await self._ocr_page(page)
-            
+                text = self._ocr_page_sync(page)
+
             return text
         finally:
             doc.close()
@@ -215,22 +215,18 @@ class ImageExtractor(DocumentExtractor):
         return mime_type in self.SUPPORTED_TYPES
     
     async def extract(self, file_path: str) -> ExtractionResult:
-        """Extract text from image using OCR.
-        
-        Args:
-            file_path: Path to the image file
-            
-        Returns:
-            ExtractionResult with OCR text
-        """
+        """Extract text from image using OCR."""
+        return await asyncio.to_thread(self._extract_sync, file_path)
+
+    def _extract_sync(self, file_path: str) -> ExtractionResult:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Image file not found: {file_path}")
-        
+
         # Read image
         with open(file_path, "rb") as f:
             img_bytes = f.read()
-        
+
         # Detect MIME type from extension
         ext = path.suffix.lower()
         mime_map = {
@@ -241,37 +237,36 @@ class ImageExtractor(DocumentExtractor):
             ".tif": "image/tiff",
         }
         mime_type = mime_map.get(ext, "image/png")
-        
-        return await self.extract_from_bytes(img_bytes, mime_type)
+
+        return self.extract_from_bytes_sync(img_bytes, mime_type)
     
     async def extract_from_bytes(
         self,
         img_bytes: bytes,
         mime_type: str,
     ) -> ExtractionResult:
-        """Extract text from image bytes.
-        
-        Args:
-            img_bytes: Image file bytes
-            mime_type: MIME type of the image
-            
-        Returns:
-            ExtractionResult with OCR text
-        """
+        """Extract text from image bytes."""
+        return await asyncio.to_thread(self.extract_from_bytes_sync, img_bytes, mime_type)
+
+    def extract_from_bytes_sync(
+        self,
+        img_bytes: bytes,
+        _mime_type: str,
+    ) -> ExtractionResult:
         # Load image with PIL
         image = Image.open(io.BytesIO(img_bytes))
-        
+
         # Preprocess image for better OCR
         image = self._preprocess_image(image)
-        
+
         # Perform OCR
         if self._tesseract_available:
-            text, confidence = await self._ocr_with_tesseract(image)
+            text, confidence = self._ocr_with_tesseract_sync(image)
         else:
             # Fallback: basic text detection (limited)
             text = ""
             confidence = 0.0
-        
+
         return ExtractionResult(
             text=text,
             page_count=1,
@@ -304,41 +299,34 @@ class ImageExtractor(DocumentExtractor):
         
         return image
     
-    async def _ocr_with_tesseract(
+    def _ocr_with_tesseract_sync(
         self,
         image: Image.Image,
     ) -> tuple[str, float]:
-        """Perform OCR using Tesseract.
-        
-        Args:
-            image: Preprocessed PIL Image
-            
-        Returns:
-            Tuple of (extracted text, confidence score)
-        """
+        """Perform OCR using Tesseract."""
         import pytesseract
-        
+
         # Get text with confidence data
         data = pytesseract.image_to_data(
             image,
             lang=self.language,
             output_type=pytesseract.Output.DICT,
         )
-        
+
         # Extract text
         text_parts = []
         confidences = []
-        
+
         for i, conf in enumerate(data["conf"]):
             if conf > 0:  # Valid detection
                 text = data["text"][i].strip()
                 if text:
                     text_parts.append(text)
                     confidences.append(conf)
-        
+
         full_text = " ".join(text_parts)
         avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-        
+
         return full_text, avg_confidence / 100.0  # Normalize to 0-1
 
 
@@ -353,27 +341,23 @@ class DocxExtractor(DocumentExtractor):
         return mime_type in self.SUPPORTED_TYPES
     
     async def extract(self, file_path: str) -> ExtractionResult:
-        """Extract text from DOCX file.
-        
-        Args:
-            file_path: Path to the DOCX file
-            
-        Returns:
-            ExtractionResult with extracted text
-        """
+        """Extract text from DOCX file."""
+        return await asyncio.to_thread(self._extract_sync, file_path)
+
+    def _extract_sync(self, file_path: str) -> ExtractionResult:
         from docx import Document as DocxDocument
-        
+
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"DOCX file not found: {file_path}")
-        
+
         doc = DocxDocument(file_path)
-        
+
         paragraphs = []
         for para in doc.paragraphs:
             if para.text.strip():
                 paragraphs.append(para.text)
-        
+
         # Also extract text from tables
         for table in doc.tables:
             for row in table.rows:
@@ -383,7 +367,7 @@ class DocxExtractor(DocumentExtractor):
                         row_text.append(cell.text.strip())
                 if row_text:
                     paragraphs.append(" | ".join(row_text))
-        
+
         return ExtractionResult(
             text="\n\n".join(paragraphs),
             page_count=1,  # DOCX doesn't have fixed pages

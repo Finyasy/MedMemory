@@ -48,8 +48,9 @@ class IngestionService(ABC, Generic[T]):
     from various sources (JSON, CSV, FHIR, etc.).
     """
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, user_id: int | None = None):
         self.db = db
+        self.user_id = user_id
     
     async def get_or_create_patient(
         self,
@@ -74,26 +75,31 @@ class IngestionService(ABC, Generic[T]):
         """
         # Try to find by internal ID first
         if patient_id:
-            result = await self.db.execute(
-                select(Patient).where(Patient.id == patient_id)
-            )
+            query = select(Patient).where(Patient.id == patient_id)
+            if self.user_id is not None:
+                query = query.where(Patient.user_id == self.user_id)
+            result = await self.db.execute(query)
             patient = result.scalar_one_or_none()
             if patient:
                 return patient
         
         # Try to find by external ID
         if external_id:
-            result = await self.db.execute(
-                select(Patient).where(Patient.external_id == external_id)
-            )
+            query = select(Patient).where(Patient.external_id == external_id)
+            if self.user_id is not None:
+                query = query.where(Patient.user_id == self.user_id)
+            result = await self.db.execute(query)
             patient = result.scalar_one_or_none()
             if patient:
                 return patient
             
             # Create new patient with external ID
             if first_name and last_name:
+                if self.user_id is None:
+                    raise ValueError("Cannot create patient without an owning user.")
                 patient = Patient(
                     external_id=external_id,
+                    user_id=self.user_id,
                     first_name=first_name,
                     last_name=last_name,
                 )

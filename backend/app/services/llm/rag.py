@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.services.context import ContextEngine
 from app.services.llm.conversation import Conversation, ConversationManager
 from app.services.llm.model import LLMService, LLMResponse
@@ -151,7 +152,7 @@ Guidelines:
         generation_start = time.time()
         llm_response = await self.llm_service.generate(
             prompt=context_result.prompt,
-            max_new_tokens=512,
+            max_new_tokens=settings.llm_max_new_tokens,
             conversation_history=conversation_history,
         )
         generation_time = (time.time() - generation_start) * 1000

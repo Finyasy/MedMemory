@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional, Protocol
 
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Patient, Record
@@ -17,6 +18,7 @@ class RecordRepository(Protocol):
     async def list_records(
         self,
         patient_id: Optional[int],
+        owner_user_id: Optional[int],
         record_type: Optional[str],
         skip: int,
         limit: int,
@@ -42,11 +44,25 @@ class SQLRecordRepository:
     async def list_records(
         self,
         patient_id: Optional[int],
+        owner_user_id: Optional[int],
         record_type: Optional[str],
         skip: int,
         limit: int,
     ) -> list[Record]:
-        query = select(Record)
+        query = select(Record).options(
+            load_only(
+                Record.id,
+                Record.patient_id,
+                Record.title,
+                Record.content,
+                Record.record_type,
+                Record.created_at,
+                Record.updated_at,
+            )
+        )
+
+        if owner_user_id is not None:
+            query = query.join(Patient).where(Patient.user_id == owner_user_id)
 
         if patient_id:
             query = query.where(Record.patient_id == patient_id)
@@ -113,6 +129,7 @@ class InMemoryRecordRepository:
     async def list_records(
         self,
         patient_id: Optional[int],
+        owner_user_id: Optional[int],
         record_type: Optional[str],
         skip: int,
         limit: int,

@@ -4,11 +4,13 @@ import hashlib
 import os
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 import aiofiles
 from fastapi import UploadFile
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -249,6 +251,12 @@ class DocumentUploadService:
                 f"File type '{ext}' not allowed. "
                 f"Allowed types: {', '.join(self.allowed_extensions)}"
             )
+
+        if file.content_type and file.content_type not in settings.allowed_mime_types:
+            raise ValueError(
+                f"MIME type '{file.content_type}' not allowed. "
+                f"Allowed types: {', '.join(settings.allowed_mime_types)}"
+            )
         
         # Check size (need to read to check, then seek back)
         content = await file.read()
@@ -259,6 +267,20 @@ class DocumentUploadService:
                 f"File too large ({len(content)} bytes). "
                 f"Maximum size: {self.max_size} bytes"
             )
+
+        if file.content_type == "application/pdf" and not content.startswith(b"%PDF"):
+            raise ValueError("Invalid PDF file header")
+        if file.content_type in {"image/png", "image/jpeg", "image/jpg", "image/tiff"}:
+            try:
+                Image.open(BytesIO(content)).verify()
+            except Exception:
+                raise ValueError("Invalid image file content")
+        if file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            if not content.startswith(b"PK"):
+                raise ValueError("Invalid DOCX file header")
+        if file.content_type == "text/plain":
+            if b"\x00" in content:
+                raise ValueError("Invalid text file content")
     
     def _get_extension(self, filename: str) -> str:
         """Get file extension from filename."""
