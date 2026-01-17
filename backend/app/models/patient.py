@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Date, String, Text
+from sqlalchemy import Date, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from app.models.document import Document
     from app.models.memory_chunk import MemoryChunk
     from app.models.record import Record
-    from app.models.record import Record
+    from app.models.user import User
 
 
 class Patient(Base, TimestampMixin):
@@ -22,6 +22,12 @@ class Patient(Base, TimestampMixin):
     __tablename__ = "patients"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+        comment="Owning user for this patient",
+    )
     
     external_id: Mapped[Optional[str]] = mapped_column(
         String(100), unique=True, index=True, nullable=True,
@@ -59,8 +65,10 @@ class Patient(Base, TimestampMixin):
     records: Mapped[list["Record"]] = relationship(
         back_populates="patient", cascade="all, delete-orphan"
     )
-    records: Mapped[list["Record"]] = relationship(
-        back_populates="patient", cascade="all, delete-orphan"
+    user: Mapped["User"] = relationship(back_populates="patients")
+
+    __table_args__ = (
+        Index("ix_patients_user_last_first", "user_id", "last_name", "first_name"),
     )
     
     @property

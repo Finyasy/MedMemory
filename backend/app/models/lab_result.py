@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -58,6 +58,10 @@ class LabResult(Base, TimestampMixin):
     source_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     
     patient: Mapped["Patient"] = relationship(back_populates="lab_results")
+
+    __table_args__ = (
+        Index("ix_lab_results_patient_collected", "patient_id", "collected_at"),
+    )
     
     def __repr__(self) -> str:
         return f"<LabResult(id={self.id}, test='{self.test_name}', value='{self.value}')>"

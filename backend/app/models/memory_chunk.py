@@ -102,6 +102,7 @@ class MemoryChunk(Base, TimestampMixin):
             postgresql_with={"lists": 100},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index("ix_memory_chunks_patient_created", "patient_id", "created_at"),
     )
     
     def __repr__(self) -> str:

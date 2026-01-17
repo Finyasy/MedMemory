@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -33,6 +33,10 @@ class Record(Base, TimestampMixin):
     )
     
     patient: Mapped["Patient"] = relationship(back_populates="records")
+
+    __table_args__ = (
+        Index("ix_records_patient_created", "patient_id", "created_at"),
+    )
     
     def __repr__(self) -> str:
         return f"<Record(id={self.id}, patient_id={self.patient_id}, type='{self.record_type}')>"
