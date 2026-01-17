@@ -1,9 +1,12 @@
 """Data ingestion API endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
+from app.models import Medication, Patient, User
 from app.schemas.ingestion import (
     BatchIngestionRequest,
     EncounterIngest,
@@ -24,6 +27,22 @@ from app.services.ingestion import (
 router = APIRouter(prefix="/ingest", tags=["Data Ingestion"])
 
 
+async def _ensure_patient_ids_for_user(
+    patient_ids: set[int],
+    db: AsyncSession,
+    current_user: User,
+) -> None:
+    if not patient_ids:
+        return
+    result = await db.execute(
+        select(Patient.id).where(Patient.user_id == current_user.id, Patient.id.in_(patient_ids))
+    )
+    owned_ids = {row[0] for row in result.all()}
+    missing = patient_ids - owned_ids
+    if missing:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+
 # ============================================
 # Lab Results Ingestion
 # ============================================
@@ -32,9 +51,11 @@ router = APIRouter(prefix="/ingest", tags=["Data Ingestion"])
 async def ingest_lab_result(
     data: LabResultIngest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest a single lab result."""
-    service = LabIngestionService(db)
+    await get_patient_for_user(patient_id=data.patient_id, db=db, current_user=current_user)
+    service = LabIngestionService(db, user_id=current_user.id)
     try:
         lab = await service.ingest_single(data.model_dump())
         return LabResultResponse.model_validate(lab)
@@ -46,9 +67,15 @@ async def ingest_lab_result(
 async def ingest_lab_results_batch(
     data: list[LabResultIngest],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest multiple lab results in a batch."""
-    service = LabIngestionService(db)
+    await _ensure_patient_ids_for_user(
+        {item.patient_id for item in data},
+        db=db,
+        current_user=current_user,
+    )
+    service = LabIngestionService(db, user_id=current_user.id)
     result = await service.ingest_batch([d.model_dump() for d in data])
     return IngestionResultResponse(**result.to_dict())
 
@@ -57,9 +84,10 @@ async def ingest_lab_results_batch(
 async def ingest_lab_panel(
     data: LabPanelIngest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest a complete lab panel (multiple related tests)."""
-    service = LabIngestionService(db)
+    service = LabIngestionService(db, user_id=current_user.id)
     try:
         labs = await service.ingest_panel(
             patient_id=data.patient_id,
@@ -81,9 +109,11 @@ async def ingest_lab_panel(
 async def ingest_medication(
     data: MedicationIngest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest a single medication/prescription."""
-    service = MedicationIngestionService(db)
+    await get_patient_for_user(patient_id=data.patient_id, db=db, current_user=current_user)
+    service = MedicationIngestionService(db, user_id=current_user.id)
     try:
         med = await service.ingest_single(data.model_dump())
         return MedicationResponse.model_validate(med)
@@ -95,9 +125,15 @@ async def ingest_medication(
 async def ingest_medications_batch(
     data: list[MedicationIngest],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest multiple medications in a batch."""
-    service = MedicationIngestionService(db)
+    await _ensure_patient_ids_for_user(
+        {item.patient_id for item in data},
+        db=db,
+        current_user=current_user,
+    )
+    service = MedicationIngestionService(db, user_id=current_user.id)
     result = await service.ingest_batch([d.model_dump() for d in data])
     return IngestionResultResponse(**result.to_dict())
 
@@ -107,10 +143,23 @@ async def discontinue_medication(
     medication_id: int,
     reason: str | None = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Discontinue an active medication."""
-    service = MedicationIngestionService(db)
     try:
+        result = await db.execute(
+            select(Medication).where(Medication.id == medication_id)
+        )
+        medication = result.scalar_one_or_none()
+        if not medication:
+            raise HTTPException(status_code=404, detail="Medication not found")
+        await get_patient_for_user(
+            patient_id=medication.patient_id,
+            db=db,
+            current_user=current_user,
+        )
+
+        service = MedicationIngestionService(db, user_id=current_user.id)
         med = await service.discontinue_medication(medication_id, reason=reason)
         return MedicationResponse.model_validate(med)
     except ValueError as e:
@@ -125,9 +174,11 @@ async def discontinue_medication(
 async def ingest_encounter(
     data: EncounterIngest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest a single medical encounter/visit."""
-    service = EncounterIngestionService(db)
+    await get_patient_for_user(patient_id=data.patient_id, db=db, current_user=current_user)
+    service = EncounterIngestionService(db, user_id=current_user.id)
     try:
         encounter = await service.ingest_single(data.model_dump())
         return EncounterResponse.model_validate(encounter)
@@ -139,9 +190,15 @@ async def ingest_encounter(
 async def ingest_encounters_batch(
     data: list[EncounterIngest],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest multiple encounters in a batch."""
-    service = EncounterIngestionService(db)
+    await _ensure_patient_ids_for_user(
+        {item.patient_id for item in data},
+        db=db,
+        current_user=current_user,
+    )
+    service = EncounterIngestionService(db, user_id=current_user.id)
     result = await service.ingest_batch([d.model_dump() for d in data])
     return IngestionResultResponse(**result.to_dict())
 
@@ -154,6 +211,7 @@ async def ingest_encounters_batch(
 async def ingest_batch(
     data: BatchIngestionRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ingest multiple record types in a single request.
     
@@ -163,17 +221,32 @@ async def ingest_batch(
     results = {}
     
     if data.labs:
-        service = LabIngestionService(db)
+        await _ensure_patient_ids_for_user(
+            {item.patient_id for item in data.labs},
+            db=db,
+            current_user=current_user,
+        )
+        service = LabIngestionService(db, user_id=current_user.id)
         result = await service.ingest_batch([d.model_dump() for d in data.labs])
         results["labs"] = result.to_dict()
     
     if data.medications:
-        service = MedicationIngestionService(db)
+        await _ensure_patient_ids_for_user(
+            {item.patient_id for item in data.medications},
+            db=db,
+            current_user=current_user,
+        )
+        service = MedicationIngestionService(db, user_id=current_user.id)
         result = await service.ingest_batch([d.model_dump() for d in data.medications])
         results["medications"] = result.to_dict()
     
     if data.encounters:
-        service = EncounterIngestionService(db)
+        await _ensure_patient_ids_for_user(
+            {item.patient_id for item in data.encounters},
+            db=db,
+            current_user=current_user,
+        )
+        service = EncounterIngestionService(db, user_id=current_user.id)
         result = await service.ingest_batch([d.model_dump() for d in data.encounters])
         results["encounters"] = result.to_dict()
     
@@ -187,3 +260,4 @@ async def ingest_batch(
         "total_errors": total_errors,
         "details": results,
     }
+    await get_patient_for_user(patient_id=data.patient_id, db=db, current_user=current_user)

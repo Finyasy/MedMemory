@@ -2,10 +2,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_authenticated_user
 from app.database import get_db
-from app.models import Patient
+from app.config import settings
+from app.utils.cache import clear_cache, get_cached, set_cached
+from app.models import Patient, User
 from app.schemas.patient import (
     PatientCreate,
     PatientResponse,
@@ -22,9 +26,28 @@ async def list_patients(
     limit: int = Query(100, ge=1, le=1000),
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """List all patients with optional search."""
-    query = select(Patient).offset(skip).limit(limit)
+    cache_key = f"patients:{current_user.id}:{search or ''}:{skip}:{limit}"
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached
+    query = (
+        select(Patient)
+        .options(
+            load_only(
+                Patient.id,
+                Patient.first_name,
+                Patient.last_name,
+                Patient.date_of_birth,
+                Patient.gender,
+            )
+        )
+        .where(Patient.user_id == current_user.id)
+        .offset(skip)
+        .limit(limit)
+    )
     
     if search:
         search_filter = f"%{search.lower()}%"
@@ -38,7 +61,7 @@ async def list_patients(
     result = await db.execute(query)
     patients = result.scalars().all()
     
-    return [
+    response = [
         PatientSummary(
             id=p.id,
             full_name=p.full_name,
@@ -48,12 +71,15 @@ async def list_patients(
         )
         for p in patients
     ]
+    await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
+    return response
 
 
 @router.post("/", response_model=PatientResponse, status_code=201)
 async def create_patient(
     patient_data: PatientCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Create a new patient."""
     # Check for duplicate external_id
@@ -67,10 +93,11 @@ async def create_patient(
                 detail=f"Patient with external_id '{patient_data.external_id}' already exists"
             )
     
-    patient = Patient(**patient_data.model_dump())
+    patient = Patient(**patient_data.model_dump(), user_id=current_user.id)
     db.add(patient)
     await db.flush()
     await db.refresh(patient)
+    await clear_cache(f"patients:{current_user.id}:")
     
     return PatientResponse(
         id=patient.id,
@@ -96,10 +123,11 @@ async def create_patient(
 async def get_patient(
     patient_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Get a specific patient by ID."""
     result = await db.execute(
-        select(Patient).where(Patient.id == patient_id)
+        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
     )
     patient = result.scalar_one_or_none()
     
@@ -131,10 +159,11 @@ async def update_patient(
     patient_id: int,
     patient_data: PatientUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Update a patient's information."""
     result = await db.execute(
-        select(Patient).where(Patient.id == patient_id)
+        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
     )
     patient = result.scalar_one_or_none()
     
@@ -148,6 +177,7 @@ async def update_patient(
     
     await db.flush()
     await db.refresh(patient)
+    await clear_cache(f"patients:{current_user.id}:")
     
     return PatientResponse(
         id=patient.id,
@@ -173,10 +203,11 @@ async def update_patient(
 async def delete_patient(
     patient_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Delete a patient and all associated records."""
     result = await db.execute(
-        select(Patient).where(Patient.id == patient_id)
+        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
     )
     patient = result.scalar_one_or_none()
     
@@ -185,3 +216,4 @@ async def delete_patient(
     
     # Delete patient (cascade deletes related records)
     await db.delete(patient)
+    await clear_cache(f"patients:{current_user.id}:")

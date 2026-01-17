@@ -5,12 +5,12 @@ Provides intelligent context retrieval for medical Q&A.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
-from app.models import Patient
+from app.models import User
 from app.schemas.context import (
     ContextRequest,
     ContextResponse,
@@ -39,6 +39,7 @@ router = APIRouter(prefix="/context", tags=["Context Engine"])
 async def get_context(
     request: ContextRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Get optimized context for answering a medical question.
     
@@ -52,11 +53,11 @@ async def get_context(
     for transparency and debugging.
     """
     # Verify patient exists
-    result = await db.execute(
-        select(Patient).where(Patient.id == request.patient_id)
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
     
     # Run context engine
     engine = ContextEngine(db)
@@ -148,6 +149,7 @@ async def get_context(
 async def get_simple_context(
     request: SimpleContextRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Get simplified context for LLM consumption.
     
@@ -159,11 +161,11 @@ async def get_simple_context(
     Use this for direct LLM integration.
     """
     # Verify patient exists
-    result = await db.execute(
-        select(Patient).where(Patient.id == request.patient_id)
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
     
     engine = ContextEngine(db)
     engine_result = await engine.get_context(
@@ -191,6 +193,7 @@ async def get_simple_context(
 async def analyze_query(
     query: str = Query(..., min_length=1, max_length=2000),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Analyze a query without retrieval.
     

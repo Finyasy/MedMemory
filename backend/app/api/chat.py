@@ -8,11 +8,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
-from app.models import Patient
+from app.models import User
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -38,6 +38,7 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 async def ask_question(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Ask a question about a patient using RAG.
     
@@ -52,11 +53,11 @@ async def ask_question(
     - "What is the patient's diagnosis history?"
     """
     # Verify patient exists
-    result = await db.execute(
-        select(Patient).where(Patient.id == request.patient_id)
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
     
     # Run RAG
     rag_service = RAGService(db)
@@ -97,6 +98,7 @@ async def stream_ask(
     patient_id: int = Query(...),
     conversation_id: Optional[UUID] = Query(None),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Stream answer generation token by token.
     
@@ -104,11 +106,11 @@ async def stream_ask(
     the answer as it's being generated.
     """
     # Verify patient exists
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id)
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
     
     # Get or create conversation
     manager = ConversationManager(db)
@@ -148,14 +150,15 @@ async def stream_ask(
 async def create_conversation(
     request: ConversationCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Create a new conversation."""
     # Verify patient exists
-    result = await db.execute(
-        select(Patient).where(Patient.id == request.patient_id)
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
     
     manager = ConversationManager(db)
     conversation = await manager.create_conversation(
@@ -177,6 +180,7 @@ async def create_conversation(
 async def get_conversation(
     conversation_id: UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Get a conversation with all messages."""
     manager = ConversationManager(db)
@@ -184,6 +188,11 @@ async def get_conversation(
     
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    await get_patient_for_user(
+        patient_id=conversation.patient_id,
+        db=db,
+        current_user=current_user,
+    )
     
     return ConversationDetail(
         conversation_id=conversation.conversation_id,
@@ -209,8 +218,14 @@ async def list_conversations(
     patient_id: int = Query(...),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """List conversations for a patient."""
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+    )
     manager = ConversationManager(db)
     conversations = await manager.list_conversations(patient_id, limit)
     
