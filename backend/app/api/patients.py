@@ -183,4 +183,5 @@ async def delete_patient(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
     
+    # Delete patient (cascade deletes related records)
     await db.delete(patient)
