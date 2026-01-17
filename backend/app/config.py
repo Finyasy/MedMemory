@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +17,13 @@ class Settings(BaseSettings):
     
     api_prefix: str = "/api/v1"
     
-    database_url: str = "postgresql+asyncpg://medmemory:medmemory_dev@localhost:5432/medmemory"
+    # Database configuration - REQUIRED via environment variable DATABASE_URL
+    # Format: postgresql+asyncpg://user:password@host:port/database
+    # Security: No default value to prevent hardcoded credentials
+    database_url: str = Field(
+        ...,
+        description="PostgreSQL database URL. Must be set via DATABASE_URL environment variable."
+    )
     database_echo: bool = False
     
     upload_dir: Path = Path("uploads")
