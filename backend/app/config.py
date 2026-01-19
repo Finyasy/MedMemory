@@ -48,15 +48,33 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimension: int = 384
     
-    llm_model: str = "google/medgemma-4b-it"
+    # LLM configuration
+    llm_model: str = "google/medgemma-1.5-4b-it"  # Hugging Face model ID
+    llm_model_path: Optional[Path] = Field(
+        default=None,
+        description="Local path to model directory. If set, uses local model instead of downloading from HF."
+    )
+    llm_quantize_4bit: bool = Field(
+        default=True,
+        description="Use 4-bit INT4 quantization for memory efficiency (requires CUDA and bitsandbytes)"
+    )
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.7
     llm_max_new_tokens: int = 512
     
+    # Models directory
+    models_dir: Path = Field(
+        default=Path("models"),
+        description="Directory for storing downloaded models"
+    )
+    
     max_context_chunks: int = 10
     similarity_threshold: float = 0.5
     
-    hf_token: Optional[str] = None
+    hf_token: Optional[str] = Field(
+        default=None,
+        description="Hugging Face token for accessing models. Set via HF_TOKEN environment variable."
+    )
     hf_cache_dir: Optional[Path] = None
 
     api_key: Optional[str] = None
