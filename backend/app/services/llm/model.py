@@ -1,16 +1,19 @@
-"""LLM service for MedGemma-4B-IT inference.
+"""LLM service for MedGemma-1.5-4B-IT inference.
 
 Handles model loading, tokenization, and text generation.
+Optimized for MPS (Apple Silicon) and CUDA.
 """
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import torch
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    BitsAndBytesConfig,
     TextIteratorStreamer,
 )
 
@@ -33,35 +36,56 @@ class LLMResponse:
 
 
 class LLMService:
-    """Service for running MedGemma-4B-IT inference.
+    """Service for running MedGemma-1.5-4B-IT inference.
     
-    MedGemma-4B-IT is a medical instruction-tuned model based on Gemma.
+    MedGemma-1.5-4B-IT is a medical instruction-tuned vision-language model based on Gemma.
     It's optimized for medical question answering and reasoning.
+    Supports text-only and multimodal inputs.
     """
     
     _instance: Optional["LLMService"] = None
     _model = None
-    _tokenizer = None
+    _processor = None
     
     def __init__(
         self,
         model_name: Optional[str] = None,
+        model_path: Optional[Path] = None,
         device: Optional[str] = None,
         load_in_8bit: bool = False,
-        load_in_4bit: bool = False,
+        load_in_4bit: Optional[bool] = None,
     ):
         """Initialize the LLM service.
         
         Args:
-            model_name: HuggingFace model name
+            model_name: HuggingFace model name (used if model_path not set)
+            model_path: Local path to model directory (overrides model_name)
             device: Device to run on ('cpu', 'cuda', 'mps')
             load_in_8bit: Use 8-bit quantization
-            load_in_4bit: Use 4-bit quantization
+            load_in_4bit: Use 4-bit quantization (defaults to settings.llm_quantize_4bit)
         """
-        self.model_name = model_name or settings.llm_model
+        # Determine model path/name
+        if model_path:
+            self.model_path = Path(model_path)
+            self.model_name = str(self.model_path)
+            self.use_local_model = True
+        elif settings.llm_model_path:
+            self.model_path = Path(settings.llm_model_path)
+            self.model_name = str(self.model_path)
+            self.use_local_model = True
+        else:
+            self.model_path = None
+            self.model_name = model_name or settings.llm_model
+            self.use_local_model = False
+        
         self.device = device or self._detect_device()
         self.load_in_8bit = load_in_8bit
-        self.load_in_4bit = load_in_4bit
+        
+        # Default to settings value if not explicitly set
+        if load_in_4bit is None:
+            self.load_in_4bit = settings.llm_quantize_4bit
+        else:
+            self.load_in_4bit = load_in_4bit
         
         # Generation parameters
         self.max_new_tokens = settings.llm_max_tokens
@@ -85,77 +109,159 @@ class LLMService:
         return self._model
     
     @property
+    def processor(self):
+        """Lazy-load the processor."""
+        if self._processor is None:
+            self._processor = self._load_processor()
+        return self._processor
+    
+    @property
     def tokenizer(self):
-        """Lazy-load the tokenizer."""
-        if self._tokenizer is None:
-            self._tokenizer = self._load_tokenizer()
-        return self._tokenizer
+        """Compatibility property - returns processor."""
+        return self.processor
     
     def _detect_device(self) -> str:
-        """Detect best available device."""
+        """Detect best available device (CUDA, MPS, or CPU)."""
         if torch.cuda.is_available():
             return "cuda"
-        elif torch.backends.mps.is_available():
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
     
+    def _pick_dtype(self) -> torch.dtype:
+        """Pick optimal dtype based on device."""
+        if self.device == "mps":
+            # Apple Silicon supports bfloat16 well
+            try:
+                return torch.bfloat16
+            except Exception:
+                return torch.float16
+        elif self.device == "cuda":
+            return torch.float16
+        return torch.float32
+    
     def _load_model(self):
-        """Load the MedGemma model."""
-        print(f"🔄 Loading LLM model: {self.model_name}")
+        """Load the MedGemma model from local path or Hugging Face.
+        
+        Optimized for MPS (Apple Silicon) and CUDA.
+        """
+        source = "local path" if self.use_local_model else "Hugging Face"
+        print(f"🔄 Loading LLM model from {source}: {self.model_name}")
         print(f"   Device: {self.device}")
+        
+        dtype = self._pick_dtype()
+        print(f"   DType: {dtype}")
         
         # Model loading kwargs
         model_kwargs = {
-            "torch_dtype": torch.float16 if self.device != "cpu" else torch.float32,
-            "device_map": "auto" if self.device != "cpu" else None,
+            "dtype": dtype,  # Use dtype instead of torch_dtype (deprecated)
             "trust_remote_code": True,
+            "low_cpu_mem_usage": True,  # Reduces peak RAM during load
         }
         
-        # Add quantization if requested
-        if self.load_in_8bit:
-            from transformers import BitsAndBytesConfig
-            model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-        elif self.load_in_4bit:
-            from transformers import BitsAndBytesConfig
-            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+        # Use local_files_only if loading from local path
+        if self.use_local_model:
+            model_kwargs["local_files_only"] = True
+            if not self.model_path.exists():
+                raise FileNotFoundError(
+                    f"Model path not found: {self.model_path}. "
+                    f"Please download the model first using: python scripts/download_model.py"
+                )
+        
+        # Configure device mapping
+        # - CUDA: device_map="auto" works well
+        # - MPS: move to MPS explicitly after load (device_map isn't consistently supported)
+        if self.device == "cuda":
+            model_kwargs["device_map"] = "auto"
+        # For MPS and CPU, we'll move manually after loading
+        
+        # Add quantization if requested (CUDA only)
+        quant_cfg = None
+        if self.load_in_4bit and self.device == "cuda":
+            print("   Using INT4 (4-bit) quantization with best practices")
+            quant_cfg = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
             )
+            model_kwargs["quantization_config"] = quant_cfg
+        elif self.load_in_8bit and self.device == "cuda":
+            print("   Using INT8 (8-bit) quantization")
+            quant_cfg = BitsAndBytesConfig(load_in_8bit=True)
+            model_kwargs["quantization_config"] = quant_cfg
+        elif (self.load_in_4bit or self.load_in_8bit) and self.device != "cuda":
+            print("   ⚠️  Warning: 4-bit quantization requires CUDA. Skipping quantization.")
         
         # Load model
         try:
-            model = AutoModelForCausalLM.from_pretrained(
+            model = AutoModelForImageTextToText.from_pretrained(
                 self.model_name,
                 **model_kwargs,
             )
             
-            if self.device == "cpu":
-                model = model.to(self.device)
+            # Move to device if not using device_map
+            if self.device == "mps":
+                model = model.to("mps")
+            elif self.device == "cpu" and "device_map" not in model_kwargs:
+                model = model.to("cpu")
             
             model.eval()  # Set to evaluation mode
-            print(f"✅ Model loaded successfully")
+            
+            # Display model info
+            if quant_cfg:
+                print(f"✅ Model loaded successfully with quantization")
+            else:
+                print(f"✅ Model loaded successfully")
+            
+            # Show memory usage
+            if self.device == "cuda" and torch.cuda.is_available():
+                memory_gb = torch.cuda.memory_allocated() / 1e9
+                print(f"   GPU memory used: {memory_gb:.2f} GB")
+            elif self.device == "mps":
+                # MPS doesn't have direct memory reporting, but we can check model size
+                param_count = sum(p.numel() for p in model.parameters())
+                print(f"   Model parameters: {param_count / 1e9:.2f}B")
             
             return model
         
+        except ImportError as e:
+            if "bitsandbytes" in str(e):
+                raise ImportError(
+                    "bitsandbytes is required for 4-bit quantization. "
+                    "Install it with: pip install bitsandbytes"
+                ) from e
+            raise
         except Exception as e:
             print(f"❌ Error loading model: {e}")
+            if self.use_local_model:
+                print(f"   Hint: Make sure the model is downloaded to: {self.model_path}")
+                print(f"   Run: python scripts/download_model.py")
             raise
     
-    def _load_tokenizer(self):
-        """Load the tokenizer."""
-        print(f"🔄 Loading tokenizer for {self.model_name}")
+    def _load_processor(self):
+        """Load the processor from local path or Hugging Face.
         
-        tokenizer = AutoTokenizer.from_pretrained(
+        MedGemma uses AutoProcessor which handles both text and vision inputs.
+        """
+        print(f"🔄 Loading processor for {self.model_name}")
+        
+        processor_kwargs = {
+            "trust_remote_code": True,
+        }
+        
+        # Use local_files_only if loading from local path
+        if self.use_local_model:
+            processor_kwargs["local_files_only"] = True
+        
+        processor = AutoProcessor.from_pretrained(
             self.model_name,
-            trust_remote_code=True,
+            use_fast=True,  # Use fast processor to avoid deprecation warning
+            **processor_kwargs,
         )
         
-        # Set pad token if not set
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        print(f"✅ Tokenizer loaded")
-        return tokenizer
+        print(f"✅ Processor loaded")
+        return processor
     
     async def generate(
         self,
@@ -187,15 +293,16 @@ class LLMService:
             conversation_history=conversation_history,
         )
         
-        # Tokenize
-        inputs = self.tokenizer(
-            full_prompt,
+        # Process text input (processor handles tokenization for vision-language models)
+        inputs = self.processor(
+            text=full_prompt,
             return_tensors="pt",
-            truncation=True,
-            max_length=2048,  # Max input length
-        ).to(self.device)
+        )
         
-        input_tokens = inputs.input_ids.shape[1]
+        # Move inputs to device
+        inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        
+        input_tokens = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
         
         # Generation parameters
         gen_kwargs = {
@@ -204,22 +311,21 @@ class LLMService:
             "top_p": self.top_p,
             "repetition_penalty": self.repetition_penalty,
             "do_sample": self.do_sample,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
         }
         
-        # Generate in thread pool to avoid blocking
+        # Generate in thread pool to avoid blocking, using inference_mode for efficiency
         loop = asyncio.get_event_loop()
-        outputs = await loop.run_in_executor(
-            None,
-            lambda: self.model.generate(**inputs, **gen_kwargs),
-        )
         
-        # Decode
-        generated_text = self.tokenizer.decode(
-            outputs[0][input_tokens:],
-            skip_special_tokens=True,
-        )
+        def _generate():
+            with torch.inference_mode():
+                return self.model.generate(**inputs, **gen_kwargs)
+        
+        outputs = await loop.run_in_executor(None, _generate)
+        
+        # Decode using processor
+        input_len = inputs["input_ids"].shape[-1] if "input_ids" in inputs else 0
+        generated_ids = outputs[0][input_len:] if input_len > 0 else outputs[0]
+        generated_text = self.processor.decode(generated_ids, skip_special_tokens=True)
         
         output_tokens = outputs[0].shape[1] - input_tokens
         generation_time = (time.time() - start_time) * 1000
@@ -278,17 +384,19 @@ class LLMService:
             conversation_history=conversation_history,
         )
         
-        # Tokenize
-        inputs = self.tokenizer(
-            full_prompt,
+        # Process text input
+        inputs = self.processor(
+            text=full_prompt,
             return_tensors="pt",
-            truncation=True,
-            max_length=2048,
-        ).to(self.device)
+        )
         
-        # Create streamer
+        # Move inputs to device
+        inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        
+        # Create streamer (using processor's tokenizer)
+        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else self.processor
         streamer = TextIteratorStreamer(
-            self.tokenizer,
+            tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
         )
@@ -302,8 +410,6 @@ class LLMService:
             "repetition_penalty": self.repetition_penalty,
             "do_sample": self.do_sample,
             "streamer": streamer,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
         }
         
         # Generate in background thread
@@ -331,11 +437,23 @@ class LLMService:
     
     def get_model_info(self) -> dict:
         """Get information about the loaded model."""
-        return {
+        info = {
             "model_name": self.model_name,
+            "model_path": str(self.model_path) if self.model_path else None,
+            "use_local_model": self.use_local_model,
             "device": self.device,
+            "quantization": {
+                "4bit": self.load_in_4bit and self.device == "cuda",
+                "8bit": self.load_in_8bit and self.device == "cuda",
+            },
             "max_new_tokens": self.max_new_tokens,
             "temperature": self.temperature,
-            "vocab_size": len(self.tokenizer) if self.tokenizer else None,
+            "vocab_size": len(self.processor.tokenizer) if self.processor and hasattr(self.processor, "tokenizer") else None,
             "is_loaded": self._model is not None,
         }
+        
+        # Add memory info if CUDA
+        if self.device == "cuda" and torch.cuda.is_available() and self._model:
+            info["gpu_memory_gb"] = torch.cuda.memory_allocated() / 1e9
+        
+        return info
