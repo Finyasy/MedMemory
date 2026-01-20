@@ -113,6 +113,7 @@ class SimilaritySearchService:
         
         # Build the SQL query using pgvector cosine similarity
         # 1 - (embedding <=> query_embedding) gives similarity (1 = identical, 0 = orthogonal)
+        # Use CAST() instead of :: syntax for asyncpg compatibility
         sql = """
             SELECT 
                 id,
@@ -122,10 +123,10 @@ class SimilaritySearchService:
                 source_id,
                 context_date,
                 chunk_type,
-                1 - (embedding <=> :query_embedding::vector) as similarity
+                1 - (embedding <=> CAST(:query_embedding AS vector)) as similarity
             FROM memory_chunks
             WHERE is_indexed = true
-            AND 1 - (embedding <=> :query_embedding::vector) >= :min_similarity
+            AND 1 - (embedding <=> CAST(:query_embedding AS vector)) >= :min_similarity
         """
         
         params = {
@@ -235,6 +236,7 @@ class SimilaritySearchService:
             return []
         
         # Search for similar chunks
+        # Use CAST() instead of :: syntax for asyncpg compatibility
         sql = """
             SELECT 
                 id,
@@ -244,7 +246,7 @@ class SimilaritySearchService:
                 source_id,
                 context_date,
                 chunk_type,
-                1 - (embedding <=> :query_embedding::vector) as similarity
+                1 - (embedding <=> CAST(:query_embedding AS vector)) as similarity
             FROM memory_chunks
             WHERE is_indexed = true
             AND id != :chunk_id
