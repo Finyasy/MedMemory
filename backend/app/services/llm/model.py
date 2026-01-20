@@ -65,12 +65,27 @@ class LLMService:
             load_in_4bit: Use 4-bit quantization (defaults to settings.llm_quantize_4bit)
         """
         # Determine model path/name
+        # Resolve relative paths relative to backend directory
+        backend_dir = Path(__file__).resolve().parents[3]
+        
         if model_path:
             self.model_path = Path(model_path)
+            if not self.model_path.is_absolute():
+                self.model_path = (backend_dir / self.model_path).resolve()
+            elif not self.model_path.exists() and "app" in self.model_path.parts and "models" in self.model_path.parts:
+                candidate = (backend_dir / "models" / self.model_path.name).resolve()
+                if candidate.exists():
+                    self.model_path = candidate
             self.model_name = str(self.model_path)
             self.use_local_model = True
         elif settings.llm_model_path:
             self.model_path = Path(settings.llm_model_path)
+            if not self.model_path.is_absolute():
+                self.model_path = (backend_dir / self.model_path).resolve()
+            elif not self.model_path.exists() and "app" in self.model_path.parts and "models" in self.model_path.parts:
+                candidate = (backend_dir / "models" / self.model_path.name).resolve()
+                if candidate.exists():
+                    self.model_path = candidate
             self.model_name = str(self.model_path)
             self.use_local_model = True
         else:
@@ -92,7 +107,10 @@ class LLMService:
         self.temperature = settings.llm_temperature
         self.top_p = 0.9
         self.repetition_penalty = 1.1
-        self.do_sample = True
+        # MPS stability: disable sampling by default.
+        self.do_sample = False
+        # Serialize generations on MPS to avoid hangs under concurrent load.
+        self._gen_lock = asyncio.Lock()
     
     @classmethod
     def get_instance(cls) -> "LLMService":
@@ -286,12 +304,15 @@ class LLMService:
         import time
         start_time = time.time()
         
-        # Build full prompt
-        full_prompt = self._build_prompt(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            conversation_history=conversation_history,
-        )
+        # Build full prompt (skip wrapping if prompt is already composed)
+        if system_prompt is None and not conversation_history:
+            full_prompt = prompt
+        else:
+            full_prompt = self._build_prompt(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                conversation_history=conversation_history,
+            )
         
         # Process text input (processor handles tokenization for vision-language models)
         inputs = self.processor(
@@ -299,12 +320,17 @@ class LLMService:
             return_tensors="pt",
         )
         
-        # Move inputs to device
-        inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        # Move inputs to the model's actual device
+        model_device = next(self.model.parameters()).device
+        inputs = {k: v.to(model_device) if hasattr(v, "to") else v for k, v in inputs.items()}
         
+        if "input_ids" in inputs:
+            print("LLM generate: input_ids shape", inputs["input_ids"].shape)
+        print("LLM device:", next(self.model.parameters()).device)
         input_tokens = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
         
         # Generation parameters
+        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
         gen_kwargs = {
             "max_new_tokens": max_new_tokens or self.max_new_tokens,
             "temperature": temperature or self.temperature,
@@ -312,6 +338,11 @@ class LLMService:
             "repetition_penalty": self.repetition_penalty,
             "do_sample": self.do_sample,
         }
+        if tokenizer:
+            gen_kwargs.update({
+                "eos_token_id": tokenizer.eos_token_id,
+                "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+            })
         
         # Generate in thread pool to avoid blocking, using inference_mode for efficiency
         loop = asyncio.get_event_loop()
@@ -320,14 +351,33 @@ class LLMService:
             with torch.inference_mode():
                 return self.model.generate(**inputs, **gen_kwargs)
         
-        outputs = await loop.run_in_executor(None, _generate)
+        async with self._gen_lock:
+            outputs = await loop.run_in_executor(None, _generate)
+        
+        # Normalize outputs to generated token ids
+        sequences = outputs
+        if hasattr(outputs, "sequences"):
+            sequences = outputs.sequences
+        elif isinstance(outputs, (tuple, list)):
+            sequences = outputs[0]
+        
+        if not hasattr(sequences, "shape") or len(sequences.shape) < 2:
+            raise RuntimeError(
+                f"Unexpected generate() output type/shape: {type(outputs)} / {getattr(sequences, 'shape', None)}"
+            )
+        
+        seq = sequences[0]
+        input_len = inputs["input_ids"].shape[-1] if "input_ids" in inputs else 0
+        generated_ids = seq[input_len:] if input_len > 0 else seq
         
         # Decode using processor
-        input_len = inputs["input_ids"].shape[-1] if "input_ids" in inputs else 0
-        generated_ids = outputs[0][input_len:] if input_len > 0 else outputs[0]
-        generated_text = self.processor.decode(generated_ids, skip_special_tokens=True)
+        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
+        if tokenizer:
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        else:
+            generated_text = self.processor.batch_decode([generated_ids], skip_special_tokens=True)[0]
         
-        output_tokens = outputs[0].shape[1] - input_tokens
+        output_tokens = max(int(seq.shape[0] - input_len), 0)
         generation_time = (time.time() - start_time) * 1000
         
         return LLMResponse(
@@ -390,8 +440,9 @@ class LLMService:
             return_tensors="pt",
         )
         
-        # Move inputs to device
-        inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        # Move inputs to the model's actual device
+        model_device = next(self.model.parameters()).device
+        inputs = {k: v.to(model_device) if hasattr(v, "to") else v for k, v in inputs.items()}
         
         # Create streamer (using processor's tokenizer)
         tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else self.processor
@@ -411,20 +462,26 @@ class LLMService:
             "do_sample": self.do_sample,
             "streamer": streamer,
         }
+        if hasattr(tokenizer, "eos_token_id"):
+            gen_kwargs.update({
+                "eos_token_id": tokenizer.eos_token_id,
+                "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+            })
         
         # Generate in background thread
         loop = asyncio.get_event_loop()
-        generation_task = loop.run_in_executor(
-            None,
-            lambda: self.model.generate(**gen_kwargs),
-        )
-        
-        # Stream tokens
-        async for token in self._async_streamer(streamer):
-            yield token
-        
-        # Wait for generation to complete
-        await generation_task
+        async with self._gen_lock:
+            generation_task = loop.run_in_executor(
+                None,
+                lambda: self.model.generate(**gen_kwargs),
+            )
+            
+            # Stream tokens
+            async for token in self._async_streamer(streamer):
+                yield token
+            
+            # Wait for generation to complete
+            await generation_task
     
     async def _async_streamer(self, streamer: TextIteratorStreamer):
         """Async wrapper for text streamer."""
