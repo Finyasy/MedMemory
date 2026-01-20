@@ -11,6 +11,7 @@ from app.api import auth, chat, context, documents, health, ingestion, memory, p
 from app.api.deps import get_authenticated_user
 from app.config import settings
 from app.database import close_db, init_db
+from app.services.embeddings import EmbeddingService
 from app.logging import configure_logging, request_id_var
 
 configure_logging()
@@ -27,6 +28,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to initialize database")
         raise
+
+    try:
+        # Preload embedding model to avoid first-request stall.
+        EmbeddingService.get_instance().model
+        logger.info("Embedding model loaded")
+    except Exception:
+        logger.exception("Failed to preload embedding model")
     
     yield
     
