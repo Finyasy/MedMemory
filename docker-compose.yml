@@ -35,12 +35,17 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
       - DEBUG=false
       - DATABASE_URL=postgresql+asyncpg://medmemory:medmemory_secret@db:5432/medmemory
       - CORS_ORIGINS=["http://localhost", "http://localhost:3000", "http://frontend"]
+      - LLM_MODEL_PATH=/app/models/medgemma-1.5-4b-it
+      - LLM_QUANTIZE_4BIT=false
     volumes:
       - upload_data:/app/uploads
+      - ./backend/models:/app/models:ro
     depends_on:
       db:
         condition: service_healthy
