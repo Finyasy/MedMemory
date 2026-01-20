@@ -328,7 +328,11 @@ class ContextSynthesizer:
             Complete prompt string
         """
         if not system_prompt:
-            system_prompt = """You are a medical assistant. Answer questions concisely using only the provided context. If information is not available, state it briefly."""
+            system_prompt = (
+                "You are a medical assistant. Answer concisely using only the provided context. "
+                "Do not include reasoning, analysis, or meta commentary. "
+                "If information is not available, state it briefly."
+            )
         
         prompt = f"""{system_prompt}
 
