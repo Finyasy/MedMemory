@@ -328,9 +328,7 @@ class ContextSynthesizer:
             Complete prompt string
         """
         if not system_prompt:
-            system_prompt = """You are a medical assistant helping to answer questions about a patient's medical history.
-Use ONLY the provided context to answer questions. If the information is not in the context, say so.
-Be precise and cite specific data points when available."""
+            system_prompt = """You are a medical assistant. Answer questions concisely using only the provided context. If information is not available, state it briefly."""
         
         prompt = f"""{system_prompt}
 
@@ -339,6 +337,6 @@ PATIENT CONTEXT:
 
 QUESTION: {synthesized.query}
 
-Please provide a helpful, accurate response based on the patient's medical information above."""
+Answer:"""
         
         return prompt
