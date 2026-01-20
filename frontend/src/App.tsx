@@ -34,6 +34,7 @@ const highlightItems = [
 const a1cSeries = [6.1, 5.9, 5.8, 5.6, 5.5, 5.4];
 
 const buildPath = (values: number[]) => {
+  if (!values.length) return '';
   const max = Math.max(...values);
   const min = Math.min(...values);
   const span = max - min || 1;
@@ -80,6 +81,28 @@ function App() {
     pageCount?: number | null;
   } | null>(null);
   const [documentDownloadUrl, setDocumentDownloadUrl] = useState<string | null>(null);
+  const [insights, setInsights] = useState<{
+    lab_total: number;
+    lab_abnormal: number;
+    recent_labs: Array<{
+      test_name: string;
+      value?: string | null;
+      unit?: string | null;
+      collected_at?: string | null;
+      is_abnormal: boolean;
+    }>;
+    active_medications: number;
+    recent_medications: Array<{
+      name: string;
+      dosage?: string | null;
+      frequency?: string | null;
+      status?: string | null;
+      prescribed_at?: string | null;
+      start_date?: string | null;
+    }>;
+    a1c_series: number[];
+  } | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
   const { toasts, pushToast } = useToast();
 
   const handleError = useCallback((label: string, error: unknown) => {
@@ -282,6 +305,23 @@ function App() {
   }, [patientId]);
 
   useEffect(() => {
+    if (!patientId || !isAuthenticated) {
+      setInsights(null);
+      return;
+    }
+    setInsightsLoading(true);
+    api
+      .getPatientInsights(patientId)
+      .then((data) => {
+        setInsights(data);
+      })
+      .catch((error) => {
+        handleError('Failed to load insights', error);
+      })
+      .finally(() => setInsightsLoading(false));
+  }, [patientId, isAuthenticated, handleError]);
+
+  useEffect(() => {
     const needsRefresh = documents.some((doc) =>
       ['pending', 'processing'].includes(doc.processing_status),
     );
@@ -429,6 +469,9 @@ function App() {
     () => documents.filter((doc) => doc.is_processed).length,
     [documents],
   );
+  const latestDocument = documents[0];
+  const latestRecord = records[0];
+  const a1cSeriesData = insights?.a1c_series?.length ? insights.a1c_series : a1cSeries;
   const insightCards = useMemo(() => ([
     {
       title: 'Records',
@@ -546,7 +589,7 @@ function App() {
   if (isLoadingPatient) {
     return (
       <div className="app-shell chat-mode">
-        <TopBar viewMode={viewMode} onViewChange={setViewMode} />
+        <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
         <ErrorBanner message={errorBanner} />
         <div className="chat-loading-state">
           <div className="loading-spinner" />
@@ -563,7 +606,7 @@ function App() {
   if (!selectedPatient && isAuthenticated && currentUser && patientLoadingFailed) {
     return (
       <div className="app-shell chat-mode">
-        <TopBar viewMode={viewMode} onViewChange={setViewMode} />
+        <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
         <ErrorBanner message={errorBanner || 'Unable to load your medical profile. Please refresh the page.'} />
         <div className="chat-error-state">
           <h2>Unable to Load Profile</h2>
@@ -609,7 +652,7 @@ function App() {
   if (showDashboard) {
     return (
       <div className="app-shell">
-        <TopBar viewMode={viewMode} onViewChange={setViewMode} />
+        <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
         <ErrorBanner message={errorBanner} />
         <main className="dashboard">
           <div className="dashboard-header">
@@ -643,27 +686,113 @@ function App() {
               </div>
             ))}
           </div>
-          <section className="grid">
-            <HighlightsPanel items={highlightItems} chartPath={buildPath(a1cSeries)} isLoading={recordsLoading} />
-            <ChatPanel
-              messages={messages}
-              question={question}
-              isStreaming={isStreaming}
-              isDisabled={!selectedPatient}
-              uploadStatus={chatUploadStatus}
-              isUploading={isChatUploading}
-              onQuestionChange={setQuestion}
-              onSend={send}
-              onUploadFile={handleChatUpload}
-            />
-            <PipelinePanel
-              payload={payload}
-              status={status}
-              isLoading={ingestionLoading}
-              isDisabled={!selectedPatient}
-              onPayloadChange={setPayload}
-              onIngest={ingest}
-            />
+          <section className="dashboard-main">
+            <div className="insight-panel trends">
+              <div className="insight-panel-header">
+                <div>
+                  <p className="eyebrow">Trend analysis</p>
+                  <h2>A1C trend</h2>
+                  <p className="subtitle">
+                    {insightsLoading
+                      ? 'Loading lab trends...'
+                      : insights?.lab_total
+                        ? `${insights.lab_abnormal} abnormal result${insights.lab_abnormal === 1 ? '' : 's'} flagged`
+                        : 'No lab data yet. Ingest labs to unlock trends.'}
+                  </p>
+                </div>
+                <button
+                  className="ghost-button compact"
+                  type="button"
+                  onClick={() => setViewMode('chat')}
+                >
+                  Ask in chat
+                </button>
+              </div>
+              <svg className="trend-chart" viewBox="0 0 320 90" role="img" aria-label="A1C trend">
+                <path d={buildPath(a1cSeriesData)} />
+              </svg>
+              <div className="trend-list">
+                {insights?.recent_labs?.length ? (
+                  insights.recent_labs.map((lab) => (
+                    <div key={lab.test_name} className="trend-item">
+                      <div>
+                        <h4>{lab.test_name}</h4>
+                        <span>{lab.collected_at ? formatDate(lab.collected_at) : 'Latest'}</span>
+                      </div>
+                      <div className={`trend-metric ${lab.is_abnormal ? 'down' : 'flat'}`}>
+                        <strong>
+                          {lab.value || '—'} {lab.unit || ''}
+                        </strong>
+                        <small>{lab.is_abnormal ? 'abnormal' : 'stable'}</small>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="trend-item empty">
+                    <div>
+                      <h4>No lab highlights yet</h4>
+                      <span>Add lab results to see trends.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="insight-panel focus">
+              <h2>Clinical focus</h2>
+              <div className="focus-row">
+                <div>
+                  <p className="eyebrow">Latest document</p>
+                  <h3>{latestDocument?.title || latestDocument?.original_filename || 'No documents yet'}</h3>
+                  <p className="subtitle">
+                    {latestDocument
+                      ? `${latestDocument.processing_status} · ${latestDocument.page_count || 0} pages`
+                      : 'Upload a report to unlock document insights.'}
+                  </p>
+                </div>
+                <button
+                  className="ghost-button compact"
+                  type="button"
+                  onClick={() => setViewMode('chat')}
+                  disabled={!latestDocument}
+                >
+                  Summarize
+                </button>
+              </div>
+              <div className="focus-row">
+                <div>
+                  <p className="eyebrow">Latest record</p>
+                  <h3>{latestRecord?.title || 'No records yet'}</h3>
+                  <p className="subtitle">
+                    {latestRecord ? formatDate(latestRecord.created_at) : 'Add a clinical note to start tracking.'}
+                  </p>
+                </div>
+                <button
+                  className="ghost-button compact"
+                  type="button"
+                  onClick={() => setViewMode('chat')}
+                  disabled={!latestRecord}
+                >
+                  Review
+                </button>
+              </div>
+              <div className="focus-row">
+                <div>
+                  <p className="eyebrow">Medication focus</p>
+                  <h3>
+                    {insights?.active_medications
+                      ? `${insights.active_medications} active medication${insights.active_medications === 1 ? '' : 's'}`
+                      : 'No active medications'}
+                  </h3>
+                  <p className="subtitle">
+                    {insights?.recent_medications?.[0]
+                      ? `${insights.recent_medications[0].name} · ${insights.recent_medications[0].dosage || 'dose'}`
+                      : 'Add medications via ingestion to surface adherence signals.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section className="dashboard-workspace">
             <DocumentsPanel
               documents={documents}
               isLoading={documentsLoading}
@@ -681,22 +810,6 @@ function App() {
                 setDocumentPreview(null);
                 setDocumentDownloadUrl(null);
               }}
-            />
-            <MemoryPanel
-              query={query}
-              isLoading={searchLoading}
-              results={results}
-              isDisabled={!selectedPatient}
-              onQueryChange={setQuery}
-              onSearch={search}
-            />
-            <ContextPanel
-              question={contextQuestion}
-              result={result}
-              isLoading={contextLoading}
-              isDisabled={!selectedPatient}
-              onQuestionChange={setContextQuestion}
-              onGenerate={generate}
             />
             <RecordsPanel
               records={records}
@@ -718,7 +831,7 @@ function App() {
 
   return (
     <div className="app-shell chat-mode">
-      <TopBar viewMode={viewMode} onViewChange={setViewMode} />
+      <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
       <ErrorBanner message={errorBanner} />
       <ChatInterface
         messages={messages}
