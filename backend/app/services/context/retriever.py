@@ -10,6 +10,7 @@ Implements multiple retrieval strategies:
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+import logging
 
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,6 +99,7 @@ class HybridRetriever:
         self.semantic_weight = semantic_weight
         self.keyword_weight = keyword_weight
         self.recency_weight = recency_weight
+        self.logger = logging.getLogger("medmemory")
     
     async def retrieve(
         self,
@@ -124,14 +126,18 @@ class HybridRetriever:
         
         # Semantic search
         if query_analysis.use_semantic_search:
-            semantic_results = await self._semantic_search(
-                query=query_analysis.normalized_query,
-                patient_id=patient_id,
-                source_types=[s.value for s in query_analysis.data_sources],
-                date_from=query_analysis.temporal.date_from,
-                date_to=query_analysis.temporal.date_to,
-                limit=limit * 2,  # Get more for fusion
-            )
+            try:
+                semantic_results = await self._semantic_search(
+                    query=query_analysis.normalized_query,
+                    patient_id=patient_id,
+                    source_types=[s.value for s in query_analysis.data_sources],
+                    date_from=query_analysis.temporal.date_from,
+                    date_to=query_analysis.temporal.date_to,
+                    limit=limit * 2,  # Get more for fusion
+                )
+            except Exception:
+                self.logger.exception("Semantic search failed; continuing with keyword-only search.")
+                semantic_results = []
             
             for result in semantic_results:
                 key = (result.id, result.source_type)
@@ -145,14 +151,18 @@ class HybridRetriever:
         
         # Keyword search
         if query_analysis.use_keyword_search and query_analysis.keywords:
-            keyword_results = await self._keyword_search(
-                keywords=query_analysis.keywords,
-                patient_id=patient_id,
-                source_types=[s.value for s in query_analysis.data_sources],
-                date_from=query_analysis.temporal.date_from,
-                date_to=query_analysis.temporal.date_to,
-                limit=limit * 2,
-            )
+            try:
+                keyword_results = await self._keyword_search(
+                    keywords=query_analysis.keywords,
+                    patient_id=patient_id,
+                    source_types=[s.value for s in query_analysis.data_sources],
+                    date_from=query_analysis.temporal.date_from,
+                    date_to=query_analysis.temporal.date_to,
+                    limit=limit * 2,
+                )
+            except Exception:
+                self.logger.exception("Keyword search failed; returning empty results.")
+                keyword_results = []
             
             for result in keyword_results:
                 key = (result.id, result.source_type)
@@ -228,6 +238,7 @@ class HybridRetriever:
         query_embedding = await self.embedding_service.embed_query_async(query)
         
         # Build SQL query
+        # Use CAST() instead of :: syntax for asyncpg compatibility
         sql = """
             SELECT 
                 id,
@@ -238,7 +249,7 @@ class HybridRetriever:
                 context_date,
                 chunk_index,
                 page_number,
-                1 - (embedding <=> :query_embedding::vector) as similarity
+                1 - (embedding <=> CAST(:query_embedding AS vector)) as similarity
             FROM memory_chunks
             WHERE is_indexed = true
             AND patient_id = :patient_id
@@ -309,7 +320,7 @@ class HybridRetriever:
                 page_number,
                 (
                     SELECT COUNT(*)::float / :keyword_count
-                    FROM unnest(:keywords) AS kw
+                    FROM unnest(CAST(:keywords AS text[])) AS kw
                     WHERE LOWER(content) LIKE '%' || LOWER(kw) || '%'
                 ) as match_score
             FROM memory_chunks
