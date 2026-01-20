@@ -24,7 +24,7 @@ import RecordsPanel from './components/RecordsPanel';
 import ChatInterface from './components/ChatInterface';
 import type { PatientSummary } from './types';
 
-const highlightItems = [
+const defaultHighlights = [
   { title: 'LDL Cholesterol', value: '167 mg/dL', trend: 'down', note: 'Jun 2025' },
   { title: 'Omega-3', value: '4.5%', trend: 'down', note: 'Jun 2025' },
   { title: 'Vitamin D', value: '26 ng/mL', trend: 'down', note: 'Jun 2025' },
@@ -193,6 +193,22 @@ function App() {
       });
   }, [accessToken, currentUser, setAccessToken, setUser, handleError]);
 
+  // Verify patient exists if patientId is set but selectedPatient is not available
+  useEffect(() => {
+    if (!currentUser || !accessToken || !patientId || patientId <= 0) {
+      return;
+    }
+    
+    // If we have a patientId but no selectedPatient, verify it exists
+    if (!selectedPatient && patients.length > 0) {
+      const patientExists = patients.some((p) => p.id === patientId);
+      if (!patientExists) {
+        console.warn('Patient ID does not exist in patient list, clearing it');
+        setPatientId(0);
+      }
+    }
+  }, [currentUser, accessToken, patientId, selectedPatient, patients, setPatientId]);
+
   // Auto-select or create patient when user is set and no patient is selected
   useEffect(() => {
     if (!currentUser || !accessToken || patientId > 0) {
@@ -305,10 +321,21 @@ function App() {
   }, [patientId]);
 
   useEffect(() => {
-    if (!patientId || !isAuthenticated) {
+    // Only load insights if we have a valid patient selected and authenticated
+    // Wait for selectedPatient to be available to ensure patient exists
+    if (!patientId || patientId <= 0 || !isAuthenticated) {
       setInsights(null);
       return;
     }
+    
+    // If we have a patientId but no selectedPatient, verify the patient exists first
+    // This handles the case where patientId might be stale or invalid
+    if (!selectedPatient && currentUser) {
+      // Patient verification is in progress, don't load insights yet
+      setInsights(null);
+      return;
+    }
+    
     setInsightsLoading(true);
     api
       .getPatientInsights(patientId)
@@ -316,10 +343,19 @@ function App() {
         setInsights(data);
       })
       .catch((error) => {
-        handleError('Failed to load insights', error);
+        // If patient not found (404), clear patientId and let auto-select handle it
+        if (error instanceof ApiError && error.status === 404) {
+          console.warn('Patient not found for insights, clearing patientId');
+          setPatientId(0);
+          setInsights(null);
+        } else {
+          // Only show error for non-404 errors (network, server errors, etc.)
+          // Don't show error for 404s as they're handled gracefully
+          handleError('Failed to load insights', error);
+        }
       })
       .finally(() => setInsightsLoading(false));
-  }, [patientId, isAuthenticated, handleError]);
+  }, [patientId, isAuthenticated, selectedPatient, currentUser, setPatientId, handleError]);
 
   useEffect(() => {
     const needsRefresh = documents.some((doc) =>
@@ -472,6 +508,28 @@ function App() {
   const latestDocument = documents[0];
   const latestRecord = records[0];
   const a1cSeriesData = insights?.a1c_series?.length ? insights.a1c_series : a1cSeries;
+  const highlightItems = useMemo(() => {
+    if (!insights?.recent_labs?.length) return defaultHighlights;
+    return insights.recent_labs.map((lab) => ({
+      title: lab.test_name,
+      value: `${lab.value || '—'} ${lab.unit || ''}`.trim(),
+      trend: lab.is_abnormal ? 'down' : 'flat',
+      note: lab.collected_at ? formatDate(lab.collected_at) : 'Latest',
+    }));
+  }, [insights, formatDate]);
+  const insightSummary = useMemo(() => {
+    if (!insights) return 'Connect labs and medications to unlock insights.';
+    if (!insights.lab_total && !insights.active_medications) {
+      return 'No lab or medication data yet. Add them to unlock trends.';
+    }
+    if (insights.lab_total && insights.lab_abnormal) {
+      return `${insights.lab_abnormal} abnormal result${insights.lab_abnormal === 1 ? '' : 's'} across ${insights.lab_total} labs.`;
+    }
+    if (insights.lab_total) {
+      return `${insights.lab_total} labs recorded. No abnormal results flagged.`;
+    }
+    return `${insights.active_medications} active medication${insights.active_medications === 1 ? '' : 's'} on file.`;
+  }, [insights]);
   const insightCards = useMemo(() => ([
     {
       title: 'Records',
@@ -509,7 +567,7 @@ function App() {
             isAuthenticated={isAuthenticated}
           />
           <section className="grid locked" aria-hidden={true}>
-            <HighlightsPanel items={highlightItems} chartPath={buildPath(a1cSeries)} isLoading={recordsLoading} />
+            <HighlightsPanel items={highlightItems} chartPath={buildPath(a1cSeriesData)} isLoading={recordsLoading} />
             <ChatPanel
               messages={messages}
               question={question}
@@ -692,13 +750,7 @@ function App() {
                 <div>
                   <p className="eyebrow">Trend analysis</p>
                   <h2>A1C trend</h2>
-                  <p className="subtitle">
-                    {insightsLoading
-                      ? 'Loading lab trends...'
-                      : insights?.lab_total
-                        ? `${insights.lab_abnormal} abnormal result${insights.lab_abnormal === 1 ? '' : 's'} flagged`
-                        : 'No lab data yet. Ingest labs to unlock trends.'}
-                  </p>
+                  <p className="subtitle">{insightsLoading ? 'Loading lab trends...' : insightSummary}</p>
                 </div>
                 <button
                   className="ghost-button compact"
