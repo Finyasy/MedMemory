@@ -36,13 +36,18 @@ services:
     container_name: medmemory-backend-dev
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
       - DEBUG=true
       - DATABASE_URL=postgresql+asyncpg://medmemory:medmemory_dev@db:5432/medmemory
       - CORS_ORIGINS=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
+      - LLM_MODEL_PATH=/app/models/medgemma-1.5-4b-it
+      - LLM_QUANTIZE_4BIT=false
     volumes:
       - ./backend/app:/app/app:ro
       - upload_data_dev:/app/uploads
+      - ./backend/models:/app/models:ro
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       db:
@@ -60,7 +65,7 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_API_BASE=http://localhost:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules
