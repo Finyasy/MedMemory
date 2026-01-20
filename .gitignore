@@ -10,6 +10,7 @@ __pycache__/
 backend/.env
 backend/models/
 backend/model_download.log
+backend/uploads/
 backend-dev.log
 frontend-dev.log
 node_modules/
