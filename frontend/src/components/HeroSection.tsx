@@ -33,9 +33,8 @@ const HeroSection = ({
           <span> grounded in your records.</span>
         </h1>
         <p className="subtitle">
-          Chat with the longitudinal patient timeline, run semantic retrieval across labs,
-          medications, encounters, and documents, and turn everything into a context-ready
-          prompt in seconds.
+          Chat with your complete health timeline, quickly find insights across labs, medications,
+          visits, and documents, and get clear, ready-to-use context in seconds.
         </p>
         {selectedPatient ? (
           <div className="patient-card">
@@ -59,7 +58,9 @@ const HeroSection = ({
             onSelectPatient={onSelectPatient}
           />
         ) : (
-          <div className="empty-state">Sign in to search and select patients.</div>
+          <div className="empty-state">
+            Create an account or sign in to upload your medical reports and chat with your health memory.
+          </div>
         )}
         <div className="chip-row">
           {['Labs', 'Medications', 'Encounters', 'Documents', 'Memory'].map((chip) => (
