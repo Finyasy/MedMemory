@@ -318,6 +318,121 @@
   margin: 0.6rem 0 0.8rem;
 }
 
+.dashboard-main {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.2fr) minmax(260px, 0.9fr);
+  gap: 1.6rem;
+}
+
+.insight-panel {
+  background: var(--bg-card-strong);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-soft);
+  padding: 1.4rem 1.6rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.insight-panel.trends {
+  background: #fff9f3;
+}
+
+.insight-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.trend-chart {
+  width: 100%;
+  height: 90px;
+}
+
+.trend-chart path {
+  fill: none;
+  stroke: var(--accent-strong);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.trend-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: #fff;
+  border: 1px solid var(--border-soft);
+}
+
+.trend-item.empty {
+  border-style: dashed;
+  background: transparent;
+}
+
+.trend-item h4 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.trend-item span {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.trend-metric {
+  display: grid;
+  justify-items: end;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.trend-metric strong {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.trend-metric.down strong {
+  color: #d3683b;
+}
+
+.trend-metric.flat strong {
+  color: #b08154;
+}
+
+.trend-metric.up strong {
+  color: #1f7a5a;
+}
+
+.focus-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.focus-row:first-of-type {
+  border-top: none;
+}
+
+.dashboard-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.1fr) minmax(280px, 1fr);
+  gap: 1.4rem;
+}
+
 .insight-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1157,6 +1272,14 @@
   }
 
   .dashboard-header {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-main {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-workspace {
     grid-template-columns: 1fr;
   }
 
