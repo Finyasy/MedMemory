@@ -55,6 +55,11 @@ from app.schemas.context import (
     QuickSearchRequest,
     QuickSearchResponse,
 )
+from app.schemas.insights import (
+    InsightsLabItem,
+    InsightsMedicationItem,
+    PatientInsightsResponse,
+)
 
 __all__ = [
     # Patient
