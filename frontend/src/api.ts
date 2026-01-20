@@ -19,10 +19,16 @@ const API_BASE = import.meta.env.VITE_API_BASE
   ? normalizeApiBase(import.meta.env.VITE_API_BASE)
   : '/api/v1';
 
+const API_ORIGIN = import.meta.env.VITE_API_BASE
+  ? new URL(normalizeApiBase(import.meta.env.VITE_API_BASE)).origin
+  : window.location.origin;
+
 const getAccessToken = () => {
   if (typeof window === 'undefined') return null;
   return window.localStorage.getItem('medmemory_access_token');
 };
+
+const hasAccessToken = () => Boolean(getAccessToken());
 
 const getApiKey = () => {
   if (typeof window === 'undefined') return null;
@@ -38,8 +44,12 @@ const withAuthHeaders = (headers: Record<string, string> = {}) => {
   // Prefer JWT token over API key
   if (accessToken) {
     authHeaders['Authorization'] = `Bearer ${accessToken}`;
+    console.log('[API] Using JWT token for authentication');
   } else if (apiKey) {
     authHeaders['X-API-Key'] = apiKey;
+    console.log('[API] Using API key for authentication');
+  } else {
+    console.warn('[API] No authentication token found');
   }
   
   return authHeaders;
@@ -58,7 +68,10 @@ export class ApiError extends Error {
 export const getUserFriendlyMessage = (error: unknown) => {
   if (error instanceof ApiError) {
     if (error.status === 401 || error.status === 403) {
-      return 'Your session has expired. Please sign in again.';
+      if (error.message) return error.message;
+      return hasAccessToken()
+        ? 'Your session has expired. Please sign in again.'
+        : 'Invalid email or password.';
     }
     if (error.status === 404) {
       return 'That item could not be found.';
@@ -84,24 +97,55 @@ const parseJson = async (res: Response) => {
 };
 
 const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {
-  const res = await fetch(path, options);
-  const data = await parseJson(res);
+  try {
+    // Use path as-is (it should already include API_BASE or be an absolute URL)
+    const fullUrl = path.startsWith('http') ? path : `${window.location.origin}${path}`;
+    console.log(`[API] Making request to: ${fullUrl}`);
+    console.log(`[API] Request options:`, { 
+      method: options.method || 'GET',
+      hasAuth: !!(options.headers as Record<string, string>)?.Authorization,
+      headers: Object.keys(options.headers || {})
+    });
+    
+    const res = await fetch(path, options);
+    console.log(`[API] Response status: ${res.status} ${res.statusText} for ${fullUrl}`);
+    
+    const data = await parseJson(res);
 
-  if (!res.ok) {
-    const message =
-      data?.error?.message ||
-      data?.detail ||
-      res.statusText ||
-      'Unexpected API error';
-    throw new ApiError(res.status, message);
+    if (!res.ok) {
+      const message =
+        data?.error?.message ||
+        data?.detail ||
+        res.statusText ||
+        'Unexpected API error';
+      console.error(`[API] Request failed: ${res.status} - ${message}`);
+      throw new ApiError(res.status, message);
+    }
+
+    console.log(`[API] Request successful: ${fullUrl}`);
+    return data as T;
+  } catch (error) {
+    // Re-throw ApiError as-is
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    // Handle network errors with more helpful message
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      const errorMessage = error.message;
+      const fullUrl = path.startsWith('http') ? path : `${window.location.origin}${path}`;
+      console.error(`[API] Network error for ${fullUrl}:`, errorMessage);
+      console.error(`[API] Current origin: ${window.location.origin}`);
+      console.error(`[API] API_BASE: ${API_BASE}`);
+      throw new ApiError(0, `Network error: Unable to reach the API server at ${fullUrl}. Please check if the backend is running on port 8000 and the Vite dev server proxy is configured correctly. Error: ${errorMessage}`);
+    }
+    // Re-throw other errors
+    throw error;
   }
-
-  return data as T;
 };
 
 export const api = {
   async getHealth(): Promise<{ status: string; service: string }> {
-    return request('/health');
+    return request(`${API_ORIGIN}/health`);
   },
 
   async signup(email: string, password: string, fullName: string) {
@@ -145,20 +189,49 @@ export const api = {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
     const query = params.toString();
-    return request(`${API_BASE}/patients${query ? `?${query}` : ''}`, {
+    const url = query ? `${API_BASE}/patients/?${query}` : `${API_BASE}/patients/`;
+    return request(url, {
       headers: withAuthHeaders(),
     });
   },
 
+  async createPatient(payload: {
+    first_name: string;
+    last_name: string;
+    date_of_birth?: string;
+    gender?: string;
+    email?: string;
+  }): Promise<PatientSummary> {
+    const response = await request<{
+      id: number;
+      full_name: string;
+      date_of_birth?: string | null;
+      age?: number | null;
+      gender?: string | null;
+    }>(`${API_BASE}/patients/`, {
+      method: 'POST',
+      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    // Convert PatientResponse to PatientSummary format
+    return {
+      id: response.id,
+      full_name: response.full_name,
+      date_of_birth: response.date_of_birth,
+      age: response.age,
+      gender: response.gender,
+    };
+  },
+
   async getRecords(patientId?: number): Promise<MedicalRecord[]> {
     const query = patientId ? `?patient_id=${patientId}` : '';
-    return request(`${API_BASE}/records${query}`, {
+    return request(`${API_BASE}/records/${query}`, {
       headers: withAuthHeaders(),
     });
   },
 
   async createRecord(patientId: number, payload: CreateRecordPayload): Promise<MedicalRecord> {
-    return request(`${API_BASE}/records?patient_id=${patientId}`, {
+    return request(`${API_BASE}/records/?patient_id=${patientId}`, {
       method: 'POST',
       headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
