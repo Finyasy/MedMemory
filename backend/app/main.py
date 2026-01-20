@@ -7,7 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, chat, context, documents, health, ingestion, memory, patients, records
+from app.api import auth, chat, context, documents, health, ingestion, memory, patients, records, insights
 from app.api.deps import get_authenticated_user
 from app.config import settings
 from app.database import close_db, init_db
@@ -135,6 +135,11 @@ app.include_router(
 )
 app.include_router(
     chat.router,
+    prefix=settings.api_prefix,
+    dependencies=[Depends(get_authenticated_user)],
+)
+app.include_router(
+    insights.router,
     prefix=settings.api_prefix,
     dependencies=[Depends(get_authenticated_user)],
 )
