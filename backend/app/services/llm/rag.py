@@ -140,6 +140,31 @@ Rules:
             effective_max_context_tokens,
             context_time,
         )
+
+        if not context_result.synthesized_context.total_chunks_used:
+            answer = "No relevant information found in the patient's records."
+            assistant_message = await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+            )
+            return RAGResponse(
+                answer=answer,
+                llm_response=LLMResponse(
+                    text=answer,
+                    tokens_generated=0,
+                    tokens_input=0,
+                    generation_time_ms=0.0,
+                ),
+                context_used=context_result.synthesized_context.full_context,
+                num_sources=0,
+                sources_summary=[],
+                conversation_id=conversation_id,
+                message_id=assistant_message.message_id,
+                context_time_ms=context_time,
+                generation_time_ms=0.0,
+                total_time_ms=(time.time() - total_start) * 1000,
+            )
         
         # Build sources summary
         sources_summary = [
@@ -240,6 +265,16 @@ Rules:
             self.llm_service.device,
             effective_max_context_tokens,
         )
+
+        if not context_result.synthesized_context.total_chunks_used:
+            answer = "No relevant information found in the patient's records."
+            yield answer
+            await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+            )
+            return
         
         # Stream generation
         full_answer = ""
