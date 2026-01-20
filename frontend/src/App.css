@@ -72,8 +72,8 @@
 
 .top-actions {
   display: flex;
-  align-items: flex-end;
-  gap: 1.25rem;
+  align-items: center;
+  gap: 0.75rem;
   position: relative;
 }
 
@@ -139,6 +139,78 @@
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
+.ghost-button.compact {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.75rem;
+}
+
+.ghost-button.subtle {
+  border-color: transparent;
+  background: #fff;
+  box-shadow: none;
+}
+
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 999px;
+  background: var(--bg-card-strong);
+  border: 1px solid var(--border-soft);
+}
+
+.view-toggle button {
+  border: none;
+  background: transparent;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.view-toggle button.active {
+  background: var(--accent-strong);
+  color: #fffaf5;
+  box-shadow: 0 8px 18px rgba(228, 111, 52, 0.25);
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--border-soft);
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}
+
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-strong);
+  color: #fffaf5;
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+
+.user-label {
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ghost-button:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-tight);
@@ -167,6 +239,78 @@
   flex-direction: column;
   gap: 2.4rem;
   position: relative;
+}
+
+.dashboard-header {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(220px, 1fr);
+  gap: 2rem;
+  align-items: center;
+}
+
+.dashboard-header h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 3.2vw, 3rem);
+  line-height: 1.1;
+  margin: 0.6rem 0 0.8rem;
+}
+
+.insight-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1.2rem;
+}
+
+.insight-card {
+  background: var(--bg-card-strong);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--border-soft);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.insight-card.primary {
+  background: #fff4ea;
+  border-color: rgba(228, 111, 52, 0.2);
+  box-shadow: 0 18px 40px rgba(228, 111, 52, 0.08);
+}
+
+.insight-card.primary h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.insight-card h4 {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.insight-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.insight-note {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.insight-pill {
+  display: inline-flex;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: #fff;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--accent-strong);
+  width: max-content;
 }
 
 .hero {
@@ -718,6 +862,39 @@
   gap: 1rem;
 }
 
+.document-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.document-preview {
+  margin-top: 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-soft);
+  background: #fff;
+  padding: 1rem 1.2rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.document-preview pre {
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 0.8rem;
+  background: #fff8f2;
+  border-radius: var(--radius-md);
+  padding: 0.8rem;
+  border: 1px solid var(--border-soft);
+}
+
+.preview-actions {
+  display: inline-flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
 .upload-row {
   display: grid;
   gap: 0.6rem;
@@ -914,6 +1091,10 @@
     width: 100%;
     justify-content: space-between;
     flex-wrap: wrap;
+  }
+
+  .dashboard-header {
+    grid-template-columns: 1fr;
   }
 
   .patient-dropdown {
