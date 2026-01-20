@@ -33,7 +33,7 @@ type AppState = {
 };
 
 const useAppStore = create<AppState>((set) => ({
-  patientId: 1,
+  patientId: 0,
   patientSearch: '',
   apiKey: getInitialApiKey(),
   accessToken: getInitialToken(),
@@ -59,14 +59,24 @@ const useAppStore = create<AppState>((set) => ({
         window.localStorage.removeItem('medmemory_access_token');
       }
     }
-    set({ accessToken: token, isAuthenticated: !!token });
+    if (!token) {
+      set({
+        accessToken: null,
+        isAuthenticated: false,
+        user: null,
+        patientId: 0,
+        patientSearch: '',
+      });
+      return;
+    }
+    set({ accessToken: token, isAuthenticated: true });
   },
   setUser: (user) => set({ user }),
   logout: () => {
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem('medmemory_access_token');
     }
-    set({ accessToken: null, user: null, isAuthenticated: false });
+    set({ accessToken: null, user: null, isAuthenticated: false, patientId: 0, patientSearch: '' });
   },
 }));
 
