@@ -4,6 +4,7 @@ Combines the Context Engine with the LLM for medical Q&A.
 """
 
 from dataclasses import dataclass
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -49,18 +50,13 @@ class RAGService:
     """
     
     # System prompt for medical Q&A
-    DEFAULT_SYSTEM_PROMPT = """You are a medical assistant helping healthcare providers answer questions about patient medical history.
+    DEFAULT_SYSTEM_PROMPT = """You are a medical assistant. Answer questions concisely using only the provided patient context.
 
-Guidelines:
-- Use ONLY the provided patient context to answer questions
-- Be precise and cite specific data points (dates, values, medications)
-- If information is not in the context, clearly state that
-- Do not make assumptions or provide information not in the context
-- For medication questions, include dosage, frequency, and status (active/discontinued)
-- For lab results, include values, units, and whether they are abnormal
-- For dates, be specific and use the format provided in context
-- If asked about trends, compare values over time when available
-- Always prioritize patient safety and accuracy"""
+Rules:
+- Answer directly and briefly. No meta-commentary or explanations about your answer.
+- If information is missing, simply state: "No information available about [topic]."
+- Cite specific data (dates, values, medications) when available.
+- Do not repeat the question or explain your reasoning process."""
     
     def __init__(
         self,
@@ -81,6 +77,7 @@ Guidelines:
         self.llm_service = llm_service or LLMService.get_instance()
         self.context_engine = context_engine or ContextEngine(db)
         self.conversation_manager = conversation_manager or ConversationManager(db)
+        self.logger = logging.getLogger("medmemory")
     
     async def ask(
         self,
@@ -115,6 +112,7 @@ Guidelines:
         else:
             conversation = await self.conversation_manager.create_conversation(patient_id)
             conversation_id = conversation.conversation_id
+        self.logger.info("ASK start patient=%s conv=%s", patient_id, conversation_id)
         
         # Add user message
         user_message = await self.conversation_manager.add_message(
@@ -125,13 +123,23 @@ Guidelines:
         
         # Get context
         context_start = time.time()
+        effective_max_context_tokens = max_context_tokens
+        if self.llm_service.device in ("mps", "cpu"):
+            effective_max_context_tokens = min(max_context_tokens, 2000)
         context_result = await self.context_engine.get_context(
             query=question,
             patient_id=patient_id,
-            max_tokens=max_context_tokens,
+            max_tokens=effective_max_context_tokens,
             system_prompt=system_prompt or self.DEFAULT_SYSTEM_PROMPT,
         )
+        self.logger.info("Context chars=%s", len(context_result.prompt))
         context_time = (time.time() - context_start) * 1000
+        self.logger.info(
+            "RAG context built device=%s context_tokens=%s time_ms=%.1f",
+            self.llm_service.device,
+            effective_max_context_tokens,
+            context_time,
+        )
         
         # Build sources summary
         sources_summary = [
@@ -150,12 +158,21 @@ Guidelines:
         
         # Generate answer using the full prompt with context
         generation_start = time.time()
+        max_new_tokens = settings.llm_max_new_tokens
+        if self.llm_service.device in ("mps", "cpu"):
+            max_new_tokens = min(settings.llm_max_new_tokens, 256)
         llm_response = await self.llm_service.generate(
             prompt=context_result.prompt,
-            max_new_tokens=settings.llm_max_new_tokens,
+            max_new_tokens=max_new_tokens,
             conversation_history=conversation_history,
         )
         generation_time = (time.time() - generation_start) * 1000
+        self.logger.info(
+            "RAG generation done device=%s tokens_generated=%s time_ms=%.1f",
+            self.llm_service.device,
+            llm_response.tokens_generated,
+            generation_time,
+        )
         
         # Add assistant message
         assistant_message = await self.conversation_manager.add_message(
@@ -209,21 +226,41 @@ Guidelines:
         )
         
         # Get context
+        effective_max_context_tokens = max_context_tokens
+        if self.llm_service.device in ("mps", "cpu"):
+            effective_max_context_tokens = min(max_context_tokens, 2000)
         context_result = await self.context_engine.get_context(
             query=question,
             patient_id=patient_id,
-            max_tokens=max_context_tokens,
+            max_tokens=effective_max_context_tokens,
             system_prompt=system_prompt or self.DEFAULT_SYSTEM_PROMPT,
+        )
+        self.logger.info(
+            "RAG stream context built device=%s context_tokens=%s",
+            self.llm_service.device,
+            effective_max_context_tokens,
         )
         
         # Stream generation
         full_answer = ""
-        async for chunk in self.llm_service.stream_generate(
-            prompt=context_result.prompt,
-            system_prompt=None,  # Already in prompt
-        ):
-            full_answer += chunk
-            yield chunk
+        # MPS/CPU streaming can hang; fall back to single-shot generation.
+        if self.llm_service.device in ("mps", "cpu"):
+            max_new_tokens = min(settings.llm_max_new_tokens, 256)
+            llm_response = await self.llm_service.generate(
+                prompt=context_result.prompt,
+                max_new_tokens=max_new_tokens,
+                conversation_history=None,
+            )
+            full_answer = llm_response.text
+            if full_answer:
+                yield full_answer
+        else:
+            async for chunk in self.llm_service.stream_generate(
+                prompt=context_result.prompt,
+                system_prompt=None,  # Already in prompt
+            ):
+                full_answer += chunk
+                yield chunk
         
         # Add assistant message
         await self.conversation_manager.add_message(
