@@ -277,6 +277,33 @@ export const api = {
     });
   },
 
+  async getPatientInsights(patientId: number): Promise<{
+    patient_id: number;
+    lab_total: number;
+    lab_abnormal: number;
+    recent_labs: Array<{
+      test_name: string;
+      value?: string | null;
+      unit?: string | null;
+      collected_at?: string | null;
+      is_abnormal: boolean;
+    }>;
+    active_medications: number;
+    recent_medications: Array<{
+      name: string;
+      dosage?: string | null;
+      frequency?: string | null;
+      status?: string | null;
+      prescribed_at?: string | null;
+      start_date?: string | null;
+    }>;
+    a1c_series: number[];
+  }> {
+    return request(`${API_BASE}/insights/patient/${patientId}`, {
+      headers: withAuthHeaders(),
+    });
+  },
+
   async memorySearch(patientId: number, query: string): Promise<MemorySearchResponse> {
     return request(`${API_BASE}/memory/search`, {
       method: 'POST',
