@@ -945,6 +945,7 @@ cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 2. **Implement Rate Limiting** - Add to auth and critical endpoints
 3. **Add File Upload Security** - Virus scanning, content validation
 4. **Database Migrations** - Set up Alembic, create initial migration
+5. **Gated Model Access** - Document Hugging Face model access steps (accept terms, `HF_TOKEN` in `.env`, and pin `--revision` in CI)
 
 ### 13.3 Long-term (Next Quarter)
 
@@ -1102,6 +1103,7 @@ With focused effort on the **P0 and P1 issues**, MedMemory can be production-rea
 4. **Testing coverage** - Add tests as you fix issues
 5. **Documentation** - Keep documentation updated as architecture evolves
 6. **Team training** - Ensure team understands security best practices
+7. **Model access hygiene** - Document gated model download steps (HF_TOKEN in `.env`, acceptance of model terms, and pinned `--revision` in CI) to avoid silent failures
 
 **Overall Assessment:** The project has excellent potential and strong foundations. With the recommended fixes, it will be a robust, secure, and scalable medical memory system.
 
