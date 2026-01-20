@@ -189,6 +189,7 @@
   border: 1px solid var(--border-soft);
   font-size: 0.8rem;
   color: var(--text-primary);
+  cursor: pointer;
 }
 
 .user-avatar {
@@ -209,6 +210,68 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.user-menu {
+  position: relative;
+}
+
+.user-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.6rem);
+  min-width: 220px;
+  background: #fff;
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  padding: 0.75rem;
+  box-shadow: var(--shadow-tight);
+  display: grid;
+  gap: 0.6rem;
+  z-index: 20;
+}
+
+.user-meta {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.user-meta span {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.user-details {
+  display: flex;
+  gap: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.user-details span {
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background: #fff4ea;
+  border: 1px solid rgba(228, 111, 52, 0.18);
+  font-weight: 600;
+}
+
+.user-details .empty {
+  background: #fff;
+  border-color: var(--border-soft);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.user-details.empty-state {
+  padding: 0.3rem 0;
+  color: var(--text-muted);
+}
+
+.user-divider {
+  height: 1px;
+  background: var(--border-soft);
 }
 
 .ghost-button:hover {
