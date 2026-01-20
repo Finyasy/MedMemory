@@ -333,11 +333,15 @@ class LLMService:
         tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
         gen_kwargs = {
             "max_new_tokens": max_new_tokens or self.max_new_tokens,
-            "temperature": temperature or self.temperature,
-            "top_p": self.top_p,
             "repetition_penalty": self.repetition_penalty,
             "do_sample": self.do_sample,
         }
+        # Only include sampling parameters when do_sample=True
+        if self.do_sample:
+            gen_kwargs.update({
+                "temperature": temperature or self.temperature,
+                "top_p": self.top_p,
+            })
         if tokenizer:
             gen_kwargs.update({
                 "eos_token_id": tokenizer.eos_token_id,
@@ -456,12 +460,16 @@ class LLMService:
         gen_kwargs = {
             **inputs,
             "max_new_tokens": self.max_new_tokens,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
             "repetition_penalty": self.repetition_penalty,
             "do_sample": self.do_sample,
             "streamer": streamer,
         }
+        # Only include sampling parameters when do_sample=True
+        if self.do_sample:
+            gen_kwargs.update({
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+            })
         if hasattr(tokenizer, "eos_token_id"):
             gen_kwargs.update({
                 "eos_token_id": tokenizer.eos_token_id,
