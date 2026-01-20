@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
-import { api, getUserFriendlyMessage } from './api';
+import { ApiError, api, getUserFriendlyMessage } from './api';
 import useToast from './hooks/useToast';
 import useAppStore from './store/useAppStore';
 import usePatients from './hooks/usePatients';
@@ -46,6 +46,12 @@ const buildPath = (values: number[]) => {
     .join(' ');
 };
 
+const getExistingDocumentId = (error: unknown) => {
+  const message = error instanceof ApiError ? error.message : error instanceof Error ? error.message : '';
+  const match = /Document already exists with ID (\d+)/.exec(message);
+  return match ? Number(match[1]) : null;
+};
+
 function App() {
   const patientId = useAppStore((state) => state.patientId);
   const patientSearch = useAppStore((state) => state.patientSearch);
@@ -66,6 +72,14 @@ function App() {
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [patientLoadingFailed, setPatientLoadingFailed] = useState(false);
   const [autoSelectedPatient, setAutoSelectedPatient] = useState<PatientSummary | null>(null);
+  const [viewMode, setViewMode] = useState<'chat' | 'dashboard'>('chat');
+  const [documentPreview, setDocumentPreview] = useState<{
+    id: number;
+    title: string;
+    text: string;
+    pageCount?: number | null;
+  } | null>(null);
+  const [documentDownloadUrl, setDocumentDownloadUrl] = useState<string | null>(null);
   const { toasts, pushToast } = useToast();
 
   const handleError = useCallback((label: string, error: unknown) => {
@@ -263,6 +277,11 @@ function App() {
   }, [patients, autoSelectedPatient]);
 
   useEffect(() => {
+    setDocumentPreview(null);
+    setDocumentDownloadUrl(null);
+  }, [patientId]);
+
+  useEffect(() => {
     const needsRefresh = documents.some((doc) =>
       ['pending', 'processing'].includes(doc.processing_status),
     );
@@ -304,6 +323,14 @@ function App() {
       pushToast('success', 'Document uploaded.');
       await reloadDocuments();
     } catch (error) {
+      const existingId = getExistingDocumentId(error);
+      if (existingId) {
+        setSelectedFile(null);
+        setDocumentStatus('Already uploaded. Using existing document.');
+        pushToast('info', `Document already exists (ID ${existingId}). Using existing file.`);
+        await reloadDocuments();
+        return;
+      }
       handleError('Failed to upload document', error);
       setDocumentStatus('Upload failed.');
     }
@@ -324,6 +351,21 @@ function App() {
       pushToast('success', 'Report uploaded and processed.');
       await reloadDocuments();
     } catch (error) {
+      const existingId = getExistingDocumentId(error);
+      if (existingId) {
+        try {
+          setChatUploadStatus('Processing existing report...');
+          await api.processDocument(existingId);
+          setChatUploadStatus('Ready to chat with this report.');
+          pushToast('info', `Report already exists (ID ${existingId}). Using existing document.`);
+          await reloadDocuments();
+          return;
+        } catch (processError) {
+          handleError('Failed to process existing report', processError);
+          setChatUploadStatus('Processing failed.');
+          return;
+        }
+      }
       handleError('Failed to upload chat file', error);
       setChatUploadStatus('Upload failed.');
     } finally {
@@ -347,6 +389,28 @@ function App() {
     }
   };
 
+  const handleViewDocument = async (documentId: number) => {
+    const doc = documents.find((item) => item.id === documentId);
+    if (!doc) return;
+    if (!doc.is_processed) {
+      pushToast('info', 'Process the document to view extracted text.');
+      return;
+    }
+    try {
+      const response = await api.getDocumentText(documentId);
+      setDocumentPreview({
+        id: documentId,
+        title: doc.title || doc.original_filename,
+        text: response.extracted_text,
+        pageCount: response.page_count,
+      });
+      setDocumentDownloadUrl(`${window.location.origin}/api/v1/documents/${documentId}/download`);
+      pushToast('success', 'Document loaded.');
+    } catch (error) {
+      handleError('Failed to load document text', error);
+    }
+  };
+
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('en-US', {
@@ -360,6 +424,28 @@ function App() {
 
   const recordCount = useMemo(() => records.length, [records.length]);
   const selectedPatient = autoSelectedPatient || patients.find((patient) => patient.id === patientId);
+  const showDashboard = isAuthenticated && viewMode === 'dashboard';
+  const processedDocs = useMemo(
+    () => documents.filter((doc) => doc.is_processed).length,
+    [documents],
+  );
+  const insightCards = useMemo(() => ([
+    {
+      title: 'Records',
+      value: recordCount,
+      note: recordCount ? 'Updated' : 'Add first record',
+    },
+    {
+      title: 'Documents',
+      value: documents.length,
+      note: documents.length ? `${processedDocs} processed` : 'Upload to unlock insights',
+    },
+    {
+      title: 'Signals',
+      value: processedDocs,
+      note: processedDocs ? 'Ready for analysis' : 'Process a document',
+    },
+  ]), [recordCount, documents.length, processedDocs]);
 
   // Show landing page if not authenticated
   if (!isAuthenticated) {
@@ -406,10 +492,17 @@ function App() {
               processingIds={processingDocs}
               selectedFile={selectedFile}
               status={documentStatus}
+              preview={null}
+              downloadUrl={null}
               isDisabled={true}
               onFileChange={setSelectedFile}
               onUpload={handleUploadDocument}
               onProcess={handleProcessDocument}
+              onView={handleViewDocument}
+              onClosePreview={() => {
+                setDocumentPreview(null);
+                setDocumentDownloadUrl(null);
+              }}
             />
             <MemoryPanel
               query={query}
@@ -453,7 +546,7 @@ function App() {
   if (isLoadingPatient) {
     return (
       <div className="app-shell chat-mode">
-        <TopBar />
+        <TopBar viewMode={viewMode} onViewChange={setViewMode} />
         <ErrorBanner message={errorBanner} />
         <div className="chat-loading-state">
           <div className="loading-spinner" />
@@ -470,7 +563,7 @@ function App() {
   if (!selectedPatient && isAuthenticated && currentUser && patientLoadingFailed) {
     return (
       <div className="app-shell chat-mode">
-        <TopBar />
+        <TopBar viewMode={viewMode} onViewChange={setViewMode} />
         <ErrorBanner message={errorBanner || 'Unable to load your medical profile. Please refresh the page.'} />
         <div className="chat-error-state">
           <h2>Unable to Load Profile</h2>
@@ -513,9 +606,119 @@ function App() {
     );
   }
 
+  if (showDashboard) {
+    return (
+      <div className="app-shell">
+        <TopBar viewMode={viewMode} onViewChange={setViewMode} />
+        <ErrorBanner message={errorBanner} />
+        <main className="dashboard">
+          <div className="dashboard-header">
+            <div>
+              <p className="eyebrow">Patient overview</p>
+              <h1>
+                {selectedPatient?.full_name || 'Your health dashboard'}
+              </h1>
+              <p className="subtitle">
+                Track your records, documents, and memory signals in one place.
+              </p>
+            </div>
+            <div className="insight-card primary">
+              <h3>Insight snapshot</h3>
+              <p>
+                {documents.length || recordCount
+                  ? 'Your data is ready for summaries and trend analysis.'
+                  : 'Add a record or document to unlock personalized insights.'}
+              </p>
+              <span className="insight-pill">
+                {processedDocs ? `${processedDocs} sources ready` : 'No processed sources yet'}
+              </span>
+            </div>
+          </div>
+          <div className="insight-strip">
+            {insightCards.map((card) => (
+              <div className="insight-card" key={card.title}>
+                <h4>{card.title}</h4>
+                <p className="insight-value">{card.value}</p>
+                <span className="insight-note">{card.note}</span>
+              </div>
+            ))}
+          </div>
+          <section className="grid">
+            <HighlightsPanel items={highlightItems} chartPath={buildPath(a1cSeries)} isLoading={recordsLoading} />
+            <ChatPanel
+              messages={messages}
+              question={question}
+              isStreaming={isStreaming}
+              isDisabled={!selectedPatient}
+              uploadStatus={chatUploadStatus}
+              isUploading={isChatUploading}
+              onQuestionChange={setQuestion}
+              onSend={send}
+              onUploadFile={handleChatUpload}
+            />
+            <PipelinePanel
+              payload={payload}
+              status={status}
+              isLoading={ingestionLoading}
+              isDisabled={!selectedPatient}
+              onPayloadChange={setPayload}
+              onIngest={ingest}
+            />
+            <DocumentsPanel
+              documents={documents}
+              isLoading={documentsLoading}
+              processingIds={processingDocs}
+              selectedFile={selectedFile}
+              status={documentStatus}
+              preview={documentPreview}
+              downloadUrl={documentDownloadUrl}
+              isDisabled={!selectedPatient}
+              onFileChange={setSelectedFile}
+              onUpload={handleUploadDocument}
+              onProcess={handleProcessDocument}
+              onView={handleViewDocument}
+              onClosePreview={() => {
+                setDocumentPreview(null);
+                setDocumentDownloadUrl(null);
+              }}
+            />
+            <MemoryPanel
+              query={query}
+              isLoading={searchLoading}
+              results={results}
+              isDisabled={!selectedPatient}
+              onQueryChange={setQuery}
+              onSearch={search}
+            />
+            <ContextPanel
+              question={contextQuestion}
+              result={result}
+              isLoading={contextLoading}
+              isDisabled={!selectedPatient}
+              onQuestionChange={setContextQuestion}
+              onGenerate={generate}
+            />
+            <RecordsPanel
+              records={records}
+              isLoading={recordsLoading}
+              recordCount={recordCount}
+              formData={formData}
+              isSubmitting={isSubmitting}
+              isDisabled={!selectedPatient}
+              onFormChange={(field, value) => setFormData((prev) => ({ ...prev, [field]: value }))}
+              onSubmit={handleSubmit}
+              formatDate={formatDate}
+            />
+          </section>
+        </main>
+        <ToastStack toasts={toasts} />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell chat-mode">
-      <TopBar />
+      <TopBar viewMode={viewMode} onViewChange={setViewMode} />
       <ErrorBanner message={errorBanner} />
       <ChatInterface
         messages={messages}
