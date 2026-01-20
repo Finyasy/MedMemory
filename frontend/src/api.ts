@@ -271,6 +271,12 @@ export const api = {
     });
   },
 
+  async getDocumentText(documentId: number): Promise<{ document_id: number; extracted_text: string; page_count: number }> {
+    return request(`${API_BASE}/documents/${documentId}/text`, {
+      headers: withAuthHeaders(),
+    });
+  },
+
   async memorySearch(patientId: number, query: string): Promise<MemorySearchResponse> {
     return request(`${API_BASE}/memory/search`, {
       method: 'POST',
