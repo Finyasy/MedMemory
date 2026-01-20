@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.log
 .DS_Store
+.hybrid-backend.pid
 
 backend/.env
 backend/models/
@@ -12,3 +13,5 @@ backend/model_download.log
 backend-dev.log
 frontend-dev.log
 node_modules/
+pics/
+frontend/public/pics/
