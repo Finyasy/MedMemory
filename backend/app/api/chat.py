@@ -275,10 +275,3 @@ async def update_conversation_title(
 # LLM Info
 # ============================================
 
-@router.get("/llm/info", response_model=LLMInfoResponse)
-async def get_llm_info():
-    """Get information about the loaded LLM model."""
-    llm_service = LLMService.get_instance()
-    info = llm_service.get_model_info()
-    
-    return LLMInfoResponse(**info)
