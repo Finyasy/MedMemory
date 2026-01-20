@@ -3,7 +3,12 @@ import LoginModal from './LoginModal';
 import SignUpModal from './SignUpModal';
 import useAppStore from '../store/useAppStore';
 
-const TopBar = () => {
+type TopBarProps = {
+  viewMode?: 'chat' | 'dashboard';
+  onViewChange?: (mode: 'chat' | 'dashboard') => void;
+};
+
+const TopBar = ({ viewMode, onViewChange }: TopBarProps) => {
   const [showLogin, setShowLogin] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
@@ -26,8 +31,35 @@ const TopBar = () => {
         <div className="top-actions">
           {isAuthenticated ? (
             <>
-              <span className="user-name">{user?.full_name || user?.email}</span>
-              <button className="ghost-button" type="button" onClick={handleLogout}>
+              {onViewChange ? (
+                <div className="view-toggle" role="tablist" aria-label="App view">
+                  <button
+                    className={viewMode === 'chat' ? 'active' : ''}
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'chat'}
+                    onClick={() => onViewChange('chat')}
+                  >
+                    Chat
+                  </button>
+                  <button
+                    className={viewMode === 'dashboard' ? 'active' : ''}
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'dashboard'}
+                    onClick={() => onViewChange('dashboard')}
+                  >
+                    Dashboard
+                  </button>
+                </div>
+              ) : null}
+              <div className="user-chip">
+                <span className="user-avatar">
+                  {(user?.full_name || user?.email || 'U').charAt(0).toUpperCase()}
+                </span>
+                <span className="user-label">{user?.full_name || user?.email}</span>
+              </div>
+              <button className="ghost-button subtle" type="button" onClick={handleLogout}>
                 Log Out
               </button>
             </>
