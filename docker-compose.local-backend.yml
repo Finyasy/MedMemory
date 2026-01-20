@@ -1,0 +1,64 @@
+services:
+  # ============================================
+  # PostgreSQL Database with pgvector
+  # ============================================
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: medmemory-db-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: medmemory
+      POSTGRES_PASSWORD: medmemory_secret
+      POSTGRES_DB: medmemory
+    volumes:
+      - postgres_data_local:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medmemory -d medmemory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - medmemory-network
+
+  # ============================================
+  # Frontend Service (React + Nginx)
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: medmemory-frontend-local
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - medmemory-network
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  postgres_data_local:
+    driver: local
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  medmemory-network:
+    driver: bridge
