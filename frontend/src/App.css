@@ -1032,11 +1032,11 @@
 .document-row,
 .memory-results div {
   background: var(--bg-card-strong);
-  padding: 0.8rem 1rem;
+  padding: 0.9rem 1.1rem;
   border-radius: var(--radius-md);
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 1rem;
 }
 
@@ -1067,6 +1067,31 @@
   border: 1px solid var(--border-soft);
 }
 
+.ocr-preview {
+  border-top: 1px dashed var(--border-soft);
+  padding-top: 0.6rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.ocr-preview pre {
+  background: #f2f7ff;
+}
+
+.ocr-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ocr-muted {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 .preview-actions {
   display: inline-flex;
   gap: 0.6rem;
@@ -1076,6 +1101,25 @@
 .upload-row {
   display: grid;
   gap: 0.6rem;
+}
+
+.file-input {
+  display: none;
+}
+
+.file-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.file-pill {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
 .status-pill {
