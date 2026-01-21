@@ -6,17 +6,20 @@ Orchestrates the full document processing workflow:
 3. Create memory chunks for embedding (Phase 4)
 """
 
-from datetime import datetime
+import json
+import logging
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import Document, MemoryChunk
 from app.services.documents.chunking import TextChunker
 from app.services.documents.extraction import (
     ExtractionResult,
     get_extractor,
 )
+from app.services.documents.ocr_refinement import OcrRefinementService
 from app.services.documents.upload import DocumentUploadService
 
 
@@ -48,6 +51,8 @@ class DocumentProcessor:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
+        self.ocr_refiner = OcrRefinementService()
+        self.logger = logging.getLogger("medmemory")
     
     async def process_document(
         self,
@@ -80,6 +85,18 @@ class DocumentProcessor:
         try:
             # Extract text
             result = await self._extract_text(document)
+
+            ocr_text_raw = result.ocr_text
+            ocr_text_cleaned = None
+            ocr_entities_json = None
+            if result.ocr_text and settings.ocr_refinement_enabled:
+                try:
+                    refinement = await self.ocr_refiner.refine(result.ocr_text)
+                    ocr_text_cleaned = refinement.cleaned_text or None
+                    if refinement.entities:
+                        ocr_entities_json = json.dumps(refinement.entities, ensure_ascii=True)
+                except Exception:
+                    self.logger.exception("OCR refinement failed for document %s", document_id)
             
             if result.is_empty:
                 await self.upload_service.update_processing_status(
@@ -87,15 +104,42 @@ class DocumentProcessor:
                     status="completed",
                     extracted_text="[No text extracted]",
                     page_count=result.page_count,
+                    ocr_confidence=result.confidence,
+                    ocr_language=result.language,
+                    ocr_text_raw=ocr_text_raw,
+                    ocr_text_cleaned=ocr_text_cleaned,
+                    ocr_entities=ocr_entities_json,
                 )
                 return await self.upload_service.get_document(document_id)
-            
+
+            direct_text = result.direct_text or (result.text if not result.ocr_text else None)
+            ocr_text_for_context = ocr_text_cleaned or result.ocr_text
+            extracted_parts = []
+            if direct_text:
+                extracted_parts.append(direct_text.strip())
+            if ocr_text_for_context:
+                if direct_text:
+                    extracted_parts.append(f"=== OCR Extracted Text ===\n{ocr_text_for_context.strip()}")
+                else:
+                    extracted_parts.append(ocr_text_for_context.strip())
+
+            final_text = "\n\n".join(part for part in extracted_parts if part)
+            if not final_text:
+                final_text = result.text
+
+            result.text = final_text
+
             # Update document with extracted text
             document = await self.upload_service.update_processing_status(
                 document_id=document_id,
                 status="completed",
-                extracted_text=result.text,
+                extracted_text=final_text,
                 page_count=result.page_count,
+                ocr_confidence=result.confidence,
+                ocr_language=result.language,
+                ocr_text_raw=ocr_text_raw,
+                ocr_text_cleaned=ocr_text_cleaned,
+                ocr_entities=ocr_entities_json,
             )
             
             # Create memory chunks if requested
@@ -196,6 +240,11 @@ class DocumentProcessor:
             document.processing_status = "pending"
             document.extracted_text = None
             document.processing_error = None
+            document.ocr_confidence = None
+            document.ocr_language = None
+            document.ocr_text_raw = None
+            document.ocr_text_cleaned = None
+            document.ocr_entities = None
             await self.db.flush()
         
         # Process again
