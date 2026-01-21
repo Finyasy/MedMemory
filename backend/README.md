@@ -70,6 +70,36 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
   -d '{"email": "you@example.com", "password": "your-password"}'
 ```
 
+## OCR Refinement + Vision Chat
+
+### OCR refinement (Tesseract -> Gemma)
+When processing PDFs/images, OCR output is cleaned and entities are extracted using the local MedGemma model.
+
+**Requirements:**
+- Tesseract installed and available on PATH
+- OpenCV (installed via `uv sync`)
+
+**Settings (in `backend/.env`):**
+- `OCR_REFINEMENT_ENABLED=true`
+- `OCR_REFINEMENT_MAX_NEW_TOKENS=384`
+- `OCR_PREPROCESS_OPENCV=true`
+
+**Fetch OCR refinement results:**
+```bash
+curl http://localhost:8000/api/v1/documents/<DOCUMENT_ID>/ocr \
+  -H "Authorization: Bearer <YOUR_JWT>"
+```
+
+### Vision chat (MedGemma VLM)
+Send an image and a prompt directly to the MedGemma vision model:
+```bash
+curl -X POST http://localhost:8000/api/v1/chat/vision \
+  -H "Authorization: Bearer <YOUR_JWT>" \
+  -F "patient_id=1" \
+  -F "prompt=Does this chest X-ray show signs of pneumonia?" \
+  -F "image=@/path/to/xray.png"
+```
+
 ## API Documentation
 
 Once running, visit:
