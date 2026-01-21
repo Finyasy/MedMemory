@@ -24,6 +24,16 @@ export interface DocumentItem {
   page_count?: number | null;
 }
 
+export interface DocumentOcrRefinement {
+  document_id: number;
+  ocr_language?: string | null;
+  ocr_confidence?: number | null;
+  ocr_text_raw?: string | null;
+  ocr_text_cleaned?: string | null;
+  ocr_entities?: Record<string, unknown>;
+  used_ocr: boolean;
+}
+
 export interface MemorySearchResult {
   chunk_id: number;
   content: string;
