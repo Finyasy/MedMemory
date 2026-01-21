@@ -22,7 +22,7 @@ import MemoryPanel from './components/MemoryPanel';
 import ContextPanel from './components/ContextPanel';
 import RecordsPanel from './components/RecordsPanel';
 import ChatInterface from './components/ChatInterface';
-import type { PatientSummary } from './types';
+import type { DocumentOcrRefinement, PatientSummary } from './types';
 
 const defaultHighlights = [
   { title: 'LDL Cholesterol', value: '167 mg/dL', trend: 'down', note: 'Jun 2025' },
@@ -79,6 +79,7 @@ function App() {
     title: string;
     text: string;
     pageCount?: number | null;
+    ocr?: DocumentOcrRefinement | null;
   } | null>(null);
   const [documentDownloadUrl, setDocumentDownloadUrl] = useState<string | null>(null);
   const [insights, setInsights] = useState<{
@@ -126,7 +127,7 @@ function App() {
     isLoading: documentsLoading,
     reloadDocuments,
   } = usePatientDocuments({ patientId, onError: handleError, onSuccess: () => setErrorBanner(null) });
-  const { messages, question, setQuestion, isStreaming, send } = useChat({
+  const { messages, question, setQuestion, isStreaming, send, sendVision } = useChat({
     patientId,
     onError: handleError,
   });
@@ -145,6 +146,12 @@ function App() {
     onError: handleError,
     onSuccess: (message) => pushToast('success', message),
   });
+
+  // Compute selectedPatient early so it can be used in useEffect hooks
+  const selectedPatient = useMemo(
+    () => autoSelectedPatient || patients.find((patient) => patient.id === patientId),
+    [autoSelectedPatient, patients, patientId]
+  );
 
   useEffect(() => {
     // Test if backend is accessible through proxy
@@ -188,26 +195,33 @@ function App() {
         setUser(user);
       })
       .catch((error) => {
-        setAccessToken(null);
-        handleError('Session expired', error);
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          setAccessToken(null);
+          handleError('Session expired', error);
+        } else {
+          handleError('Connection issue', error);
+        }
       });
   }, [accessToken, currentUser, setAccessToken, setUser, handleError]);
 
   // Verify patient exists if patientId is set but selectedPatient is not available
+  // Only run this after patients have been loaded (not loading and not empty due to no patients)
   useEffect(() => {
     if (!currentUser || !accessToken || !patientId || patientId <= 0) {
       return;
     }
     
-    // If we have a patientId but no selectedPatient, verify it exists
-    if (!selectedPatient && patients.length > 0) {
+    // Only verify if patients have been loaded (not currently loading)
+    // If we have a patientId but no selectedPatient, and patients list is available, verify it exists
+    if (!selectedPatient && !patientLoading && patients.length >= 0) {
       const patientExists = patients.some((p) => p.id === patientId);
-      if (!patientExists) {
+      if (!patientExists && patients.length > 0) {
+        // Patient list is loaded and patient doesn't exist - clear it
         console.warn('Patient ID does not exist in patient list, clearing it');
         setPatientId(0);
       }
     }
-  }, [currentUser, accessToken, patientId, selectedPatient, patients, setPatientId]);
+  }, [currentUser, accessToken, patientId, selectedPatient, patients, patientLoading, setPatientId]);
 
   // Auto-select or create patient when user is set and no patient is selected
   useEffect(() => {
@@ -321,6 +335,18 @@ function App() {
   }, [patientId]);
 
   useEffect(() => {
+    if (!patientId || selectedPatient || !isAuthenticated) return;
+    api
+      .getPatient(patientId)
+      .then((patient) => {
+        setAutoSelectedPatient(patient);
+      })
+      .catch(() => {
+        // Let other flows handle errors; avoid blocking login UX.
+      });
+  }, [patientId, selectedPatient, isAuthenticated]);
+
+  useEffect(() => {
     // Only load insights if we have a valid patient selected and authenticated
     // Wait for selectedPatient to be available to ensure patient exists
     if (!patientId || patientId <= 0 || !isAuthenticated) {
@@ -417,6 +443,21 @@ function App() {
       pushToast('info', 'Select a patient before uploading a report.');
       return;
     }
+    if (file.type.startsWith('image/')) {
+      setIsChatUploading(true);
+      setChatUploadStatus('Analyzing image...');
+      try {
+        await sendVision(file, question);
+        setChatUploadStatus('Image analysis complete.');
+        pushToast('success', 'Image analyzed with MedGemma.');
+      } catch (error) {
+        handleError('Failed to analyze image', error);
+        setChatUploadStatus('Image analysis failed.');
+      } finally {
+        setIsChatUploading(false);
+      }
+      return;
+    }
     setIsChatUploading(true);
     setChatUploadStatus('Uploading report...');
     try {
@@ -473,12 +514,16 @@ function App() {
       return;
     }
     try {
-      const response = await api.getDocumentText(documentId);
+      const [textResponse, ocrResponse] = await Promise.all([
+        api.getDocumentText(documentId),
+        api.getDocumentOcr(documentId).catch(() => null),
+      ]);
       setDocumentPreview({
         id: documentId,
         title: doc.title || doc.original_filename,
-        text: response.extracted_text,
-        pageCount: response.page_count,
+        text: textResponse.extracted_text,
+        pageCount: textResponse.page_count,
+        ocr: ocrResponse,
       });
       setDocumentDownloadUrl(`${window.location.origin}/api/v1/documents/${documentId}/download`);
       pushToast('success', 'Document loaded.');
@@ -499,7 +544,6 @@ function App() {
   };
 
   const recordCount = useMemo(() => records.length, [records.length]);
-  const selectedPatient = autoSelectedPatient || patients.find((patient) => patient.id === patientId);
   const showDashboard = isAuthenticated && viewMode === 'dashboard';
   const processedDocs = useMemo(
     () => documents.filter((doc) => doc.is_processed).length,
@@ -518,9 +562,9 @@ function App() {
     }));
   }, [insights, formatDate]);
   const insightSummary = useMemo(() => {
-    if (!insights) return 'Connect labs and medications to unlock insights.';
+    if (!insights) return 'Connect lab results and medications to unlock insights.';
     if (!insights.lab_total && !insights.active_medications) {
-      return 'No lab or medication data yet. Add them to unlock trends.';
+      return 'No lab or medication data yet. Add data to see trends.';
     }
     if (insights.lab_total && insights.lab_abnormal) {
       return `${insights.lab_abnormal} abnormal result${insights.lab_abnormal === 1 ? '' : 's'} across ${insights.lab_total} labs.`;
@@ -642,7 +686,7 @@ function App() {
   // Show full-screen chat interface when authenticated
   // Show loading state while patient is being created/selected
   // Only show loading if we're actively loading and haven't failed
-  const isLoadingPatient = !selectedPatient && isAuthenticated && currentUser && !patientLoadingFailed;
+  const isLoadingPatient = patientId === 0 && isAuthenticated && currentUser && !patientLoadingFailed;
   
   if (isLoadingPatient) {
     return (
@@ -720,15 +764,15 @@ function App() {
                 {selectedPatient?.full_name || 'Your health dashboard'}
               </h1>
               <p className="subtitle">
-                Track your records, documents, and memory signals in one place.
+                Track records, documents, and insights in one place.
               </p>
             </div>
             <div className="insight-card primary">
               <h3>Insight snapshot</h3>
               <p>
                 {documents.length || recordCount
-                  ? 'Your data is ready for summaries and trend analysis.'
-                  : 'Add a record or document to unlock personalized insights.'}
+                  ? 'Your data is ready for summaries and trends.'
+                  : 'Add a record or document to unlock insights.'}
               </p>
               <span className="insight-pill">
                 {processedDocs ? `${processedDocs} sources ready` : 'No processed sources yet'}
@@ -748,16 +792,16 @@ function App() {
             <div className="insight-panel trends">
               <div className="insight-panel-header">
                 <div>
-                  <p className="eyebrow">Trend analysis</p>
-                  <h2>A1C trend</h2>
-                  <p className="subtitle">{insightsLoading ? 'Loading lab trends...' : insightSummary}</p>
+                  <p className="eyebrow">Trends</p>
+                  <h2>A1C over time</h2>
+                  <p className="subtitle">{insightsLoading ? 'Loading trends...' : insightSummary}</p>
                 </div>
                 <button
                   className="ghost-button compact"
                   type="button"
                   onClick={() => setViewMode('chat')}
                 >
-                  Ask in chat
+                  Ask a question
                 </button>
               </div>
               <svg className="trend-chart" viewBox="0 0 320 90" role="img" aria-label="A1C trend">
@@ -782,23 +826,23 @@ function App() {
                 ) : (
                   <div className="trend-item empty">
                     <div>
-                      <h4>No lab highlights yet</h4>
-                      <span>Add lab results to see trends.</span>
+                      <h4>No lab trends yet</h4>
+                      <span>Add lab results to see changes over time.</span>
                     </div>
                   </div>
                 )}
               </div>
             </div>
             <div className="insight-panel focus">
-              <h2>Clinical focus</h2>
+              <h2>Focus areas</h2>
               <div className="focus-row">
                 <div>
                   <p className="eyebrow">Latest document</p>
                   <h3>{latestDocument?.title || latestDocument?.original_filename || 'No documents yet'}</h3>
                   <p className="subtitle">
                     {latestDocument
-                      ? `${latestDocument.processing_status} · ${latestDocument.page_count || 0} pages`
-                      : 'Upload a report to unlock document insights.'}
+                      ? `Processed · ${latestDocument.page_count || 1} page${latestDocument.page_count === 1 ? '' : 's'}`
+                      : 'Upload a report to see document insights.'}
                   </p>
                 </div>
                 <button
@@ -807,7 +851,7 @@ function App() {
                   onClick={() => setViewMode('chat')}
                   disabled={!latestDocument}
                 >
-                  Summarize
+                  Summarize in chat
                 </button>
               </div>
               <div className="focus-row">
@@ -824,7 +868,7 @@ function App() {
                   onClick={() => setViewMode('chat')}
                   disabled={!latestRecord}
                 >
-                  Review
+                  Review in chat
                 </button>
               </div>
               <div className="focus-row">
@@ -838,7 +882,7 @@ function App() {
                   <p className="subtitle">
                     {insights?.recent_medications?.[0]
                       ? `${insights.recent_medications[0].name} · ${insights.recent_medications[0].dosage || 'dose'}`
-                      : 'Add medications via ingestion to surface adherence signals.'}
+                      : 'Add medications to track adherence signals.'}
                   </p>
                 </div>
               </div>
@@ -889,7 +933,7 @@ function App() {
         messages={messages}
         question={question}
         isStreaming={isStreaming}
-        isDisabled={!selectedPatient}
+        isDisabled={!patientId}
         selectedPatient={selectedPatient}
         showHeader={false}
         onQuestionChange={setQuestion}
