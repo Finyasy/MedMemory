@@ -31,6 +31,7 @@ from app.schemas.document import (
     DocumentProcessRequest,
     DocumentProcessResponse,
     BatchProcessResponse,
+    OcrRefinementResponse,
 )
 from app.schemas.memory import (
     SearchRequest,
@@ -93,6 +94,7 @@ __all__ = [
     "DocumentProcessRequest",
     "DocumentProcessResponse",
     "BatchProcessResponse",
+    "OcrRefinementResponse",
     # Memory & Search
     "SearchRequest",
     "SearchResultItem",
