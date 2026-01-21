@@ -1,5 +1,6 @@
 """Document management API endpoints."""
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -18,6 +19,7 @@ from app.schemas.document import (
     DocumentProcessRequest,
     DocumentProcessResponse,
     DocumentResponse,
+    OcrRefinementResponse,
 )
 from app.services.documents import DocumentProcessor, DocumentUploadService
 from app.utils.cache import clear_cache, get_cached, set_cached
@@ -310,6 +312,33 @@ async def get_document_text(
         "extracted_text": document.extracted_text,
         "page_count": document.page_count,
     }
+
+
+@router.get("/{document_id}/ocr", response_model=OcrRefinementResponse)
+async def get_document_ocr(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+):
+    """Get OCR refinement output for a document."""
+    document = await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
+
+    ocr_entities: dict = {}
+    if document.ocr_entities:
+        try:
+            ocr_entities = json.loads(document.ocr_entities)
+        except json.JSONDecodeError:
+            ocr_entities = {}
+
+    return OcrRefinementResponse(
+        document_id=document.id,
+        ocr_language=document.ocr_language,
+        ocr_confidence=document.ocr_confidence,
+        ocr_text_raw=document.ocr_text_raw,
+        ocr_text_cleaned=document.ocr_text_cleaned,
+        ocr_entities=ocr_entities,
+        used_ocr=bool(document.ocr_text_raw),
+    )
 
 
 # ============================================
