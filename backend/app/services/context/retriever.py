@@ -123,6 +123,7 @@ class HybridRetriever:
         start_time = time.time()
         
         results: dict[tuple[int, str], RetrievalResult] = {}
+        fallback_used = False
         
         # Semantic search
         if query_analysis.use_semantic_search:
@@ -189,6 +190,20 @@ class HybridRetriever:
                 else:
                     # Boost existing results
                     results[key].keyword_score += 0.2
+
+        # Fallback: use recent chunks when retrieval returns nothing
+        if not results:
+            fallback_results = await self._fallback_recent_chunks(
+                patient_id=patient_id,
+                source_types=[s.value for s in query_analysis.data_sources],
+                date_from=query_analysis.temporal.date_from,
+                date_to=query_analysis.temporal.date_to,
+                limit=limit,
+            )
+            if fallback_results:
+                fallback_used = True
+                for result in fallback_results:
+                    results[(result.id, result.source_type)] = result
         
         # Calculate combined scores
         all_results = list(results.values())
@@ -207,7 +222,12 @@ class HybridRetriever:
             )
         
         # Filter and sort
-        filtered_results = [r for r in all_results if r.combined_score >= min_score]
+        has_semantic_hits = any(r.semantic_score > 0 for r in all_results)
+        if fallback_used:
+            effective_min_score = 0.0
+        else:
+            effective_min_score = min_score if has_semantic_hits else min(min_score, 0.05)
+        filtered_results = [r for r in all_results if r.combined_score >= effective_min_score]
         sorted_results = sorted(
             filtered_results,
             key=lambda r: r.combined_score,
@@ -324,8 +344,7 @@ class HybridRetriever:
                     WHERE LOWER(content) LIKE '%' || LOWER(kw) || '%'
                 ) as match_score
             FROM memory_chunks
-            WHERE is_indexed = true
-            AND patient_id = :patient_id
+            WHERE patient_id = :patient_id
             AND (
         """
         
@@ -371,6 +390,63 @@ class HybridRetriever:
                 source_id=row.source_id,
                 patient_id=row.patient_id,
                 keyword_score=float(row.match_score) if row.match_score else 0.0,
+                context_date=row.context_date,
+                chunk_index=row.chunk_index,
+                page_number=row.page_number,
+            )
+            for row in rows
+        ]
+
+    async def _fallback_recent_chunks(
+        self,
+        patient_id: int,
+        source_types: list[str],
+        date_from: Optional[datetime],
+        date_to: Optional[datetime],
+        limit: int,
+    ) -> list[RetrievalResult]:
+        """Fetch recent chunks when semantic/keyword retrieval returns nothing."""
+        sql = """
+            SELECT
+                id,
+                patient_id,
+                content,
+                source_type,
+                source_id,
+                context_date,
+                chunk_index,
+                page_number
+            FROM memory_chunks
+            WHERE patient_id = :patient_id
+        """
+        params = {"patient_id": patient_id}
+
+        if source_types and "all" not in source_types:
+            sql += " AND source_type = ANY(:source_types)"
+            params["source_types"] = source_types
+
+        if date_from:
+            sql += " AND (context_date IS NULL OR context_date >= :date_from)"
+            params["date_from"] = date_from
+
+        if date_to:
+            sql += " AND (context_date IS NULL OR context_date <= :date_to)"
+            params["date_to"] = date_to
+
+        sql += " ORDER BY created_at DESC LIMIT :limit"
+        params["limit"] = limit
+
+        result = await self.db.execute(text(sql), params)
+        rows = result.fetchall()
+
+        return [
+            RetrievalResult(
+                id=row.id,
+                content=row.content,
+                source_type=row.source_type,
+                source_id=row.source_id,
+                patient_id=row.patient_id,
+                keyword_score=0.1,
                 context_date=row.context_date,
                 chunk_index=row.chunk_index,
                 page_number=row.page_number,
