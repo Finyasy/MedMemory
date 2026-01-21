@@ -20,8 +20,8 @@ const MemoryPanel = ({
   return (
     <div className="panel memory">
       <div className="panel-header">
-        <h2>Semantic Memory</h2>
-        <span className="signal-chip">Vector Search</span>
+        <h2>Memory search</h2>
+        <span className="signal-chip">Search</span>
       </div>
       <div className="search-row">
         <input
@@ -46,7 +46,7 @@ const MemoryPanel = ({
           </>
         ) : results.length === 0 ? (
           <div className="empty-state">
-            {query.trim() ? 'No matches yet.' : 'Enter a query to search patient memory.'}
+            {query.trim() ? 'No matches yet.' : 'Search for a condition, medication, or lab.'}
           </div>
         ) : (
           results.map((result) => (
