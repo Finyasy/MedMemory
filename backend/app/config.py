@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.7
     llm_max_new_tokens: int = 512
+
+    # OCR refinement configuration
+    ocr_refinement_enabled: bool = True
+    ocr_refinement_max_new_tokens: int = 384
+    ocr_preprocess_opencv: bool = True
     
     # Models directory
     models_dir: Path = Field(
