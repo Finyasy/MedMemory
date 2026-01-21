@@ -211,6 +211,11 @@ class DocumentUploadService:
         status: str,
         extracted_text: Optional[str] = None,
         page_count: Optional[int] = None,
+        ocr_confidence: Optional[float] = None,
+        ocr_language: Optional[str] = None,
+        ocr_text_raw: Optional[str] = None,
+        ocr_text_cleaned: Optional[str] = None,
+        ocr_entities: Optional[str] = None,
         error: Optional[str] = None,
     ) -> Document:
         """Update document processing status."""
@@ -225,6 +230,11 @@ class DocumentUploadService:
             document.processed_at = datetime.now(timezone.utc)
             document.extracted_text = extracted_text
             document.page_count = page_count
+            document.ocr_confidence = ocr_confidence
+            document.ocr_language = ocr_language
+            document.ocr_text_raw = ocr_text_raw
+            document.ocr_text_cleaned = ocr_text_cleaned
+            document.ocr_entities = ocr_entities
         elif status == "failed":
             document.processing_error = error
         
