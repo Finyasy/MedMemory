@@ -19,6 +19,7 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
   const logout = useAppStore((state) => state.logout);
 
   const handleLogout = () => {
+    setMenuOpen(false);
     logout();
   };
 
@@ -32,6 +33,10 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
   }, [menuOpen]);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [isAuthenticated, user?.id]);
 
   return (
     <>
@@ -75,10 +80,10 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
                   aria-haspopup="menu"
                   aria-expanded={menuOpen}
                 >
-                <span className="user-avatar">
-                  {(user?.full_name || user?.email || 'U').charAt(0).toUpperCase()}
-                </span>
-                <span className="user-label">{user?.full_name || user?.email}</span>
+                  <span className="user-avatar">
+                    {(user?.full_name || user?.email || 'U').charAt(0).toUpperCase()}
+                  </span>
+                  <span className="user-label">{user?.full_name || user?.email}</span>
                 </button>
                 {menuOpen ? (
                   <div className="user-dropdown" role="menu">
