@@ -6,7 +6,7 @@ Provides conversational interface using RAG with MedGemma-4B-IT.
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.schemas.chat import (
     MessageSchema,
     SourceInfo,
     StreamChatChunk,
+    VisionChatResponse,
 )
 from app.services.llm import LLMService, RAGService
 from app.services.llm.conversation import ConversationManager
@@ -139,6 +140,54 @@ async def stream_ask(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         },
+    )
+
+
+@router.post("/vision", response_model=VisionChatResponse)
+async def ask_with_image(
+    prompt: str = Form(..., min_length=1, max_length=2000),
+    patient_id: int = Form(...),
+    image: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+):
+    """Analyze a medical image using the vision-language model."""
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image uploads are supported.")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Empty image upload.")
+
+    llm_service = LLMService.get_instance()
+    system_prompt = (
+        "You are a medical imaging assistant. Respond in simple English a customer can understand. "
+        "Write 3-5 short sentences in a calm, reassuring tone. "
+        "Do not use bullet points or numbering. "
+        "Do not repeat findings. Do not list speculative nodules. "
+        "If unsure, say \"may be\" and keep it brief. "
+        "No greetings, apologies, or extra commentary. "
+        "If the image is not diagnostic, respond exactly: \"No diagnostic information available.\""
+    )
+    llm_response = await llm_service.generate_with_image(
+        prompt=prompt,
+        image_bytes=image_bytes,
+        system_prompt=system_prompt,
+        max_new_tokens=220,
+    )
+
+    return VisionChatResponse(
+        answer=llm_response.text,
+        tokens_input=llm_response.tokens_input,
+        tokens_generated=llm_response.tokens_generated,
+        tokens_total=llm_response.total_tokens,
+        generation_time_ms=llm_response.generation_time_ms,
     )
 
 
@@ -274,4 +323,3 @@ async def update_conversation_title(
 # ============================================
 # LLM Info
 # ============================================
-
