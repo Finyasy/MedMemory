@@ -48,6 +48,10 @@ class DocumentDetail(DocumentResponse):
     extracted_text: Optional[str] = None
     processing_error: Optional[str] = None
     ocr_confidence: Optional[float] = None
+    ocr_language: Optional[str] = None
+    ocr_text_raw: Optional[str] = None
+    ocr_text_cleaned: Optional[str] = None
+    ocr_entities: Optional[str] = None
     author: Optional[str] = None
     facility: Optional[str] = None
 
@@ -75,3 +79,15 @@ class BatchProcessResponse(BaseModel):
     processed: int
     failed: int
     errors: list[str] = []
+
+
+class OcrRefinementResponse(BaseModel):
+    """OCR refinement output for a document."""
+
+    document_id: int
+    ocr_language: Optional[str] = None
+    ocr_confidence: Optional[float] = None
+    ocr_text_raw: Optional[str] = None
+    ocr_text_cleaned: Optional[str] = None
+    ocr_entities: dict = Field(default_factory=dict)
+    used_ocr: bool = False
