@@ -94,6 +94,20 @@ class ChatResponse(BaseModel):
 
 
 # ============================================
+# Vision Chat
+# ============================================
+
+class VisionChatResponse(BaseModel):
+    """Response from vision chat."""
+
+    answer: str
+    tokens_input: int = 0
+    tokens_generated: int = 0
+    tokens_total: int = 0
+    generation_time_ms: float = 0.0
+
+
+# ============================================
 # Stream Chat
 # ============================================
 
