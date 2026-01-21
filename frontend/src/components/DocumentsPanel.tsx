@@ -11,6 +11,14 @@ type DocumentsPanelProps = {
     title: string;
     text: string;
     pageCount?: number | null;
+    ocr?: {
+      ocr_language?: string | null;
+      ocr_confidence?: number | null;
+      ocr_text_raw?: string | null;
+      ocr_text_cleaned?: string | null;
+      ocr_entities?: Record<string, unknown>;
+      used_ocr: boolean;
+    } | null;
   } | null;
   downloadUrl?: string | null;
   isDisabled?: boolean;
@@ -36,30 +44,48 @@ const DocumentsPanel = ({
   onView,
   onClosePreview,
 }: DocumentsPanelProps) => {
+  const ocrEntities = preview?.ocr?.ocr_entities ?? {};
+  const hasOcrEntities = Object.keys(ocrEntities).length > 0;
+  const ocrConfidence = preview?.ocr?.ocr_confidence;
+  const ocrConfidenceLabel =
+    typeof ocrConfidence === 'number' ? `${Math.round(ocrConfidence * 100)}%` : 'n/a';
+  const selectedFileLabel = selectedFile ? selectedFile.name : 'No file selected';
+  const formatPages = (count?: number | null) => {
+    if (!count) return null;
+    return `${count} page${count === 1 ? '' : 's'}`;
+  };
+  const formatStatus = (status: string) => {
+    if (status === 'completed') return 'Processed';
+    if (status === 'processing') return 'Processing';
+    if (status === 'failed') return 'Needs attention';
+    return status.charAt(0).toUpperCase() + status.slice(1);
+  };
+
   return (
     <div className="panel documents">
       <div className="panel-header">
         <h2>Documents</h2>
-        <span className="signal-chip">OCR + Chunking</span>
+        <span className="signal-chip">Processed files</span>
       </div>
       <div className="document-list">
         {isDisabled ? (
           <div className="empty-state">Select a patient to view documents.</div>
         ) : isLoading ? (
           <>
-            <div className="skeleton-row" />
-            <div className="skeleton-row" />
-            <div className="skeleton-row" />
-          </>
-        ) : documents.length === 0 ? (
-          <div className="empty-state">No documents for this patient.</div>
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+        </>
+      ) : documents.length === 0 ? (
+          <div className="empty-state">No documents yet. Upload a report to get started.</div>
         ) : (
           documents.map((doc) => (
             <div key={doc.id} className="document-row">
               <div>
                 <p>{doc.title || doc.original_filename}</p>
                 <small>
-                  {doc.processing_status} · {doc.page_count || 0} pages
+                  {formatStatus(doc.processing_status)}
+                  {formatPages(doc.page_count) ? ` · ${formatPages(doc.page_count)}` : ''}
                 </small>
               </div>
               <div className="document-actions">
@@ -88,7 +114,7 @@ const DocumentsPanel = ({
         <div className="document-preview">
           <div>
             <h3>{preview.title}</h3>
-            <p>{preview.pageCount ? `${preview.pageCount} pages` : 'Extracted text'}</p>
+            <p>{preview.pageCount ? formatPages(preview.pageCount) : 'Extracted text'}</p>
           </div>
           <div className="preview-actions">
             {downloadUrl ? (
@@ -101,15 +127,43 @@ const DocumentsPanel = ({
             </button>
           </div>
           <pre>{preview.text}</pre>
+          {preview.ocr?.used_ocr ? (
+            <div className="ocr-preview">
+              <div className="ocr-header">
+                <h4>OCR summary</h4>
+                <span>
+                  Confidence {ocrConfidenceLabel}
+                  {preview.ocr.ocr_language ? ` · ${preview.ocr.ocr_language}` : ''}
+                </span>
+              </div>
+              {preview.ocr.ocr_text_cleaned ? (
+                <pre>{preview.ocr.ocr_text_cleaned}</pre>
+              ) : null}
+              {hasOcrEntities ? (
+                <pre>{JSON.stringify(ocrEntities, null, 2)}</pre>
+              ) : (
+                <p className="ocr-muted">No entities extracted.</p>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
       <div className="upload-row">
         <input
           type="file"
+          id="document-upload"
+          name="document"
           onChange={(event) => onFileChange(event.target.files?.[0] || null)}
           aria-label="Upload document"
           disabled={isLoading || isDisabled}
+          className="file-input"
         />
+        <div className="file-row">
+          <label className="ghost-button compact" htmlFor="document-upload">
+            Choose file
+          </label>
+          <span className="file-pill">{selectedFileLabel}</span>
+        </div>
         <button
           className="primary-button"
           type="button"
