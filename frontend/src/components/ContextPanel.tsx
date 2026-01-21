@@ -18,8 +18,8 @@ const ContextPanel = ({
   return (
     <div className="panel context">
       <div className="panel-header">
-        <h2>Context Builder</h2>
-        <span className="signal-chip">/context/simple</span>
+        <h2>Answer preview</h2>
+        <span className="signal-chip">Preview</span>
       </div>
       <div className="search-row">
         <input
@@ -42,7 +42,7 @@ const ContextPanel = ({
         ) : result ? (
           result
         ) : (
-          <span className="empty-state">Ask a question to generate context.</span>
+          <span className="empty-state">Ask a question to preview the context.</span>
         )}
       </div>
     </div>
