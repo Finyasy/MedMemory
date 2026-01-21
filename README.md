@@ -114,6 +114,25 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
   -d '{"email": "you@example.com", "password": "your-password"}'
 ```
 
+### OCR Refinement + Vision Chat
+
+OCR output is cleaned and structured by the local MedGemma model after document processing.
+
+**Fetch OCR refinement results:**
+```bash
+curl http://localhost:8000/api/v1/documents/<DOCUMENT_ID>/ocr \
+  -H "Authorization: Bearer <YOUR_JWT>"
+```
+
+**Vision chat (MedGemma VLM):**
+```bash
+curl -X POST http://localhost:8000/api/v1/chat/vision \
+  -H "Authorization: Bearer <YOUR_JWT>" \
+  -F "patient_id=1" \
+  -F "prompt=Does this chest X-ray show signs of pneumonia?" \
+  -F "image=@/path/to/xray.png"
+```
+
 ### Option 2: Local Development
 
 **Backend:**
