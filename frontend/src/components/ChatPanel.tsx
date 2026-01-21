@@ -38,7 +38,7 @@ const ChatPanel = ({
           <h2>Patient Memory Chat</h2>
           <p>Ask questions, upload reports, and get grounded answers.</p>
         </div>
-        <span className="signal-chip">RAG Live</span>
+        <span className="signal-chip">Live</span>
       </div>
       <div className="chat-window" aria-busy={isStreaming}>
         {isDisabled ? (
