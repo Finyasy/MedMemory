@@ -64,6 +64,13 @@ class Document(Base, TimestampMixin):
     
     ocr_confidence: Mapped[Optional[float]] = mapped_column(nullable=True)
     ocr_language: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    ocr_text_raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ocr_text_cleaned: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ocr_entities: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="JSON payload with extracted entities from OCR text",
+    )
     
     author: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     facility: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
