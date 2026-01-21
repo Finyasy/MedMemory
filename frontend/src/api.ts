@@ -73,6 +73,9 @@ export const getUserFriendlyMessage = (error: unknown) => {
         ? 'Your session has expired. Please sign in again.'
         : 'Invalid email or password.';
     }
+    if (error.status === 0) {
+      return 'Unable to reach the server. Please check your connection or try again.';
+    }
     if (error.status === 404) {
       return 'That item could not be found.';
     }
@@ -195,6 +198,25 @@ export const api = {
     });
   },
 
+  async getPatient(patientId: number): Promise<PatientSummary> {
+    const response = await request<{
+      id: number;
+      full_name: string;
+      date_of_birth?: string | null;
+      age?: number | null;
+      gender?: string | null;
+    }>(`${API_BASE}/patients/${patientId}`, {
+      headers: withAuthHeaders(),
+    });
+    return {
+      id: response.id,
+      full_name: response.full_name,
+      date_of_birth: response.date_of_birth,
+      age: response.age,
+      gender: response.gender,
+    };
+  },
+
   async createPatient(payload: {
     first_name: string;
     last_name: string;
@@ -274,6 +296,43 @@ export const api = {
   async getDocumentText(documentId: number): Promise<{ document_id: number; extracted_text: string; page_count: number }> {
     return request(`${API_BASE}/documents/${documentId}/text`, {
       headers: withAuthHeaders(),
+    });
+  },
+
+  async getDocumentOcr(documentId: number): Promise<{
+    document_id: number;
+    ocr_language?: string | null;
+    ocr_confidence?: number | null;
+    ocr_text_raw?: string | null;
+    ocr_text_cleaned?: string | null;
+    ocr_entities?: Record<string, unknown>;
+    used_ocr: boolean;
+  }> {
+    return request(`${API_BASE}/documents/${documentId}/ocr`, {
+      headers: withAuthHeaders(),
+    });
+  },
+
+  async visionChat(
+    patientId: number,
+    prompt: string,
+    image: File,
+  ): Promise<{
+    answer: string;
+    tokens_input: number;
+    tokens_generated: number;
+    tokens_total: number;
+    generation_time_ms: number;
+  }> {
+    const form = new FormData();
+    form.append('prompt', prompt);
+    form.append('patient_id', String(patientId));
+    form.append('image', image);
+
+    return request(`${API_BASE}/chat/vision`, {
+      method: 'POST',
+      headers: withAuthHeaders(),
+      body: form,
     });
   },
 
