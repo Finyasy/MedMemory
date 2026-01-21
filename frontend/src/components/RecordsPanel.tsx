@@ -27,7 +27,7 @@ const RecordsPanel = ({
   return (
     <div className="panel records">
       <div className="panel-header">
-        <h2>Medical Records</h2>
+        <h2>Clinical notes</h2>
         <span className="signal-chip">{isLoading ? '...' : `${recordCount} total`}</span>
       </div>
       <form className="record-form" onSubmit={onSubmit}>
@@ -74,7 +74,7 @@ const RecordsPanel = ({
             <div className="skeleton-card" />
           </>
         ) : records.length === 0 ? (
-          <div className="empty-state">No records yet for this patient.</div>
+          <div className="empty-state">No clinical notes yet. Add one to get started.</div>
         ) : (
           records.map((record) => (
             <div key={record.id} className="record-row">
