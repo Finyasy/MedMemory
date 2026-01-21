@@ -10,6 +10,8 @@ from typing import Optional
 import fitz  # PyMuPDF
 from PIL import Image
 
+from app.config import settings
+
 
 @dataclass
 class ExtractionResult:
@@ -20,6 +22,9 @@ class ExtractionResult:
     confidence: Optional[float] = None
     language: Optional[str] = None
     metadata: Optional[dict] = None
+    direct_text: Optional[str] = None
+    ocr_text: Optional[str] = None
+    used_ocr: bool = False
     
     @property
     def is_empty(self) -> bool:
@@ -82,6 +87,11 @@ class PDFExtractor(DocumentExtractor):
 
         try:
             pages_text = []
+            direct_parts = []
+            ocr_parts = []
+            ocr_confidences = []
+            used_ocr = False
+            ocr_language = None
             page_count = len(doc)
 
             for page_num in range(page_count):
@@ -92,7 +102,15 @@ class PDFExtractor(DocumentExtractor):
 
                 # If no text and OCR fallback enabled, try OCR
                 if not text.strip() and self.ocr_fallback:
-                    text = self._ocr_page_sync(page)
+                    ocr_result = self._ocr_page_sync(page)
+                    text = ocr_result.text
+                    if text.strip():
+                        used_ocr = True
+                        ocr_confidences.append(ocr_result.confidence or 0.0)
+                        ocr_language = ocr_result.language or ocr_language
+                        ocr_parts.append(f"--- Page {page_num + 1} ---\n{text}")
+                elif text.strip():
+                    direct_parts.append(f"--- Page {page_num + 1} ---\n{text}")
 
                 if text.strip():
                     pages_text.append(f"--- Page {page_num + 1} ---\n{text}")
@@ -101,24 +119,36 @@ class PDFExtractor(DocumentExtractor):
             metadata = self._extract_metadata(doc)
 
             full_text = "\n\n".join(pages_text)
+            direct_text = "\n\n".join(direct_parts) if direct_parts else None
+            ocr_text = "\n\n".join(ocr_parts) if ocr_parts else None
+            avg_confidence = (
+                sum(ocr_confidences) / len(ocr_confidences)
+                if ocr_confidences
+                else None
+            )
 
             return ExtractionResult(
                 text=full_text,
                 page_count=page_count,
+                confidence=avg_confidence,
+                language=ocr_language,
                 metadata=metadata,
+                direct_text=direct_text,
+                ocr_text=ocr_text,
+                used_ocr=used_ocr,
             )
 
         finally:
             doc.close()
     
-    def _ocr_page_sync(self, page: fitz.Page) -> str:
+    def _ocr_page_sync(self, page: fitz.Page) -> ExtractionResult:
         """OCR a PDF page by rendering it as an image.
         
         Args:
             page: PyMuPDF page object
             
         Returns:
-            Extracted text from OCR
+            ExtractionResult with text from OCR
         """
         try:
             # Render page to image
@@ -129,10 +159,16 @@ class PDFExtractor(DocumentExtractor):
             image_extractor = ImageExtractor()
             result = image_extractor.extract_from_bytes_sync(img_bytes, "image/png")
             
-            return result.text
+            return result
         
         except Exception:
-            return ""
+            return ExtractionResult(
+                text="",
+                page_count=1,
+                confidence=0.0,
+                language="eng",
+                used_ocr=True,
+            )
     
     def _extract_metadata(self, doc: fitz.Document) -> dict:
         """Extract PDF metadata."""
@@ -170,7 +206,7 @@ class PDFExtractor(DocumentExtractor):
             text = page.get_text("text")
 
             if not text.strip() and self.ocr_fallback:
-                text = self._ocr_page_sync(page)
+                text = self._ocr_page_sync(page).text
 
             return text
         finally:
@@ -272,6 +308,9 @@ class ImageExtractor(DocumentExtractor):
             page_count=1,
             confidence=confidence,
             language=self.language,
+            direct_text=None,
+            ocr_text=text,
+            used_ocr=True,
         )
     
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
@@ -294,9 +333,27 @@ class ImageExtractor(DocumentExtractor):
             new_size = (int(image.width * scale), int(image.height * scale))
             image = image.resize(new_size, Image.Resampling.LANCZOS)
         
-        # Convert to grayscale for OCR
-        image = image.convert("L")
-        
+        # Convert to grayscale/binarize for OCR
+        if settings.ocr_preprocess_opencv:
+            try:
+                import cv2
+                import numpy as np
+                img_array = np.array(image)
+                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                binarized = cv2.adaptiveThreshold(
+                    gray,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    31,
+                    15,
+                )
+                image = Image.fromarray(binarized)
+            except Exception:
+                image = image.convert("L")
+        else:
+            image = image.convert("L")
+
         return image
     
     def _ocr_with_tesseract_sync(
@@ -371,6 +428,9 @@ class DocxExtractor(DocumentExtractor):
         return ExtractionResult(
             text="\n\n".join(paragraphs),
             page_count=1,  # DOCX doesn't have fixed pages
+            direct_text="\n\n".join(paragraphs),
+            ocr_text=None,
+            used_ocr=False,
         )
 
 
