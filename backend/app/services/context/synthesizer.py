@@ -331,7 +331,8 @@ class ContextSynthesizer:
             system_prompt = (
                 "You are a medical assistant. Answer concisely using only the provided context. "
                 "Do not include reasoning, analysis, or meta commentary. "
-                "If information is not available, state it briefly."
+                "No greetings or apologies. "
+                "If information is not available, respond exactly: \"No information available about [topic].\""
             )
         
         prompt = f"""{system_prompt}
