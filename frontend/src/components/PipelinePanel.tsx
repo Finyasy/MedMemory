@@ -18,8 +18,8 @@ const PipelinePanel = ({
   return (
     <div className="panel pipeline">
       <div className="panel-header">
-        <h2>Ingestion Pipeline</h2>
-        <span className="signal-chip">Labs + Meds</span>
+        <h2>Data intake</h2>
+        <span className="signal-chip">Labs + meds</span>
       </div>
       <div className="pipeline-steps">
         {isLoading ? (
@@ -32,18 +32,18 @@ const PipelinePanel = ({
           <>
             <div>
               <span>Labs</span>
-              <strong>112 panels</strong>
-              <small>Batch ingestion ready</small>
+              <strong>Ready for upload</strong>
+              <small>Add lab results to see trends</small>
             </div>
             <div>
               <span>Medications</span>
-              <strong>38 active</strong>
-              <small>Discontinue workflow</small>
+              <strong>Track adherence</strong>
+              <small>Add active meds to monitor</small>
             </div>
             <div>
-              <span>Encounters</span>
-              <strong>52 visits</strong>
-              <small>SOAP notes supported</small>
+              <span>Visits</span>
+              <strong>Summaries supported</strong>
+              <small>Add visit notes to follow progress</small>
             </div>
           </>
         )}
@@ -60,7 +60,7 @@ const PipelinePanel = ({
         onClick={onIngest}
         disabled={isLoading || isDisabled}
       >
-        {isLoading ? 'Ingesting...' : 'Start Bulk Ingestion'}
+        {isLoading ? 'Importing...' : 'Import data'}
       </button>
       {status && <p className="status-text">{status}</p>}
     </div>
