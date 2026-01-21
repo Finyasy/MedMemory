@@ -5,11 +5,13 @@ Optimized for MPS (Apple Silicon) and CUDA.
 """
 
 import asyncio
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import torch
+from PIL import Image
 from transformers import (
     AutoModelForImageTextToText,
     AutoProcessor,
@@ -103,7 +105,7 @@ class LLMService:
             self.load_in_4bit = load_in_4bit
         
         # Generation parameters
-        self.max_new_tokens = settings.llm_max_tokens
+        self.max_new_tokens = settings.llm_max_new_tokens
         self.temperature = settings.llm_temperature
         self.top_p = 0.9
         self.repetition_penalty = 1.1
@@ -390,6 +392,135 @@ class LLMService:
             tokens_input=input_tokens,
             generation_time_ms=generation_time,
         )
+
+    async def generate_with_image(
+        self,
+        prompt: str,
+        image_bytes: bytes,
+        max_new_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        system_prompt: Optional[str] = None,
+        conversation_history: Optional[list[dict]] = None,
+    ) -> LLMResponse:
+        """Generate text from a prompt and image input."""
+        import time
+        start_time = time.time()
+
+        full_prompt = None
+        if system_prompt is None and not conversation_history:
+            full_prompt = prompt
+        else:
+            full_prompt = self._build_prompt(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                conversation_history=conversation_history,
+            )
+
+        if hasattr(self.processor, "tokenizer") and hasattr(self.processor.tokenizer, "apply_chat_template"):
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if conversation_history:
+                for turn in conversation_history:
+                    role = turn.get("role", "user")
+                    content = turn.get("content", "")
+                    messages.append({"role": role, "content": content})
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt},
+                ],
+            })
+            full_prompt = self.processor.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            full_prompt = self._ensure_image_token(full_prompt)
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        inputs = self.processor(
+            text=full_prompt,
+            images=image,
+            return_tensors="pt",
+        )
+
+        model_device = next(self.model.parameters()).device
+        inputs = {k: v.to(model_device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        if "input_ids" in inputs:
+            print("LLM vision: input_ids shape", inputs["input_ids"].shape)
+        print("LLM device:", next(self.model.parameters()).device)
+        input_tokens = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
+
+        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens or self.max_new_tokens,
+            "repetition_penalty": self.repetition_penalty,
+            "do_sample": self.do_sample,
+        }
+        if self.do_sample:
+            gen_kwargs.update({
+                "temperature": temperature or self.temperature,
+                "top_p": self.top_p,
+            })
+        if tokenizer:
+            gen_kwargs.update({
+                "eos_token_id": tokenizer.eos_token_id,
+                "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+            })
+
+        loop = asyncio.get_event_loop()
+
+        def _generate():
+            with torch.inference_mode():
+                return self.model.generate(**inputs, **gen_kwargs)
+
+        async with self._gen_lock:
+            outputs = await loop.run_in_executor(None, _generate)
+
+        sequences = outputs
+        if hasattr(outputs, "sequences"):
+            sequences = outputs.sequences
+        elif isinstance(outputs, (tuple, list)):
+            sequences = outputs[0]
+
+        if not hasattr(sequences, "shape") or len(sequences.shape) < 2:
+            raise RuntimeError(
+                f"Unexpected generate() output type/shape: {type(outputs)} / {getattr(sequences, 'shape', None)}"
+            )
+
+        seq = sequences[0]
+        input_len = inputs["input_ids"].shape[-1] if "input_ids" in inputs else 0
+        generated_ids = seq[input_len:] if input_len > 0 else seq
+
+        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
+        if tokenizer:
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        else:
+            generated_text = self.processor.batch_decode([generated_ids], skip_special_tokens=True)[0]
+
+        output_tokens = max(int(seq.shape[0] - input_len), 0)
+        generation_time = (time.time() - start_time) * 1000
+
+        return LLMResponse(
+            text=generated_text.strip(),
+            tokens_generated=output_tokens,
+            tokens_input=input_tokens,
+            generation_time_ms=generation_time,
+        )
+
+    def _ensure_image_token(self, prompt: str) -> str:
+        """Ensure the prompt includes a model-specific image token."""
+        image_token = getattr(self.processor, "image_token", None)
+        if not image_token and hasattr(self.processor, "tokenizer"):
+            image_token = getattr(self.processor.tokenizer, "image_token", None)
+        if not image_token:
+            image_token = "<image>"
+        if image_token in prompt:
+            return prompt
+        return f"{image_token}\n{prompt}"
     
     def _build_prompt(
         self,
