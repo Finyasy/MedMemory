@@ -4,15 +4,17 @@ import type { DocumentItem } from '../types';
 
 type UsePatientDocumentsOptions = {
   patientId: number;
+  isAuthenticated: boolean;
   onError: (label: string, error: unknown) => void;
   onSuccess?: () => void;
 };
 
-const usePatientDocuments = ({ patientId, onError, onSuccess }: UsePatientDocumentsOptions) => {
+const usePatientDocuments = ({ patientId, isAuthenticated, onError, onSuccess }: UsePatientDocumentsOptions) => {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const reloadDocuments = useCallback(async () => {
+    if (!isAuthenticated) return;
     setIsLoading(true);
     try {
       const data = await api.listDocuments(patientId);
@@ -23,12 +25,12 @@ const usePatientDocuments = ({ patientId, onError, onSuccess }: UsePatientDocume
     } finally {
       setIsLoading(false);
     }
-  }, [patientId, onError]);
+  }, [patientId, isAuthenticated, onError, onSuccess]);
 
   useEffect(() => {
-    if (!patientId) return;
+    if (!patientId || !isAuthenticated) return;
     reloadDocuments();
-  }, [patientId, reloadDocuments]);
+  }, [patientId, isAuthenticated, reloadDocuments]);
 
   return { documents, isLoading, reloadDocuments };
 };
