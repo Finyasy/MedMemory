@@ -107,6 +107,74 @@ class VisionChatResponse(BaseModel):
     generation_time_ms: float = 0.0
 
 
+class VolumeChatResponse(BaseModel):
+    """Response from volume interpretation."""
+
+    answer: str
+    total_slices: int
+    sampled_indices: list[int] = []
+    grid_rows: int
+    grid_cols: int
+    tile_size: int
+    tokens_input: int = 0
+    tokens_generated: int = 0
+    tokens_total: int = 0
+    generation_time_ms: float = 0.0
+
+
+class WsiChatResponse(BaseModel):
+    """Response from WSI patch interpretation."""
+
+    answer: str
+    total_patches: int
+    sampled_indices: list[int] = []
+    grid_rows: int
+    grid_cols: int
+    tile_size: int
+    tokens_input: int = 0
+    tokens_generated: int = 0
+    tokens_total: int = 0
+    generation_time_ms: float = 0.0
+
+
+class CxrCompareResponse(BaseModel):
+    """Response from longitudinal chest X-ray comparison."""
+
+    answer: str
+    tokens_input: int = 0
+    tokens_generated: int = 0
+    tokens_total: int = 0
+    generation_time_ms: float = 0.0
+
+
+class LocalizationBox(BaseModel):
+    """Localized finding with pixel and normalized coordinates."""
+
+    label: str
+    confidence: float
+    x_min: int
+    y_min: int
+    x_max: int
+    y_max: int
+    x_min_norm: float
+    y_min_norm: float
+    x_max_norm: float
+    y_max_norm: float
+
+
+class LocalizationResponse(BaseModel):
+    """Response from localization endpoint."""
+
+    answer: str
+    boxes: list[LocalizationBox] = []
+    image_width: int
+    image_height: int
+    tokens_input: int = 0
+    tokens_generated: int = 0
+    tokens_total: int = 0
+    generation_time_ms: float = 0.0
+
+
 # ============================================
 # Stream Chat
 # ============================================
