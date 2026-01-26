@@ -7,6 +7,20 @@ import type {
   MemorySearchResponse,
   PatientSummary,
 } from './types';
+import {
+  ApiError as GeneratedApiError,
+  AuthenticationService,
+  ChatService,
+  ContextEngineService,
+  DataIngestionService,
+  DocumentsService,
+  HealthService,
+  InsightsService,
+  MedicalRecordsService,
+  MemorySearchService,
+  OpenAPI,
+  PatientsService,
+} from './api/generated';
 
 const normalizeApiBase = (base: string) => {
   const trimmed = base.replace(/\/+$/, '');
@@ -23,9 +37,47 @@ const API_ORIGIN = import.meta.env.VITE_API_BASE
   ? new URL(normalizeApiBase(import.meta.env.VITE_API_BASE)).origin
   : window.location.origin;
 
+const resolveAuthRecoveryUrls = (path: string) => {
+  const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+  const candidates = new Set<string>();
+
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  candidates.add(`${base}${normalizedPath}`);
+
+  if (base.endsWith('/api/v1')) {
+    candidates.add(`${base.replace(/\/api\/v1$/, '')}${normalizedPath}`);
+  } else if (base.endsWith('/api')) {
+    candidates.add(`${base.replace(/\/api$/, '')}${normalizedPath}`);
+  }
+
+  candidates.add(`${API_ORIGIN}${normalizedPath}`);
+
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      const localApiBase = 'http://localhost:8000/api/v1';
+      const localAltBase = 'http://127.0.0.1:8000/api/v1';
+      candidates.add(`${localApiBase}${normalizedPath}`);
+      candidates.add(`${localAltBase}${normalizedPath}`);
+    }
+  }
+  return Array.from(candidates);
+};
+
 const getAccessToken = () => {
   if (typeof window === 'undefined') return null;
   return window.localStorage.getItem('medmemory_access_token');
+};
+
+const getRefreshToken = () => {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem('medmemory_refresh_token');
+};
+
+const getTokenExpiresAt = () => {
+  if (typeof window === 'undefined') return null;
+  const val = window.localStorage.getItem('medmemory_token_expires_at');
+  return val ? parseInt(val, 10) : null;
 };
 
 const hasAccessToken = () => Boolean(getAccessToken());
@@ -35,25 +87,85 @@ const getApiKey = () => {
   return window.localStorage.getItem('medmemory_api_key');
 };
 
-const withAuthHeaders = (headers: Record<string, string> = {}) => {
-  const accessToken = getAccessToken();
+let refreshPromise: Promise<string | null> | null = null;
+
+const refreshAccessToken = async (): Promise<string | null> => {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+  
+  if (refreshPromise) return refreshPromise;
+  
+  refreshPromise = (async () => {
+    try {
+      const urls = resolveAuthRecoveryUrls('/auth/refresh');
+      for (const url of urls) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: refreshToken }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            window.localStorage.setItem('medmemory_access_token', data.access_token);
+            window.localStorage.setItem('medmemory_refresh_token', data.refresh_token);
+            window.localStorage.setItem('medmemory_token_expires_at', String(Date.now() + data.expires_in * 1000));
+            return data.access_token;
+          }
+          if (res.status === 401) {
+            window.localStorage.removeItem('medmemory_access_token');
+            window.localStorage.removeItem('medmemory_refresh_token');
+            window.localStorage.removeItem('medmemory_token_expires_at');
+            return null;
+          }
+        } catch {
+          continue;
+        }
+      }
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  
+  return refreshPromise;
+};
+
+const isTokenExpiringSoon = () => {
+  const expiresAt = getTokenExpiresAt();
+  if (!expiresAt) return false;
+  return Date.now() > expiresAt - 60000;
+};
+
+const getAuthHeaders = async () => {
+  let accessToken = getAccessToken();
   const apiKey = getApiKey();
-  
-  const authHeaders: Record<string, string> = { ...headers };
-  
-  // Prefer JWT token over API key
+
+  if (accessToken && isTokenExpiringSoon()) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      accessToken = newToken;
+    }
+  }
+
+  const authHeaders: Record<string, string> = {};
+
   if (accessToken) {
     authHeaders['Authorization'] = `Bearer ${accessToken}`;
-    console.log('[API] Using JWT token for authentication');
   } else if (apiKey) {
     authHeaders['X-API-Key'] = apiKey;
-    console.log('[API] Using API key for authentication');
-  } else {
-    console.warn('[API] No authentication token found');
   }
-  
+
   return authHeaders;
 };
+
+const withAuthHeaders = async (headers: Record<string, string> = {}) => {
+  const authHeaders = await getAuthHeaders();
+  return { ...headers, ...authHeaders };
+};
+
+OpenAPI.BASE = API_ORIGIN;
+OpenAPI.HEADERS = async () => getAuthHeaders();
 
 export class ApiError extends Error {
   status: number;
@@ -66,27 +178,43 @@ export class ApiError extends Error {
 }
 
 export const getUserFriendlyMessage = (error: unknown) => {
-  if (error instanceof ApiError) {
-    if (error.status === 401 || error.status === 403) {
-      if (error.message) return error.message;
+  const formatApiMessage = (status: number, message: string) => {
+    if (status === 401 || status === 403) {
+      const normalized = message?.toLowerCase() || '';
+      if (message && !normalized.includes('not authenticated')) return message;
       return hasAccessToken()
         ? 'Your session has expired. Please sign in again.'
         : 'Invalid email or password.';
     }
-    if (error.status === 0) {
+    if (status === 0) {
       return 'Unable to reach the server. Please check your connection or try again.';
     }
-    if (error.status === 404) {
+    if (status === 404) {
       return 'That item could not be found.';
     }
-    if (error.status === 429) {
+    if (status === 429) {
       return 'Too many requests. Please wait a moment and try again.';
     }
-    if (error.status >= 500) {
+    if (status >= 500) {
       return 'The server ran into a problem. Please try again shortly.';
     }
-    return error.message;
+    return message;
+  };
+
+  if (error instanceof ApiError) {
+    return formatApiMessage(error.status, error.message);
   }
+
+  if (error instanceof GeneratedApiError) {
+    const message =
+      error.body?.error?.message ||
+      error.body?.detail ||
+      error.message ||
+      error.statusText ||
+      'Unexpected API error';
+    return formatApiMessage(error.status, message);
+  }
+
   if (error instanceof Error) return error.message;
   return 'Unexpected error';
 };
@@ -148,66 +276,89 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
 
 export const api = {
   async getHealth(): Promise<{ status: string; service: string }> {
-    return request(`${API_ORIGIN}/health`);
+    return HealthService.healthCheckHealthGet();
   },
 
   async signup(email: string, password: string, fullName: string) {
-    return request<{
-      access_token: string;
-      token_type: string;
-      user_id: number;
-      email: string;
-    }>(`${API_BASE}/auth/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, full_name: fullName }),
+    return AuthenticationService.signupApiV1AuthSignupPost({
+      email,
+      password,
+      full_name: fullName,
     });
   },
 
   async login(email: string, password: string) {
-    return request<{
-      access_token: string;
-      token_type: string;
-      user_id: number;
-      email: string;
-    }>(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
+    return AuthenticationService.loginApiV1AuthLoginPost({ email, password });
+  },
+
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    const urls = resolveAuthRecoveryUrls('/auth/forgot-password');
+    let lastError: unknown;
+    for (const url of urls) {
+      try {
+        return await request(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+      } catch (error) {
+        lastError = error;
+        if (error instanceof ApiError && error.status === 404) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
+  },
+
+  async resetPassword(token: string, newPassword: string): Promise<{ message: string }> {
+    const urls = resolveAuthRecoveryUrls('/auth/reset-password');
+    let lastError: unknown;
+    for (const url of urls) {
+      try {
+        return await request(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, new_password: newPassword }),
+        });
+      } catch (error) {
+        lastError = error;
+        if (error instanceof ApiError && error.status === 404) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   },
 
   async getCurrentUser() {
-    return request<{
-      id: number;
-      email: string;
-      full_name: string;
-      is_active: boolean;
-    }>(`${API_BASE}/auth/me`, {
-      headers: withAuthHeaders(),
-    });
+    return AuthenticationService.getCurrentUserInfoApiV1AuthMeGet();
+  },
+
+  async logout(): Promise<void> {
+    const urls = resolveAuthRecoveryUrls('/auth/logout');
+    const headers = await getAuthHeaders();
+    for (const url of urls) {
+      try {
+        await fetch(url, {
+          method: 'POST',
+          headers,
+        });
+        return;
+      } catch {
+        continue;
+      }
+    }
   },
 
   async listPatients(search?: string): Promise<PatientSummary[]> {
-    const params = new URLSearchParams();
-    if (search) params.set('search', search);
-    const query = params.toString();
-    const url = query ? `${API_BASE}/patients/?${query}` : `${API_BASE}/patients/`;
-    return request(url, {
-      headers: withAuthHeaders(),
-    });
+    return PatientsService.listPatientsApiV1PatientsGet(undefined, 100, search ?? null);
   },
 
   async getPatient(patientId: number): Promise<PatientSummary> {
-    const response = await request<{
-      id: number;
-      full_name: string;
-      date_of_birth?: string | null;
-      age?: number | null;
-      gender?: string | null;
-    }>(`${API_BASE}/patients/${patientId}`, {
-      headers: withAuthHeaders(),
-    });
+    const response = await PatientsService.getPatientApiV1PatientsPatientIdGet(patientId);
     return {
       id: response.id,
       full_name: response.full_name,
@@ -224,17 +375,7 @@ export const api = {
     gender?: string;
     email?: string;
   }): Promise<PatientSummary> {
-    const response = await request<{
-      id: number;
-      full_name: string;
-      date_of_birth?: string | null;
-      age?: number | null;
-      gender?: string | null;
-    }>(`${API_BASE}/patients/`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
+    const response = await PatientsService.createPatientApiV1PatientsPost(payload);
     // Convert PatientResponse to PatientSummary format
     return {
       id: response.id,
@@ -246,30 +387,21 @@ export const api = {
   },
 
   async getRecords(patientId?: number): Promise<MedicalRecord[]> {
-    const query = patientId ? `?patient_id=${patientId}` : '';
-    return request(`${API_BASE}/records/${query}`, {
-      headers: withAuthHeaders(),
-    });
+    return MedicalRecordsService.listRecordsApiV1RecordsGet(patientId ?? null);
   },
 
   async createRecord(patientId: number, payload: CreateRecordPayload): Promise<MedicalRecord> {
-    return request(`${API_BASE}/records/?patient_id=${patientId}`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
+    return MedicalRecordsService.createRecordApiV1RecordsPost(patientId, payload);
   },
 
   async listDocuments(patientId: number): Promise<DocumentItem[]> {
-    return request(`${API_BASE}/documents/patient/${patientId}`, {
-      headers: withAuthHeaders(),
-    });
+    return DocumentsService.listDocumentsApiV1DocumentsGet(patientId);
   },
 
   async uploadDocument(
     patientId: number,
     file: File,
-    metadata: { title?: string; category?: string; document_type?: string } = {},
+    metadata: { title?: string; category?: string; document_type?: string; description?: string } = {},
   ): Promise<DocumentItem> {
     const form = new FormData();
     form.append('file', file);
@@ -277,26 +409,26 @@ export const api = {
     if (metadata.document_type) form.append('document_type', metadata.document_type);
     if (metadata.title) form.append('title', metadata.title);
     if (metadata.category) form.append('category', metadata.category);
+    if (metadata.description) form.append('description', metadata.description);
 
-    return request(`${API_BASE}/documents/upload`, {
-      method: 'POST',
-      headers: withAuthHeaders(),
-      body: form,
+    return DocumentsService.uploadDocumentApiV1DocumentsUploadPost({
+      file,
+      patient_id: patientId,
+      document_type: metadata.document_type ?? null,
+      title: metadata.title ?? null,
+      category: metadata.category ?? null,
+      description: metadata.description ?? null,
     });
   },
 
   async processDocument(documentId: number): Promise<{ status: string; chunks_created: number }> {
-    return request(`${API_BASE}/documents/${documentId}/process`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ create_memory_chunks: true }),
+    return DocumentsService.processDocumentApiV1DocumentsDocumentIdProcessPost(documentId, {
+      create_memory_chunks: true,
     });
   },
 
   async getDocumentText(documentId: number): Promise<{ document_id: number; extracted_text: string; page_count: number }> {
-    return request(`${API_BASE}/documents/${documentId}/text`, {
-      headers: withAuthHeaders(),
-    });
+    return DocumentsService.getDocumentTextApiV1DocumentsDocumentIdTextGet(documentId);
   },
 
   async getDocumentOcr(documentId: number): Promise<{
@@ -308,9 +440,7 @@ export const api = {
     ocr_entities?: Record<string, unknown>;
     used_ocr: boolean;
   }> {
-    return request(`${API_BASE}/documents/${documentId}/ocr`, {
-      headers: withAuthHeaders(),
-    });
+    return DocumentsService.getDocumentOcrApiV1DocumentsDocumentIdOcrGet(documentId);
   },
 
   async visionChat(
@@ -324,15 +454,117 @@ export const api = {
     tokens_total: number;
     generation_time_ms: number;
   }> {
-    const form = new FormData();
-    form.append('prompt', prompt);
-    form.append('patient_id', String(patientId));
-    form.append('image', image);
+    return ChatService.askWithImageApiV1ChatVisionPost({
+      prompt,
+      patient_id: patientId,
+      image,
+    });
+  },
 
-    return request(`${API_BASE}/chat/vision`, {
-      method: 'POST',
-      headers: withAuthHeaders(),
-      body: form,
+  async volumeChat(
+    patientId: number,
+    prompt: string,
+    volume: File,
+    options?: { sampleCount?: number; tileSize?: number; modality?: string },
+  ): Promise<{
+    answer: string;
+    total_slices: number;
+    sampled_indices: number[];
+    grid_rows: number;
+    grid_cols: number;
+    tile_size: number;
+    tokens_input: number;
+    tokens_generated: number;
+    tokens_total: number;
+    generation_time_ms: number;
+  }> {
+    return ChatService.askWithVolumeApiV1ChatVolumePost({
+      prompt,
+      patient_id: patientId,
+      slices: [volume],
+      sample_count: options?.sampleCount,
+      tile_size: options?.tileSize,
+      modality: options?.modality,
+    });
+  },
+
+  async wsiChat(
+    patientId: number,
+    prompt: string,
+    patches: File,
+    options?: { sampleCount?: number; tileSize?: number },
+  ): Promise<{
+    answer: string;
+    total_patches: number;
+    sampled_indices: number[];
+    grid_rows: number;
+    grid_cols: number;
+    tile_size: number;
+    tokens_input: number;
+    tokens_generated: number;
+    tokens_total: number;
+    generation_time_ms: number;
+  }> {
+    return ChatService.askWithWsiApiV1ChatWsiPost({
+      prompt,
+      patient_id: patientId,
+      patches: [patches],
+      sample_count: options?.sampleCount,
+      tile_size: options?.tileSize,
+    });
+  },
+
+  async compareCxr(
+    patientId: number,
+    prompt: string,
+    currentImage: File,
+    priorImage: File,
+  ): Promise<{
+    answer: string;
+    tokens_input: number;
+    tokens_generated: number;
+    tokens_total: number;
+    generation_time_ms: number;
+  }> {
+    return ChatService.compareCxrApiV1ChatCxrComparePost({
+      prompt,
+      patient_id: patientId,
+      current_image: currentImage,
+      prior_image: priorImage,
+    });
+  },
+
+  async localizeFindings(
+    patientId: number,
+    prompt: string,
+    image: File,
+    modality: string,
+  ): Promise<{
+    answer: string;
+    boxes: Array<{
+      label: string;
+      confidence: number;
+      x_min: number;
+      y_min: number;
+      x_max: number;
+      y_max: number;
+      x_min_norm: number;
+      y_min_norm: number;
+      x_max_norm: number;
+      y_max_norm: number;
+    }>;
+    image_width: number;
+    image_height: number;
+    tokens_input: number;
+    tokens_generated: number;
+    tokens_total: number;
+    generation_time_ms: number;
+  }> {
+    return ChatService.localizeFindingsApiV1ChatLocalizePost({
+      prompt,
+      patient_id: patientId,
+      image,
+      modality,
     });
   },
 
@@ -358,24 +590,22 @@ export const api = {
     }>;
     a1c_series: number[];
   }> {
-    return request(`${API_BASE}/insights/patient/${patientId}`, {
-      headers: withAuthHeaders(),
-    });
+    return InsightsService.getPatientInsightsApiV1InsightsPatientPatientIdGet(patientId);
   },
 
   async memorySearch(patientId: number, query: string): Promise<MemorySearchResponse> {
-    return request(`${API_BASE}/memory/search`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ query, patient_id: patientId, limit: 5 }),
+    return MemorySearchService.semanticSearchApiV1MemorySearchPost({
+      query,
+      patient_id: patientId,
+      limit: 5,
     });
   },
 
   async getContext(patientId: number, question: string): Promise<ContextSimpleResponse> {
-    return request(`${API_BASE}/context/simple`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ patient_id: patientId, query: question, max_tokens: 2000 }),
+    return ContextEngineService.getSimpleContextApiV1ContextSimplePost({
+      patient_id: patientId,
+      query: question,
+      max_tokens: 2000,
     });
   },
 
@@ -384,18 +614,13 @@ export const api = {
     medications?: unknown[];
     encounters?: unknown[];
   }) {
-    return request(`${API_BASE}/ingest/batch`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
+    return DataIngestionService.ingestBatchApiV1IngestBatchPost(payload);
   },
 
   async chatAsk(patientId: number, question: string): Promise<{ answer: string } & Record<string, unknown>> {
-    return request(`${API_BASE}/chat/ask`, {
-      method: 'POST',
-      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ question, patient_id: patientId }),
+    return ChatService.askQuestionApiV1ChatAskPost({
+      question,
+      patient_id: patientId,
     });
   },
 
@@ -405,11 +630,12 @@ export const api = {
     onChunk: (chunk: string) => void,
     onDone: () => void,
   ) {
+    const headers = await withAuthHeaders();
     const res = await fetch(
       `${API_BASE}/chat/stream?patient_id=${patientId}&question=${encodeURIComponent(question)}`,
       {
         method: 'POST',
-        headers: withAuthHeaders(),
+        headers,
       },
     );
 
