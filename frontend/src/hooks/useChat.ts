@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../api';
+import { ApiError, api } from '../api';
+import useAppStore from '../store/useAppStore';
 import type { ChatMessage } from '../types';
 
 type UseChatOptions = {
@@ -51,6 +52,9 @@ const useChat = ({ patientId, onError }: UseChatOptions) => {
         },
       );
     } catch (error) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        useAppStore.getState().setAccessToken(null);
+      }
       onError('Chat failed', error);
       setIsStreaming(false);
     }
@@ -82,7 +86,100 @@ const useChat = ({ patientId, onError }: UseChatOptions) => {
     }
   }, [patientId, isStreaming, onError]);
 
-  return { messages, question, setQuestion, isStreaming, send, sendVision };
+  const pushMessage = useCallback((message: ChatMessage) => {
+    setMessages((prev) => [...prev, message]);
+  }, []);
+
+  const sendVolume = useCallback(async (file: File, promptOverride?: string) => {
+    if (isStreaming) return;
+    const prompt = promptOverride?.trim() || 'Summarize findings from this CT/MRI volume.';
+    setQuestion('');
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: `${prompt}\n[Volume: ${file.name}]` },
+      { role: 'assistant', content: '' },
+    ]);
+    setIsStreaming(true);
+
+    try {
+      const response = await api.volumeChat(patientId, prompt, file, { modality: 'CT/MRI' });
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: response.answer };
+        return updated;
+      });
+    } catch (error) {
+      onError('Volume analysis failed', error);
+      throw error;
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [patientId, isStreaming, onError]);
+
+  const sendWsi = useCallback(async (file: File, promptOverride?: string) => {
+    if (isStreaming) return;
+    const prompt = promptOverride?.trim() || 'Summarize histopathology patches.';
+    setQuestion('');
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: `${prompt}\n[WSI patches: ${file.name}]` },
+      { role: 'assistant', content: '' },
+    ]);
+    setIsStreaming(true);
+
+    try {
+      const response = await api.wsiChat(patientId, prompt, file);
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: response.answer };
+        return updated;
+      });
+    } catch (error) {
+      onError('WSI analysis failed', error);
+      throw error;
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [patientId, isStreaming, onError]);
+
+  const sendCxrCompare = useCallback(async (currentFile: File, priorFile: File, promptOverride?: string) => {
+    if (isStreaming) return;
+    const prompt = promptOverride?.trim() || 'Compare these chest X-rays and summarize changes.';
+    setQuestion('');
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: `${prompt}\n[Current: ${currentFile.name}, Prior: ${priorFile.name}]` },
+      { role: 'assistant', content: '' },
+    ]);
+    setIsStreaming(true);
+
+    try {
+      const response = await api.compareCxr(patientId, prompt, currentFile, priorFile);
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: response.answer };
+        return updated;
+      });
+    } catch (error) {
+      onError('CXR comparison failed', error);
+      throw error;
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [patientId, isStreaming, onError]);
+
+  return {
+    messages,
+    question,
+    setQuestion,
+    isStreaming,
+    send,
+    sendVision,
+    sendVolume,
+    sendWsi,
+    sendCxrCompare,
+    pushMessage,
+  };
 };
 
 export default useChat;
