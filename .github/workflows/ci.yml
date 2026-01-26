@@ -5,6 +5,54 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra dev --frozen
+      - name: Backend lint (ruff)
+        working-directory: backend
+        run: uv run ruff check app tests || true
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend lint (eslint)
+        working-directory: frontend
+        run: npm run lint
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Verify build output
+        run: |
+          if [ ! -d "frontend/dist" ]; then
+            echo "Build failed: dist directory not found"
+            exit 1
+          fi
+          echo "Build successful"
+
   backend-tests:
     runs-on: ubuntu-latest
     services:
@@ -34,3 +82,84 @@ jobs:
       - name: Run backend tests
         working-directory: backend
         run: uv run pytest
+
+  frontend-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: medmemory
+          POSTGRES_PASSWORD: medmemory_dev
+          POSTGRES_DB: medmemory_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medmemory -d medmemory_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://medmemory:medmemory_dev@localhost:5432/medmemory_test
+      DEBUG: "true"
+      JWT_SECRET_KEY: "ci-secret"
+      PLAYWRIGHT_BASE_URL: http://localhost:5173
+      E2E_API_BASE_URL: http://localhost:8000
+      E2E_EMAIL: demo@medmemory.ai
+      E2E_PASSWORD: demo-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra dev --frozen
+      - name: Run migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+      - name: Start backend
+        working-directory: backend
+        run: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps
+      - name: Start frontend
+        working-directory: frontend
+        run: npm run dev -- --host 0.0.0.0 --port 5173 &
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/health >/dev/null && curl -sf http://localhost:5173 >/dev/null; then
+              echo "Services are up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Services did not start in time"
+          exit 1
+      - name: Run Playwright tests
+        working-directory: frontend
+        run: npm exec playwright test
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+      - name: Upload Playwright test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: frontend/test-results
+          if-no-files-found: ignore
