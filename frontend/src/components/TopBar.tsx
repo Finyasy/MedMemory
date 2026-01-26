@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import LoginModal from './LoginModal';
 import SignUpModal from './SignUpModal';
+import ForgotPasswordModal from './ForgotPasswordModal';
+import ResetPasswordModal from './ResetPasswordModal';
 import useAppStore from '../store/useAppStore';
+import { api } from '../api';
 
 type TopBarProps = {
   viewMode?: 'chat' | 'dashboard';
@@ -12,16 +15,33 @@ type TopBarProps = {
 const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
   const [showLogin, setShowLogin] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [showReset, setShowReset] = useState(false);
+  const [resetToken, setResetToken] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
   const user = useAppStore((state) => state.user);
   const logout = useAppStore((state) => state.logout);
+  const theme = useAppStore((state) => state.theme);
+  const setTheme = useAppStore((state) => state.setTheme);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setMenuOpen(false);
+    try {
+      await api.logout();
+    } catch {
+      // Ignore logout errors
+    }
     logout();
   };
+
+  const cycleTheme = () => {
+    const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
+    setTheme(next);
+  };
+
+  const themeLabel = theme === 'light' ? '☀️ Light' : theme === 'dark' ? '🌙 Dark' : '💻 System';
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -37,6 +57,19 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
   useEffect(() => {
     setMenuOpen(false);
   }, [isAuthenticated, user?.id]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (url.pathname === '/reset-password') {
+      const token = url.searchParams.get('token') || '';
+      setResetToken(token);
+      setShowReset(true);
+      setShowLogin(false);
+      setShowSignup(false);
+      setShowForgot(false);
+    }
+  }, []);
 
   return (
     <>
@@ -79,6 +112,7 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
                   onClick={() => setMenuOpen((open) => !open)}
                   aria-haspopup="menu"
                   aria-expanded={menuOpen}
+                  data-testid="user-menu"
                 >
                   <span className="user-avatar">
                     {(user?.full_name || user?.email || 'U').charAt(0).toUpperCase()}
@@ -112,6 +146,9 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
                       )
                     ) : null}
                     <div className="user-divider" />
+                    <button className="ghost-button compact" type="button" onClick={cycleTheme} role="menuitem">
+                      {themeLabel}
+                    </button>
                     <button className="ghost-button compact" type="button" onClick={handleLogout} role="menuitem">
                       Log Out
                     </button>
@@ -121,10 +158,20 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
             </>
           ) : (
             <>
-              <button className="ghost-button" type="button" onClick={() => setShowLogin(true)}>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setShowLogin(true)}
+                data-testid="open-login"
+              >
                 Log In
               </button>
-              <button className="primary-button" type="button" onClick={() => setShowSignup(true)}>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => setShowSignup(true)}
+                data-testid="open-signup"
+              >
                 Sign Up
               </button>
             </>
@@ -138,6 +185,10 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
           setShowLogin(false);
           setShowSignup(true);
         }}
+        onForgotPassword={() => {
+          setShowLogin(false);
+          setShowForgot(true);
+        }}
       />
       <SignUpModal
         isOpen={showSignup}
@@ -146,6 +197,27 @@ const TopBar = ({ viewMode, onViewChange, patientMeta }: TopBarProps) => {
           setShowSignup(false);
           setShowLogin(true);
         }}
+      />
+      <ForgotPasswordModal
+        isOpen={showForgot}
+        onClose={() => setShowForgot(false)}
+        onSwitchToReset={() => {
+          setShowForgot(false);
+          setShowReset(true);
+        }}
+      />
+      <ResetPasswordModal
+        isOpen={showReset}
+        onClose={() => {
+          setShowReset(false);
+          setResetToken('');
+        }}
+        onBackToLogin={() => {
+          setShowReset(false);
+          setResetToken('');
+          setShowLogin(true);
+        }}
+        initialToken={resetToken}
       />
     </>
   );
