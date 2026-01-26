@@ -6,6 +6,7 @@ __pycache__/
 *.log
 .DS_Store
 .hybrid-backend.pid
+backend/sh-thd-*
 
 backend/.env
 backend/models/
@@ -16,3 +17,5 @@ frontend-dev.log
 node_modules/
 pics/
 frontend/public/pics/
+frontend/playwright-report/
+frontend/test-results/
