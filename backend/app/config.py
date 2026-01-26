@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     auth_rate_limit_max_requests: int = 10
 
     response_cache_ttl_seconds: int = 10
+
+    password_reset_token_expire_minutes: int = 60
+    frontend_base_url: str = "http://localhost:5173"
+    smtp_enabled: bool = False
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_from: Optional[str] = None
+    smtp_use_tls: bool = True
     
     # JWT Authentication
     jwt_secret_key: Optional[str] = Field(
@@ -96,7 +106,8 @@ class Settings(BaseSettings):
         description="Secret key for JWT token signing. Set via JWT_SECRET_KEY environment variable.",
     )
     jwt_algorithm: str = "HS256"
-    jwt_access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
+    jwt_access_token_expire_minutes: int = 15  # Short-lived access tokens
+    jwt_refresh_token_expire_days: int = 7  # Long-lived refresh tokens
 
     model_config = SettingsConfigDict(
         env_file=".env",
