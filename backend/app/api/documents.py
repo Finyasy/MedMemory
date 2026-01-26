@@ -1,6 +1,8 @@
 """Document management API endpoints."""
 
 import json
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -22,9 +24,23 @@ from app.schemas.document import (
     OcrRefinementResponse,
 )
 from app.services.documents import DocumentProcessor, DocumentUploadService
+from app.services.llm import LLMService
 from app.utils.cache import clear_cache, get_cached, set_cached
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+
+def _is_cxr_document(document: Document) -> bool:
+    name = (document.original_filename or document.title or "").lower()
+    return (
+        document.document_type == "imaging"
+        and (document.mime_type or "").startswith("image/")
+        and any(token in name for token in ("cxr", "xray", "chest"))
+    )
+
+
+def _document_sort_date(document: Document) -> datetime:
+    return document.document_date or document.received_date
 
 
 async def _get_document_for_user(
@@ -75,6 +91,50 @@ async def upload_document(
             description=description,
             category=category,
         )
+        if _is_cxr_document(document):
+            try:
+                result = await db.execute(
+                    select(Document).where(
+                        Document.patient_id == patient_id,
+                        Document.id != document.id,
+                        Document.document_type == "imaging",
+                    )
+                )
+                candidates = [
+                    doc
+                    for doc in result.scalars().all()
+                    if _is_cxr_document(doc)
+                ]
+                if candidates:
+                    current_date = _document_sort_date(document)
+                    prior = max(
+                        (doc for doc in candidates if _document_sort_date(doc) <= current_date),
+                        key=_document_sort_date,
+                        default=None,
+                    ) or max(candidates, key=_document_sort_date)
+                    current_bytes = Path(document.file_path).read_bytes()
+                    prior_bytes = Path(prior.file_path).read_bytes()
+                    llm_service = LLMService.get_instance()
+                    system_prompt = (
+                        "You are a medical imaging assistant. Compare the two chest X-rays: current and prior. "
+                        "Summarize interval changes in 3-5 short sentences using plain language. "
+                        "Do not include disclaimers. "
+                        "If changes are unclear, say \"Limited information available for comparison.\""
+                    )
+                    llm_response = await llm_service.generate_with_images(
+                        prompt="Compare the current chest X-ray to the prior study.",
+                        images_bytes=[current_bytes, prior_bytes],
+                        system_prompt=system_prompt,
+                        max_new_tokens=220,
+                    )
+                    prior_date = _document_sort_date(prior).date().isoformat()
+                    comparison = f"Auto CXR comparison vs {prior_date}: {llm_response.text}"
+                    if document.description:
+                        document.description = f"{document.description}\n{comparison}"
+                    else:
+                        document.description = comparison
+            except Exception:
+                pass
         return DocumentResponse.model_validate(document)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
