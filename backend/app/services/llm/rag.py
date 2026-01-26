@@ -49,14 +49,19 @@ class RAGService:
     4. Store conversation history
     """
     
-    # System prompt for medical Q&A
-    DEFAULT_SYSTEM_PROMPT = """You are a medical assistant. Answer questions concisely using only the provided patient context.
+    DEFAULT_SYSTEM_PROMPT = """You are a clinical AI assistant answering questions about patient records.
 
 Rules:
-- Answer directly and briefly. No meta-commentary, apologies, or greetings.
-- If information is missing, respond exactly: "No information available about [topic]."
-- Cite specific data (dates, values, medications) when available.
-- Do not repeat the question or explain your reasoning process."""
+- Answer using ONLY the provided patient data
+- Be concise and direct - no preamble or meta-commentary
+- Cite specific values, dates, and measurements when available
+- If the information is not in the records, say "This information is not in the available records."
+
+NEVER:
+- Output JSON, code blocks, or technical formatting
+- Include internal reasoning, critiques, or self-corrections
+- Show raw data or document artifacts
+- Add disclaimers or general medical advice"""
     
     def __init__(
         self,
@@ -123,8 +128,11 @@ Rules:
         
         # Get context
         context_start = time.time()
+        device = getattr(self.llm_service, "device", None)
+        if not device:
+            device = "cuda" if hasattr(self.llm_service, "stream_generate") else "cpu"
         effective_max_context_tokens = max_context_tokens
-        if self.llm_service.device in ("mps", "cpu"):
+        if device in ("mps", "cpu"):
             effective_max_context_tokens = min(max_context_tokens, 2000)
         context_result = await self.context_engine.get_context(
             query=question,
@@ -136,7 +144,7 @@ Rules:
         context_time = (time.time() - context_start) * 1000
         self.logger.info(
             "RAG context built device=%s context_tokens=%s time_ms=%.1f",
-            self.llm_service.device,
+            device,
             effective_max_context_tokens,
             context_time,
         )
@@ -184,7 +192,7 @@ Rules:
         # Generate answer using the full prompt with context
         generation_start = time.time()
         max_new_tokens = settings.llm_max_new_tokens
-        if self.llm_service.device in ("mps", "cpu"):
+        if device in ("mps", "cpu"):
             max_new_tokens = min(settings.llm_max_new_tokens, 256)
         llm_response = await self.llm_service.generate(
             prompt=context_result.prompt,
@@ -194,7 +202,7 @@ Rules:
         generation_time = (time.time() - generation_start) * 1000
         self.logger.info(
             "RAG generation done device=%s tokens_generated=%s time_ms=%.1f",
-            self.llm_service.device,
+            device,
             llm_response.tokens_generated,
             generation_time,
         )
@@ -251,8 +259,11 @@ Rules:
         )
         
         # Get context
+        device = getattr(self.llm_service, "device", None)
+        if not device:
+            device = "cuda" if hasattr(self.llm_service, "stream_generate") else "cpu"
         effective_max_context_tokens = max_context_tokens
-        if self.llm_service.device in ("mps", "cpu"):
+        if device in ("mps", "cpu"):
             effective_max_context_tokens = min(max_context_tokens, 2000)
         context_result = await self.context_engine.get_context(
             query=question,
@@ -262,7 +273,7 @@ Rules:
         )
         self.logger.info(
             "RAG stream context built device=%s context_tokens=%s",
-            self.llm_service.device,
+            device,
             effective_max_context_tokens,
         )
 
@@ -279,7 +290,7 @@ Rules:
         # Stream generation
         full_answer = ""
         # MPS/CPU streaming can hang; fall back to single-shot generation.
-        if self.llm_service.device in ("mps", "cpu"):
+        if device in ("mps", "cpu"):
             max_new_tokens = min(settings.llm_max_new_tokens, 256)
             llm_response = await self.llm_service.generate(
                 prompt=context_result.prompt,
