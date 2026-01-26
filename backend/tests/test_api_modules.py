@@ -261,6 +261,187 @@ async def test_chat_llm_info(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_chat_volume_nifti(monkeypatch, tmp_path):
+    import io
+    import numpy as np
+    import nibabel as nib
+    from starlette.datastructures import Headers, UploadFile
+
+    async def fake_patient(*_args, **_kwargs):
+        return SimpleNamespace(id=1, user_id=1)
+
+    class FakeLLM:
+        async def generate_with_image(self, *args, **kwargs):
+            return SimpleNamespace(
+                text="Volume ok",
+                tokens_input=5,
+                tokens_generated=7,
+                total_tokens=12,
+                generation_time_ms=10.0,
+            )
+
+    monkeypatch.setattr(chat_api, "get_patient_for_user", fake_patient)
+    monkeypatch.setattr(chat_api.LLMService, "get_instance", lambda: FakeLLM())
+
+    volume = np.random.rand(6, 6, 4).astype(np.float32)
+    image = nib.Nifti1Image(volume, affine=np.eye(4))
+    nifti_path = tmp_path / "test.nii.gz"
+    nib.save(image, nifti_path)
+    payload = nifti_path.read_bytes()
+
+    upload = UploadFile(filename="test.nii.gz", file=io.BytesIO(payload))
+    response = await chat_api.ask_with_volume(
+        prompt="Summarize",
+        patient_id=1,
+        slices=[upload],
+        sample_count=3,
+        tile_size=128,
+        modality="CT",
+        db=FakeDB(),
+        current_user=_fake_user(),
+    )
+
+    assert response.answer == "Volume ok"
+
+
+@pytest.mark.anyio
+async def test_chat_wsi_patches(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from starlette.datastructures import Headers, UploadFile
+
+    async def fake_patient(*_args, **_kwargs):
+        return SimpleNamespace(id=1, user_id=1)
+
+    class FakeLLM:
+        async def generate_with_images(self, *args, **kwargs):
+            return SimpleNamespace(
+                text="WSI ok",
+                tokens_input=5,
+                tokens_generated=7,
+                total_tokens=12,
+                generation_time_ms=10.0,
+            )
+
+    monkeypatch.setattr(chat_api, "get_patient_for_user", fake_patient)
+    monkeypatch.setattr(chat_api.LLMService, "get_instance", lambda: FakeLLM())
+
+    patch_bytes = io.BytesIO()
+    Image.new("RGB", (16, 16), color=(120, 40, 80)).save(patch_bytes, format="PNG")
+    patch_bytes.seek(0)
+    uploads = [
+        UploadFile(filename="patch1.png", file=io.BytesIO(patch_bytes.getvalue())),
+        UploadFile(filename="patch2.png", file=io.BytesIO(patch_bytes.getvalue())),
+        UploadFile(filename="patch3.png", file=io.BytesIO(patch_bytes.getvalue())),
+        UploadFile(filename="patch4.png", file=io.BytesIO(patch_bytes.getvalue())),
+    ]
+
+    response = await chat_api.ask_with_wsi(
+        prompt="Summarize patches",
+        patient_id=1,
+        patches=uploads,
+        sample_count=4,
+        tile_size=128,
+        db=FakeDB(),
+        current_user=_fake_user(),
+    )
+
+    assert response.answer == "WSI ok"
+
+
+@pytest.mark.anyio
+async def test_chat_cxr_compare(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from starlette.datastructures import Headers, UploadFile
+
+    async def fake_patient(*_args, **_kwargs):
+        return SimpleNamespace(id=1, user_id=1)
+
+    class FakeLLM:
+        async def generate_with_images(self, *args, **kwargs):
+            return SimpleNamespace(
+                text="CXR ok",
+                tokens_input=3,
+                tokens_generated=5,
+                total_tokens=8,
+                generation_time_ms=9.0,
+            )
+
+    monkeypatch.setattr(chat_api, "get_patient_for_user", fake_patient)
+    monkeypatch.setattr(chat_api.LLMService, "get_instance", lambda: FakeLLM())
+
+    img_bytes = io.BytesIO()
+    Image.new("RGB", (16, 16), color=(20, 20, 20)).save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+
+    headers = Headers({"content-type": "image/png"})
+    current = UploadFile(filename="current.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers)
+    prior = UploadFile(filename="prior.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers)
+
+    response = await chat_api.compare_cxr(
+        prompt="Compare",
+        patient_id=1,
+        current_image=current,
+        prior_image=prior,
+        db=FakeDB(),
+        current_user=_fake_user(),
+    )
+
+    assert response.answer == "CXR ok"
+
+
+@pytest.mark.anyio
+async def test_localize_findings(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from starlette.datastructures import Headers, UploadFile
+
+    async def fake_patient(*_args, **_kwargs):
+        return SimpleNamespace(id=1, user_id=1)
+
+    class FakeLLM:
+        async def generate_with_image(self, *args, **kwargs):
+            return SimpleNamespace(
+                text='{"summary":"ok","boxes":[{"label":"nodule","confidence":0.82,"x_min":0.1,"y_min":0.2,"x_max":0.4,"y_max":0.5}]}',
+                tokens_input=3,
+                tokens_generated=5,
+                total_tokens=8,
+                generation_time_ms=9.0,
+            )
+
+    monkeypatch.setattr(chat_api, "get_patient_for_user", fake_patient)
+    monkeypatch.setattr(chat_api.LLMService, "get_instance", lambda: FakeLLM())
+
+    img_bytes = io.BytesIO()
+    Image.new("RGB", (100, 200), color=(20, 20, 20)).save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+    headers = Headers({"content-type": "image/png"})
+    upload = UploadFile(filename="cxr.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers)
+
+    response = await chat_api.localize_findings(
+        prompt="Localize",
+        patient_id=1,
+        image=upload,
+        slices=None,
+        patches=None,
+        sample_count=9,
+        tile_size=256,
+        modality="cxr",
+        db=FakeDB(),
+        current_user=_fake_user(),
+    )
+
+    assert response.image_width == 100
+    assert response.image_height == 200
+    assert response.boxes[0].x_min == 10
+    assert response.boxes[0].y_max == 100
+
+
+@pytest.mark.anyio
 async def test_documents_list_and_text_error():
     document = SimpleNamespace(
         id=1,
