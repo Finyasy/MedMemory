@@ -10,7 +10,8 @@ type ChatInterfaceProps = {
   showHeader?: boolean;
   onQuestionChange: (value: string) => void;
   onSend: () => void;
-  onUploadFile?: (file: File) => void;
+  onUploadFile?: (file: File | File[]) => void;
+  onLocalizeFile?: (file: File) => void;
 };
 
 type MessageWithImages = ChatMessage & {
@@ -27,10 +28,12 @@ const ChatInterface = ({
   onQuestionChange,
   onSend,
   onUploadFile,
+  onLocalizeFile,
 }: ChatInterfaceProps) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const localizeInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [previewImages, setPreviewImages] = useState<Map<number, string[]>>(new Map());
 
@@ -46,7 +49,7 @@ const ChatInterface = ({
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.target.files || []);
       if (files.length > 0 && onUploadFile) {
-        files.forEach((file) => onUploadFile(file));
+        onUploadFile(files);
       }
       if (event.target) {
         event.target.value = '';
@@ -72,11 +75,7 @@ const ChatInterface = ({
       setDragActive(false);
 
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onUploadFile) {
-        Array.from(e.dataTransfer.files).forEach((file) => {
-          if (file.type.startsWith('image/') || file.type === 'application/pdf') {
-            onUploadFile(file);
-          }
-        });
+        onUploadFile(Array.from(e.dataTransfer.files));
       }
     },
     [onUploadFile],
@@ -237,16 +236,35 @@ const ChatInterface = ({
         <div className="chat-input-wrapper">
           <div className="chat-input-actions">
             <button
-              className="chat-action-button"
+              className="chat-action-button tooltip"
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming || isDisabled}
               type="button"
-              title="Upload image or document"
+              data-tooltip="Upload image(s), document, CT/MRI volume (.nii/.zip), WSI patches, or a CXR"
+              aria-label="Upload image, document, CT/MRI volume, WSI patches, or a CXR"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" />
               </svg>
             </button>
+            {onLocalizeFile ? (
+              <button
+                className="chat-action-button tooltip"
+                onClick={() => localizeInputRef.current?.click()}
+                disabled={isStreaming || isDisabled}
+                type="button"
+                data-tooltip="Localize findings in an image"
+                aria-label="Localize findings in an image"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="7" />
+                  <line x1="12" y1="2" x2="12" y2="6" />
+                  <line x1="12" y1="18" x2="12" y2="22" />
+                  <line x1="2" y1="12" x2="6" y2="12" />
+                  <line x1="18" y1="12" x2="22" y2="12" />
+                </svg>
+              </button>
+            ) : null}
           </div>
           <textarea
             ref={textareaRef}
@@ -257,6 +275,7 @@ const ChatInterface = ({
             onKeyDown={handleKeyDown}
             disabled={isStreaming || isDisabled}
             rows={1}
+            data-testid="chat-input"
           />
           <button
             className="chat-send-button"
@@ -264,6 +283,7 @@ const ChatInterface = ({
             disabled={!question.trim() || isStreaming || isDisabled}
             type="button"
             title="Send message"
+            data-testid="chat-send"
           >
             {isStreaming ? (
               <svg className="spinner" viewBox="0 0 24 24">
@@ -287,10 +307,23 @@ const ChatInterface = ({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,.pdf,.txt,.docx"
+          accept="image/*,.pdf,.txt,.docx,.zip,.nii,.nii.gz,.dcm"
           onChange={handleFileChange}
           style={{ display: 'none' }}
           multiple
+        />
+        <input
+          ref={localizeInputRef}
+          type="file"
+          accept="image/*"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file && onLocalizeFile) {
+              onLocalizeFile(file);
+            }
+            event.target.value = '';
+          }}
+          style={{ display: 'none' }}
         />
       </div>
     </div>
