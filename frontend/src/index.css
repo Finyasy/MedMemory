@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme="light"] {
   --bg-base: #f7f1ea;
   --bg-warm: #fde7d5;
   --bg-card: #fffaf6;
@@ -19,6 +20,29 @@
   --radius-sm: 10px;
   --font-display: 'Fraunces', serif;
   --font-body: 'Manrope', sans-serif;
+  --input-bg: #fff;
+  --modal-bg: #fffaf6;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg-base: #1a1612;
+  --bg-warm: #2d2420;
+  --bg-card: #252019;
+  --bg-card-strong: #302821;
+  --accent-strong: #f08c52;
+  --accent-soft: #d97a45;
+  --accent-muted: #8b5a3a;
+  --text-primary: #f5ebe4;
+  --text-secondary: #c4b5a8;
+  --text-muted: #8a7d72;
+  --border-soft: #3d322a;
+  --border-strong: #4d403a;
+  --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.35);
+  --shadow-tight: 0 10px 24px rgba(0, 0, 0, 0.4);
+  --input-bg: #2d2420;
+  --modal-bg: #252019;
+  color-scheme: dark;
 }
 
 * {
@@ -34,11 +58,22 @@ html, body {
 body {
   font-family: var(--font-body);
   color: var(--text-primary);
+  background: var(--bg-base);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+:root:not([data-theme="dark"]) body {
   background: radial-gradient(circle at top left, #ffe7d5, transparent 45%),
     radial-gradient(circle at 10% 70%, #ffd8bf, transparent 35%),
     linear-gradient(180deg, var(--bg-base), #f8efe8 65%, #f9f2ee 100%);
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="dark"] body {
+  background: radial-gradient(circle at top left, rgba(240, 140, 82, 0.08), transparent 45%),
+    radial-gradient(circle at 10% 70%, rgba(217, 122, 69, 0.06), transparent 35%),
+    linear-gradient(180deg, var(--bg-base), #1d1915 65%, #1f1a16 100%);
 }
 
 #root {
