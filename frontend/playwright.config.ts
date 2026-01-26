@@ -1,10 +1,6 @@
 import { defineConfig } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import * as fs from 'fs';
+import * as path from 'path';
 
 const loadEnvFile = (filePath: string) => {
   if (!fs.existsSync(filePath)) return;
@@ -30,7 +26,7 @@ export default defineConfig({
     timeout: 10_000,
     toHaveScreenshot: { maxDiffPixels: 200 },
   },
-  globalSetup: path.resolve(__dirname, 'e2e/global-setup.ts'),
+  globalSetup: './e2e/global-setup.ts',
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5173',
     headless: true,
