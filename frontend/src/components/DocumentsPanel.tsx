@@ -10,6 +10,7 @@ type DocumentsPanelProps = {
     id: number;
     title: string;
     text: string;
+    description?: string | null;
     pageCount?: number | null;
     ocr?: {
       ocr_language?: string | null;
@@ -60,6 +61,12 @@ const DocumentsPanel = ({
     if (status === 'failed') return 'Needs attention';
     return status.charAt(0).toUpperCase() + status.slice(1);
   };
+  const getAutoNotes = (description?: string | null) => {
+    if (!description) return [];
+    return description
+      .split('\n')
+      .filter((item) => item.startsWith('Auto '));
+  };
 
   return (
     <div className="panel documents">
@@ -83,10 +90,13 @@ const DocumentsPanel = ({
             <div key={doc.id} className="document-row">
               <div>
                 <p>{doc.title || doc.original_filename}</p>
-                <small>
+                <small className="document-meta">
                   {formatStatus(doc.processing_status)}
                   {formatPages(doc.page_count) ? ` · ${formatPages(doc.page_count)}` : ''}
                 </small>
+                {getAutoNotes(doc.description).map((note) => (
+                  <div key={note} className="document-note">{note}</div>
+                ))}
               </div>
               <div className="document-actions">
                 <button
@@ -126,6 +136,9 @@ const DocumentsPanel = ({
               Close
             </button>
           </div>
+          {getAutoNotes(preview.description).map((note) => (
+            <div key={note} className="document-note">{note}</div>
+          ))}
           <pre>{preview.text}</pre>
           {preview.ocr?.used_ocr ? (
             <div className="ocr-preview">
