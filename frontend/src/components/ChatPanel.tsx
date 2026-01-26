@@ -9,7 +9,8 @@ type ChatPanelProps = {
   isUploading?: boolean;
   onQuestionChange: (value: string) => void;
   onSend: () => void;
-  onUploadFile?: (file: File) => void;
+  onUploadFile?: (file: File | File[]) => void;
+  onLocalizeFile?: (file: File) => void;
 };
 
 const ChatPanel = ({
@@ -22,11 +23,12 @@ const ChatPanel = ({
   onQuestionChange,
   onSend,
   onUploadFile,
+  onLocalizeFile,
 }: ChatPanelProps) => {
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && onUploadFile) {
-      onUploadFile(file);
+    const files = event.target.files;
+    if (files && files.length > 0 && onUploadFile) {
+      onUploadFile(Array.from(files));
     }
     event.target.value = '';
   };
@@ -36,7 +38,7 @@ const ChatPanel = ({
       <div className="panel-header">
         <div className="panel-title">
           <h2>Patient Memory Chat</h2>
-          <p>Ask questions, upload reports, and get grounded answers.</p>
+          <p>Ask questions, upload reports, images, CT/MRI volumes, WSI patch zips, or a CXR to compare.</p>
         </div>
         <span className="signal-chip">Live</span>
       </div>
@@ -45,8 +47,8 @@ const ChatPanel = ({
           <div className="empty-state">Select a patient to start chatting.</div>
         ) : messages.length === 0 ? (
           <div className="empty-state">
-            Upload a report or ask a question like “Summarize recent labs” or
-            “What changed in the last visit?”
+            Upload a report, image, volume (NIfTI / zipped DICOM), WSI patches (.zip), or a CXR to compare, or ask
+            “Summarize recent labs” or “What changed in the last visit?”
           </div>
         ) : (
           messages.map((message, index) => (
@@ -66,18 +68,42 @@ const ChatPanel = ({
           disabled={isStreaming || isDisabled}
         />
         <div className="chat-actions">
-          <label className="chat-upload">
+          <label
+            className="chat-upload tooltip"
+            data-tooltip="Upload image(s), document, CT/MRI volume (.nii/.zip), WSI patches, or a CXR"
+          >
             <input
               type="file"
-              accept="image/*,.pdf,.txt,.docx"
+              accept="image/*,.pdf,.txt,.docx,.zip,.nii,.nii.gz,.dcm"
               onChange={handleFileChange}
               disabled={isStreaming || isDisabled || isUploading}
+              multiple
             />
             {isUploading ? 'Uploading…' : 'Add report'}
           </label>
+          {onLocalizeFile ? (
+            <label className="chat-upload tooltip" data-tooltip="Localize findings in an image">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    onLocalizeFile(file);
+                  }
+                  event.target.value = '';
+                }}
+                disabled={isStreaming || isDisabled || isUploading}
+              />
+              Localize
+            </label>
+          ) : null}
           <button type="button" onClick={onSend} disabled={isStreaming || isDisabled}>
             {isStreaming ? 'Streaming' : 'Send'}
           </button>
+        </div>
+        <div className="chat-upload-hint">
+          Supports NIfTI (.nii/.nii.gz), zipped DICOM, WSI patch zips, or a chest X-ray with history.
         </div>
         {uploadStatus && <div className="chat-upload-status">{uploadStatus}</div>}
       </div>
