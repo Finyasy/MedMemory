@@ -12,6 +12,22 @@ uv sync
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Testing
+
+```bash
+# Run tests (preferred method)
+uv run pytest
+
+# If uv run fails (e.g., "system-configuration NULL object" panic in sandboxed environments)
+# Use the helper script instead:
+./run_tests.sh
+
+# Or manually activate the venv:
+source .venv/bin/activate && pytest
+```
+
+**Note:** If you encounter a `uv` panic with "system-configuration NULL object" (common in sandboxed macOS environments), use the `run_tests.sh` script or activate the virtual environment directly.
+
 ## Hybrid (Local Backend + Docker DB/Frontend)
 
 Recommended for Apple Silicon so the LLM runs locally on MPS while keeping the DB/frontend containerized.
