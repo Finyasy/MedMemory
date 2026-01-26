@@ -19,6 +19,7 @@ export interface DocumentItem {
   document_type: string;
   title?: string | null;
   original_filename: string;
+  description?: string | null;
   processing_status: string;
   is_processed: boolean;
   page_count?: number | null;
@@ -58,6 +59,26 @@ export interface ContextSimpleResponse {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+export interface LocalizationBox {
+  label: string;
+  confidence: number;
+  x_min: number;
+  y_min: number;
+  x_max: number;
+  y_max: number;
+  x_min_norm: number;
+  y_min_norm: number;
+  x_max_norm: number;
+  y_max_norm: number;
+}
+
+export interface LocalizationResult {
+  answer: string;
+  boxes: LocalizationBox[];
+  image_width: number;
+  image_height: number;
 }
 
 export interface PatientSummary {
