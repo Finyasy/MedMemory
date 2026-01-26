@@ -7,22 +7,16 @@ import usePatients from './hooks/usePatients';
 import usePatientRecords from './hooks/usePatientRecords';
 import usePatientDocuments from './hooks/usePatientDocuments';
 import useChat from './hooks/useChat';
-import useMemorySearch from './hooks/useMemorySearch';
-import useContextBuilder from './hooks/useContextBuilder';
-import useIngestion from './hooks/useIngestion';
 import TopBar from './components/TopBar';
 import ErrorBanner from './components/ErrorBanner';
 import ToastStack from './components/ToastStack';
 import HeroSection from './components/HeroSection';
-import HighlightsPanel from './components/HighlightsPanel';
-import ChatPanel from './components/ChatPanel';
-import PipelinePanel from './components/PipelinePanel';
 import DocumentsPanel from './components/DocumentsPanel';
-import MemoryPanel from './components/MemoryPanel';
-import ContextPanel from './components/ContextPanel';
 import RecordsPanel from './components/RecordsPanel';
 import ChatInterface from './components/ChatInterface';
-import type { DocumentOcrRefinement, PatientSummary } from './types';
+import LocalizationModal from './components/LocalizationModal';
+import type { DocumentOcrRefinement, LocalizationBox, PatientSummary } from './types';
+import { getChatUploadKind, isCxrFilename } from './utils/uploadRouting';
 
 const defaultHighlights = [
   { title: 'LDL Cholesterol', value: '167 mg/dL', trend: 'down', note: 'Jun 2025' },
@@ -48,7 +42,15 @@ const buildPath = (values: number[]) => {
 };
 
 const getExistingDocumentId = (error: unknown) => {
-  const message = error instanceof ApiError ? error.message : error instanceof Error ? error.message : '';
+  let message = '';
+  if (error instanceof ApiError) {
+    message = error.message;
+  } else if (error && typeof error === 'object' && 'body' in error) {
+    const body = (error as { body?: { detail?: string; error?: { message?: string } }; message?: string }).body;
+    message = body?.detail || body?.error?.message || (error as { message?: string }).message || '';
+  } else if (error instanceof Error) {
+    message = error.message;
+  }
   const match = /Document already exists with ID (\d+)/.exec(message);
   return match ? Number(match[1]) : null;
 };
@@ -78,8 +80,13 @@ function App() {
     id: number;
     title: string;
     text: string;
+    description?: string | null;
     pageCount?: number | null;
     ocr?: DocumentOcrRefinement | null;
+  } | null>(null);
+  const [localizationPreview, setLocalizationPreview] = useState<{
+    imageUrl: string;
+    boxes: LocalizationBox[];
   } | null>(null);
   const [documentDownloadUrl, setDocumentDownloadUrl] = useState<string | null>(null);
   const [insights, setInsights] = useState<{
@@ -111,6 +118,9 @@ function App() {
     setErrorBanner(`${label}: ${message}`);
     pushToast('error', `${label}. ${message}`);
   }, [pushToast]);
+  const clearErrorBanner = useCallback(() => {
+    setErrorBanner(null);
+  }, []);
 
   const { patients, isLoading: patientLoading } = usePatients({
     search: patientSearch,
@@ -126,26 +136,12 @@ function App() {
     documents,
     isLoading: documentsLoading,
     reloadDocuments,
-  } = usePatientDocuments({ patientId, onError: handleError, onSuccess: () => setErrorBanner(null) });
-  const { messages, question, setQuestion, isStreaming, send, sendVision } = useChat({
+  } = usePatientDocuments({ patientId, isAuthenticated, onError: handleError, onSuccess: clearErrorBanner });
+  const { messages, question, setQuestion, isStreaming, send, sendVision, sendVolume, sendWsi, pushMessage } = useChat({
     patientId,
     onError: handleError,
   });
-  const { query, setQuery, results, isLoading: searchLoading, search } = useMemorySearch({
-    patientId,
-    onError: handleError,
-    onInfo: (message) => pushToast('info', message),
-  });
-  const { question: contextQuestion, setQuestion: setContextQuestion, result, isLoading: contextLoading, generate } =
-    useContextBuilder({
-      patientId,
-      onError: handleError,
-      onSuccess: (message) => pushToast('success', message),
-    });
-  const { payload, setPayload, status, isLoading: ingestionLoading, ingest } = useIngestion({
-    onError: handleError,
-    onSuccess: (message) => pushToast('success', message),
-  });
+  
 
   // Compute selectedPatient early so it can be used in useEffect hooks
   const selectedPatient = useMemo(
@@ -438,16 +434,119 @@ function App() {
     }
   };
 
-  const handleChatUpload = async (file: File) => {
+  const handleChatUpload = async (file: File | File[]) => {
+    const files = Array.isArray(file) ? file : [file];
+    for (const single of files) {
+      await handleSingleChatUpload(single);
+    }
+  };
+
+  const handleLocalizeUpload = async (file: File) => {
+    if (!patientId) {
+      pushToast('info', 'Select a patient before localizing.');
+      return;
+    }
+    setIsChatUploading(true);
+    setChatUploadStatus('Localizing findings...');
+    const imageUrl = URL.createObjectURL(file);
+    try {
+      const modality = isCxrFilename(file.name) ? 'cxr' : 'imaging';
+      const prompt = question.trim() || 'Localize findings in this image.';
+      pushMessage({ role: 'user', content: `${prompt}\n[Localization: ${file.name}]` });
+      const response = await api.localizeFindings(patientId, prompt, file, modality);
+      setLocalizationPreview({ imageUrl, boxes: response.boxes });
+      const topLabels = response.boxes
+        .slice(0, 3)
+        .map((box) => `${box.label} (${Math.round(box.confidence * 100)}%)`)
+        .join(', ');
+      const summaryText = response.boxes.length
+        ? `Localization found ${response.boxes.length} region(s): ${topLabels}.`
+        : 'Localization found no regions.';
+      pushMessage({ role: 'assistant', content: summaryText });
+      try {
+        await api.uploadDocument(patientId, file, {
+          title: file.name,
+          document_type: 'imaging',
+          category: 'localization',
+          description: `Auto localization: ${summaryText}`,
+        });
+      } catch {
+        // Optional persistence; ignore failures.
+      }
+      setChatUploadStatus('Localization complete.');
+      pushToast('success', 'Localization ready.');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        pushToast('error', 'Localization endpoint unavailable. Restart the backend.');
+      } else {
+        handleError('Failed to localize image', error);
+      }
+      setChatUploadStatus('Localization failed.');
+      URL.revokeObjectURL(imageUrl);
+    } finally {
+      setIsChatUploading(false);
+    }
+  };
+
+  const handleSingleChatUpload = async (single: File) => {
+    const uploadKind = getChatUploadKind(single);
     if (!patientId) {
       pushToast('info', 'Select a patient before uploading a report.');
       return;
     }
-    if (file.type.startsWith('image/')) {
+    if (uploadKind === 'dicom') {
+      pushToast('info', 'Please upload DICOM series as a .zip file.');
+      return;
+    }
+    if (uploadKind === 'wsi') {
+      setIsChatUploading(true);
+      setChatUploadStatus('Analyzing WSI patches...');
+      try {
+        await sendWsi(single, question);
+        setChatUploadStatus('WSI analysis complete.');
+      } catch (error) {
+        setChatUploadStatus('WSI analysis failed.');
+      } finally {
+        setIsChatUploading(false);
+      }
+      return;
+    }
+    if (uploadKind === 'volume') {
+      setIsChatUploading(true);
+      setChatUploadStatus('Analyzing volume...');
+      try {
+        await sendVolume(single, question);
+        setChatUploadStatus('Volume analysis complete.');
+      } catch (error) {
+        setChatUploadStatus('Volume analysis failed.');
+      } finally {
+        setIsChatUploading(false);
+      }
+      return;
+    }
+    if (uploadKind === 'image') {
+      if (isCxrFilename(single.name)) {
+        setIsChatUploading(true);
+        setChatUploadStatus('Uploading chest X-ray...');
+        try {
+          const uploaded = await api.uploadDocument(patientId, single, { title: single.name });
+          setChatUploadStatus('Generating CXR comparison...');
+          await api.processDocument(uploaded.id);
+          setChatUploadStatus('CXR uploaded with comparison.');
+          pushToast('success', 'Chest X-ray uploaded. Comparison added to document.');
+          await reloadDocuments();
+        } catch (error) {
+          handleError('Failed to upload chest X-ray', error);
+          setChatUploadStatus('Upload failed.');
+        } finally {
+          setIsChatUploading(false);
+        }
+        return;
+      }
       setIsChatUploading(true);
       setChatUploadStatus('Analyzing image...');
       try {
-        await sendVision(file, question);
+        await sendVision(single, question);
         setChatUploadStatus('Image analysis complete.');
         pushToast('success', 'Image analyzed with MedGemma.');
       } catch (error) {
@@ -461,7 +560,7 @@ function App() {
     setIsChatUploading(true);
     setChatUploadStatus('Uploading report...');
     try {
-      const uploaded = await api.uploadDocument(patientId, file, { title: file.name });
+      const uploaded = await api.uploadDocument(patientId, single, { title: single.name });
       setChatUploadStatus('Processing for chat...');
       await api.processDocument(uploaded.id);
       setChatUploadStatus('Ready to chat with this report.');
@@ -522,6 +621,7 @@ function App() {
         id: documentId,
         title: doc.title || doc.original_filename,
         text: textResponse.extracted_text,
+        description: doc.description,
         pageCount: textResponse.page_count,
         ocr: ocrResponse,
       });
@@ -561,6 +661,17 @@ function App() {
       note: lab.collected_at ? formatDate(lab.collected_at) : 'Latest',
     }));
   }, [insights, formatDate]);
+
+  const localizationModal = localizationPreview ? (
+    <LocalizationModal
+      imageUrl={localizationPreview.imageUrl}
+      boxes={localizationPreview.boxes}
+      onClose={() => {
+        URL.revokeObjectURL(localizationPreview.imageUrl);
+        setLocalizationPreview(null);
+      }}
+    />
+  ) : null;
   const insightSummary = useMemo(() => {
     if (!insights) return 'Connect lab results and medications to unlock insights.';
     if (!insights.lab_total && !insights.active_medications) {
@@ -578,27 +689,30 @@ function App() {
     {
       title: 'Records',
       value: recordCount,
-      note: recordCount ? 'Updated' : 'Add first record',
+      note: recordCount ? `${recordCount} clinical note${recordCount === 1 ? '' : 's'}` : 'Add clinical notes',
+      icon: '📝',
     },
     {
       title: 'Documents',
       value: documents.length,
-      note: documents.length ? `${processedDocs} processed` : 'Upload to unlock insights',
+      note: documents.length ? `${processedDocs} ready for Q&A` : 'Upload lab reports',
+      icon: '📋',
     },
     {
-      title: 'Signals',
+      title: 'AI Signals',
       value: processedDocs,
-      note: processedDocs ? 'Ready for analysis' : 'Process a document',
+      note: processedDocs ? 'MedGemma analyzed' : 'Upload to analyze',
+      icon: '🧠',
     },
   ]), [recordCount, documents.length, processedDocs]);
 
   // Show landing page if not authenticated
   if (!isAuthenticated) {
     return (
-      <div className="app-shell">
+      <div className="app-shell landing">
         <TopBar />
         <ErrorBanner message={errorBanner} />
-        <main className="dashboard">
+        <main className="landing-main">
           <HeroSection
             selectedPatient={selectedPatient}
             isLoading={patientLoading}
@@ -610,75 +724,9 @@ function App() {
             onSelectPatient={setPatientId}
             isAuthenticated={isAuthenticated}
           />
-          <section className="grid locked" aria-hidden={true}>
-            <HighlightsPanel items={highlightItems} chartPath={buildPath(a1cSeriesData)} isLoading={recordsLoading} />
-            <ChatPanel
-              messages={messages}
-              question={question}
-              isStreaming={isStreaming}
-              isDisabled={true}
-              uploadStatus={chatUploadStatus}
-              isUploading={isChatUploading}
-              onQuestionChange={setQuestion}
-              onSend={send}
-              onUploadFile={handleChatUpload}
-            />
-            <PipelinePanel
-              payload={payload}
-              status={status}
-              isLoading={ingestionLoading}
-              isDisabled={true}
-              onPayloadChange={setPayload}
-              onIngest={ingest}
-            />
-            <DocumentsPanel
-              documents={documents}
-              isLoading={documentsLoading}
-              processingIds={processingDocs}
-              selectedFile={selectedFile}
-              status={documentStatus}
-              preview={null}
-              downloadUrl={null}
-              isDisabled={true}
-              onFileChange={setSelectedFile}
-              onUpload={handleUploadDocument}
-              onProcess={handleProcessDocument}
-              onView={handleViewDocument}
-              onClosePreview={() => {
-                setDocumentPreview(null);
-                setDocumentDownloadUrl(null);
-              }}
-            />
-            <MemoryPanel
-              query={query}
-              isLoading={searchLoading}
-              results={results}
-              isDisabled={true}
-              onQueryChange={setQuery}
-              onSearch={search}
-            />
-            <ContextPanel
-              question={contextQuestion}
-              result={result}
-              isLoading={contextLoading}
-              isDisabled={true}
-              onQuestionChange={setContextQuestion}
-              onGenerate={generate}
-            />
-            <RecordsPanel
-              records={records}
-              isLoading={recordsLoading}
-              recordCount={recordCount}
-              formData={formData}
-              isSubmitting={isSubmitting}
-              isDisabled={true}
-              onFormChange={(field, value) => setFormData((prev) => ({ ...prev, [field]: value }))}
-              onSubmit={handleSubmit}
-              formatDate={formatDate}
-            />
-          </section>
         </main>
         <ToastStack toasts={toasts} />
+        {localizationModal}
       </div>
     );
   }
@@ -699,6 +747,7 @@ function App() {
           <p className="loading-hint">This may take a few moments...</p>
         </div>
         <ToastStack toasts={toasts} />
+        {localizationModal}
       </div>
     );
   }
@@ -747,6 +796,7 @@ function App() {
           </p>
         </div>
         <ToastStack toasts={toasts} />
+        {localizationModal}
       </div>
     );
   }
@@ -768,32 +818,41 @@ function App() {
               </p>
             </div>
             <div className="insight-card primary">
-              <h3>Insight snapshot</h3>
+              <h3>
+                {documents.length || recordCount
+                  ? 'Insight snapshot'
+                  : 'Welcome to MedMemory'}
+              </h3>
               <p>
                 {documents.length || recordCount
-                  ? 'Your data is ready for summaries and trends.'
-                  : 'Add a record or document to unlock insights.'}
+                  ? 'Your data is ready. Ask questions or view trends below.'
+                  : 'Your AI-powered medical memory. Upload documents to get started.'}
               </p>
               <span className="insight-pill">
-                {processedDocs ? `${processedDocs} sources ready` : 'No processed sources yet'}
+                {processedDocs 
+                  ? `${processedDocs} source${processedDocs === 1 ? '' : 's'} • MedGemma ready` 
+                  : 'Powered by MedGemma AI'}
               </span>
             </div>
           </div>
           <div className="insight-strip">
             {insightCards.map((card) => (
               <div className="insight-card" key={card.title}>
-                <h4>{card.title}</h4>
+                <div className="insight-card-header">
+                  <span className="insight-icon">{card.icon}</span>
+                  <h4>{card.title}</h4>
+                </div>
                 <p className="insight-value">{card.value}</p>
                 <span className="insight-note">{card.note}</span>
               </div>
             ))}
           </div>
           <section className="dashboard-main">
-            <div className="insight-panel trends">
+            <div className={`insight-panel trends ${!insights?.recent_labs?.length && !documents.length ? 'empty-guidance' : ''}`}>
               <div className="insight-panel-header">
                 <div>
                   <p className="eyebrow">Trends</p>
-                  <h2>A1C over time</h2>
+                  <h2>{insights?.recent_labs?.length ? 'A1C over time' : 'Get started'}</h2>
                   <p className="subtitle">{insightsLoading ? 'Loading trends...' : insightSummary}</p>
                 </div>
                 <button
@@ -804,34 +863,53 @@ function App() {
                   Ask a question
                 </button>
               </div>
-              <svg className="trend-chart" viewBox="0 0 320 90" role="img" aria-label="A1C trend">
-                <path d={buildPath(a1cSeriesData)} />
-              </svg>
-              <div className="trend-list">
-                {insights?.recent_labs?.length ? (
-                  insights.recent_labs.map((lab) => (
-                    <div key={lab.test_name} className="trend-item">
-                      <div>
-                        <h4>{lab.test_name}</h4>
-                        <span>{lab.collected_at ? formatDate(lab.collected_at) : 'Latest'}</span>
+              {insights?.recent_labs?.length ? (
+                <>
+                  <svg className="trend-chart" viewBox="0 0 320 90" role="img" aria-label="A1C trend">
+                    <path d={buildPath(a1cSeriesData)} />
+                  </svg>
+                  <div className="trend-list">
+                    {insights.recent_labs.map((lab) => (
+                      <div key={lab.test_name} className="trend-item">
+                        <div>
+                          <h4>{lab.test_name}</h4>
+                          <span>{lab.collected_at ? formatDate(lab.collected_at) : 'Latest'}</span>
+                        </div>
+                        <div className={`trend-metric ${lab.is_abnormal ? 'down' : 'flat'}`}>
+                          <strong>
+                            {lab.value || '—'} {lab.unit || ''}
+                          </strong>
+                          <small>{lab.is_abnormal ? 'abnormal' : 'stable'}</small>
+                        </div>
                       </div>
-                      <div className={`trend-metric ${lab.is_abnormal ? 'down' : 'flat'}`}>
-                        <strong>
-                          {lab.value || '—'} {lab.unit || ''}
-                        </strong>
-                        <small>{lab.is_abnormal ? 'abnormal' : 'stable'}</small>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="trend-item empty">
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="empty-guidance-content">
+                  <div className="guidance-step">
+                    <span className="step-number">1</span>
                     <div>
-                      <h4>No lab trends yet</h4>
-                      <span>Add lab results to see changes over time.</span>
+                      <h4>Upload medical documents</h4>
+                      <p>Lab reports, prescriptions, discharge summaries, or medical images</p>
                     </div>
                   </div>
-                )}
-              </div>
+                  <div className="guidance-step">
+                    <span className="step-number">2</span>
+                    <div>
+                      <h4>AI extracts the data <span className="ai-badge">MedGemma</span></h4>
+                      <p>Values, dates, medications, and diagnoses are automatically extracted</p>
+                    </div>
+                  </div>
+                  <div className="guidance-step">
+                    <span className="step-number">3</span>
+                    <div>
+                      <h4>Ask questions in plain English</h4>
+                      <p>"What's my A1C trend?" or "When was my last colonoscopy?"</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="insight-panel focus">
               <h2>Focus areas</h2>
@@ -921,6 +999,7 @@ function App() {
           </section>
         </main>
         <ToastStack toasts={toasts} />
+        {localizationModal}
       </div>
     );
   }
@@ -939,8 +1018,10 @@ function App() {
         onQuestionChange={setQuestion}
         onSend={send}
         onUploadFile={handleChatUpload}
+        onLocalizeFile={handleLocalizeUpload}
       />
       <ToastStack toasts={toasts} />
+      {localizationModal}
     </div>
   );
 }
