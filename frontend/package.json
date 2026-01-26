@@ -10,6 +10,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "generate-api": "openapi-typescript-codegen --input http://localhost:8000/openapi.json --output ./src/api/generated",
+    "prebuild": "npm run generate-api",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest --run"
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.58.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
@@ -33,6 +36,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^26.1.0",
+    "openapi-typescript-codegen": "^0.29.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "7.2.4",
