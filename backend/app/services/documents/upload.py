@@ -42,6 +42,8 @@ class DocumentUploadService:
         "result": "lab_report",
         "blood": "lab_report",
         "xray": "imaging",
+        "cxr": "imaging",
+        "chest": "imaging",
         "ct": "imaging",
         "mri": "imaging",
         "scan": "imaging",
@@ -134,6 +136,10 @@ class DocumentUploadService:
                 mime_type=file.content_type,
             )
         
+        received_date = datetime.now(timezone.utc)
+        if not document_date and (file.content_type or "").startswith("image/"):
+            document_date = self._extract_image_date(content) or received_date
+
         # Create database record
         document = Document(
             patient_id=patient_id,
@@ -148,7 +154,7 @@ class DocumentUploadService:
             title=title or file.filename,
             description=description,
             document_date=document_date,
-            received_date=datetime.now(timezone.utc),
+            received_date=received_date,
             processing_status="pending",
             is_processed=False,
             tags=",".join(tags) if tags else None,
@@ -159,6 +165,21 @@ class DocumentUploadService:
         await self.db.refresh(document)
         
         return document
+
+    def _extract_image_date(self, content: bytes) -> Optional[datetime]:
+        """Extract EXIF datetime from an image, if present."""
+        try:
+            image = Image.open(BytesIO(content))
+            exif = image.getexif()
+            if not exif:
+                return None
+            for tag in (36867, 36868, 306):
+                value = exif.get(tag)
+                if value:
+                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+        return None
     
     async def get_document(self, document_id: int) -> Optional[Document]:
         """Get a document by ID."""
