@@ -11,6 +11,16 @@ Currently, two official plugins are available:
 
 The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
+## Generated API Client
+
+MedMemory uses a generated OpenAPI client for type-safe API calls.
+
+```bash
+npm run generate-api
+```
+
+The client is generated into `frontend/src/api/generated` and refreshed before `npm run build`.
+
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
