@@ -1,5 +1,6 @@
 import type { PatientSummary } from '../types';
 import PatientSelector from './PatientSelector';
+import BrainVisualization from './BrainVisualization';
 
 type HeroSectionProps = {
   selectedPatient?: PatientSummary;
@@ -13,6 +14,29 @@ type HeroSectionProps = {
   isAuthenticated: boolean;
 };
 
+const features = [
+  {
+    icon: '📋',
+    title: 'Upload Any Document',
+    description: 'Lab reports, prescriptions, discharge summaries, imaging reports',
+  },
+  {
+    icon: '🧠',
+    title: 'AI-Powered Analysis',
+    description: 'MedGemma extracts and understands your medical data',
+  },
+  {
+    icon: '💬',
+    title: 'Ask Questions',
+    description: '"What\'s my A1C trend?" "When was my last checkup?"',
+  },
+  {
+    icon: '📈',
+    title: 'Track Trends',
+    description: 'See how your health metrics change over time',
+  },
+];
+
 const HeroSection = ({
   selectedPatient,
   isLoading = false,
@@ -24,17 +48,82 @@ const HeroSection = ({
   onSelectPatient,
   isAuthenticated,
 }: HeroSectionProps) => {
+  const handleOpenSignup = () => {
+    const btn = document.querySelector('[data-testid="open-signup"]') as HTMLButtonElement;
+    btn?.click();
+  };
+
+  const handleOpenLogin = () => {
+    const btn = document.querySelector('[data-testid="open-login"]') as HTMLButtonElement;
+    btn?.click();
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <section className="landing-hero">
+        <div className="landing-brand">
+          <BrainVisualization />
+        </div>
+        
+        <div className="landing-content">
+          <h1 className="landing-headline">
+            Your health records,
+            <span className="accent"> finally understood.</span>
+          </h1>
+          
+          <p className="landing-subheadline">
+            Upload medical documents, ask questions in plain English, and get instant answers powered by AI.
+          </p>
+
+          <div className="landing-cta">
+            <button className="primary-button large" type="button" onClick={handleOpenSignup}>
+              Get Started Free
+            </button>
+            <button className="secondary-button large" type="button" onClick={handleOpenLogin}>
+              Sign In
+            </button>
+          </div>
+
+          <p className="landing-trust">
+            Secure, private, and local-first. Your data stays yours.
+          </p>
+        </div>
+
+        <div className="landing-features">
+          {features.map((feature) => (
+            <div key={feature.title} className="landing-feature">
+              <span className="feature-icon">{feature.icon}</span>
+              <div>
+                <h3>{feature.title}</h3>
+                <p>{feature.description}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="landing-examples">
+          <p className="eyebrow">What you can ask</p>
+          <div className="example-queries">
+            <span className="example-query">"What medications am I on?"</span>
+            <span className="example-query">"Show my cholesterol trend"</span>
+            <span className="example-query">"Summarize my last visit"</span>
+            <span className="example-query">"Compare labs to last year"</span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <section className="hero">
+    <section className="hero authenticated">
       <div className="hero-copy">
-        <p className="eyebrow">Unified, local-first medical memory</p>
+        <p className="eyebrow">Welcome back</p>
         <h1>
-          Clinician-grade answers,
-          <span> grounded in your records.</span>
+          {selectedPatient?.full_name || 'Your Health Dashboard'}
         </h1>
         <p className="subtitle">
-          Chat with your complete health timeline, quickly find insights across labs, medications,
-          visits, and documents, and get clear, ready-to-use context in seconds.
+          Chat with your complete health timeline, find insights across labs, medications,
+          and documents.
         </p>
         {selectedPatient ? (
           <div className="patient-card">
@@ -44,58 +133,14 @@ const HeroSection = ({
         ) : isLoading ? (
           <div className="patient-card skeleton-card" aria-hidden="true" />
         ) : null}
-        <div className="hero-actions">
-          <button className="primary-button" type="button">Start a RAG Chat</button>
-          <button className="secondary-button" type="button">Generate Context</button>
-        </div>
-        {isAuthenticated ? (
-          <PatientSelector
-            patients={patients}
-            searchValue={searchValue}
-            isLoading={isSearchLoading}
-            selectedPatientId={selectedPatientId}
-            onSearchChange={onSearchChange}
-            onSelectPatient={onSelectPatient}
-          />
-        ) : (
-          <div className="empty-state">
-            Create an account or sign in to upload your medical reports and chat with your health memory.
-          </div>
-        )}
-        <div className="chip-row">
-          {['Labs', 'Medications', 'Encounters', 'Documents', 'Memory'].map((chip) => (
-            <span key={chip} className="chip">{chip}</span>
-          ))}
-        </div>
-      </div>
-      <div className="hero-card">
-        <div className="hero-card-header">
-          <div>
-            <p className="card-title">LDL Cholesterol</p>
-            <p className="card-subtitle">114-167 mg/dL</p>
-          </div>
-          <span className="signal-chip">Reviewed</span>
-        </div>
-        <div className="hero-chart">
-          <div className="chart-grid" />
-          <svg viewBox="0 0 340 140" className="chart-line" role="img" aria-label="LDL trend">
-            <path d="M20 30 L90 50 L150 70 L220 80 L300 100" fill="none" stroke="var(--accent-strong)" strokeWidth="3" />
-          </svg>
-        </div>
-        <p className="hero-card-body">
-          Latest LDL: 114 mg/dL, trending downward with therapy adjustments.
-          Highlighted improvements over the last three panels.
-        </p>
-        <div className="hero-metrics">
-          <div>
-            <h3>12</h3>
-            <span>Out of range</span>
-          </div>
-          <div>
-            <h3>43</h3>
-            <span>In range</span>
-          </div>
-        </div>
+        <PatientSelector
+          patients={patients}
+          searchValue={searchValue}
+          isLoading={isSearchLoading}
+          selectedPatientId={selectedPatientId}
+          onSearchChange={onSearchChange}
+          onSelectPatient={onSelectPatient}
+        />
       </div>
     </section>
   );
