@@ -1,16 +1,14 @@
-"""Context Engine API endpoints.
-
-Provides intelligent context retrieval for medical Q&A.
-"""
+"""Context Engine API endpoints."""
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
-from app.models import User
+from app.models import Patient, User
 from app.schemas.context import (
     ContextRequest,
     ContextResponse,
@@ -31,35 +29,18 @@ from app.services.context import ContextEngine
 router = APIRouter(prefix="/context", tags=["Context Engine"])
 
 
-# ============================================
-# Main Context Retrieval
-# ============================================
-
 @router.post("/", response_model=ContextResponse)
 async def get_context(
     request: ContextRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Get optimized context for answering a medical question.
-    
-    This is the main entry point for the context engine. It:
-    1. Analyzes the query to understand intent
-    2. Retrieves relevant content using hybrid search
-    3. Ranks and filters results
-    4. Synthesizes context for LLM consumption
-    
-    The response includes detailed information about each step
-    for transparency and debugging.
-    """
-    # Verify patient exists
+    """Get optimized context for answering a medical question."""
     await get_patient_for_user(
         patient_id=request.patient_id,
         db=db,
         current_user=current_user,
     )
-    
-    # Run context engine
     engine = ContextEngine(db)
     engine_result = await engine.get_context(
         query=request.query,
@@ -69,8 +50,6 @@ async def get_context(
         min_score=request.min_score,
         system_prompt=request.system_prompt,
     )
-    
-    # Build response
     qa = engine_result.query_analysis
     
     return ContextResponse(
@@ -151,16 +130,7 @@ async def get_simple_context(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Get simplified context for LLM consumption.
-    
-    A simpler endpoint that returns just the essentials:
-    - The synthesized context
-    - The complete prompt
-    - Basic metadata
-    
-    Use this for direct LLM integration.
-    """
-    # Verify patient exists
+    """Get simplified context for LLM consumption."""
     await get_patient_for_user(
         patient_id=request.patient_id,
         db=db,
@@ -185,20 +155,13 @@ async def get_simple_context(
     )
 
 
-# ============================================
-# Query Analysis
-# ============================================
-
 @router.post("/analyze", response_model=QueryAnalysisResponse)
 async def analyze_query(
     query: str = Query(..., min_length=1, max_length=2000),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Analyze a query without retrieval.
-    
-    Useful for understanding how the context engine interprets queries.
-    """
+    """Analyze a query without retrieval."""
     engine = ContextEngine(db)
     qa = await engine.analyze_query(query)
     
@@ -226,24 +189,14 @@ async def analyze_query(
     )
 
 
-# ============================================
-# Quick Search
-# ============================================
-
 @router.post("/search", response_model=QuickSearchResponse)
 async def quick_search(
     request: QuickSearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Quick hybrid search without full context synthesis.
-    
-    Faster than full context retrieval. Returns ranked results
-    without building the complete LLM prompt.
-    """
+    """Quick hybrid search without full context synthesis."""
     import time
     start = time.time()
-    
-    # Verify patient exists
     result = await db.execute(
         select(Patient).where(Patient.id == request.patient_id)
     )
@@ -278,10 +231,6 @@ async def quick_search(
     )
 
 
-# ============================================
-# Prompt Generation
-# ============================================
-
 @router.get("/prompt/patient/{patient_id}")
 async def generate_prompt(
     patient_id: int,
@@ -290,11 +239,7 @@ async def generate_prompt(
     system_prompt: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate an LLM-ready prompt for a patient question.
-    
-    Returns just the prompt string, ready to send to an LLM.
-    """
-    # Verify patient exists
+    """Generate an LLM-ready prompt for a patient question."""
     result = await db.execute(
         select(Patient).where(Patient.id == patient_id)
     )
