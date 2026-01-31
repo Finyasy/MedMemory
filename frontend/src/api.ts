@@ -21,6 +21,20 @@ import {
   OpenAPI,
   PatientsService,
 } from './api/generated';
+import type {
+  BatchIngestionRequest,
+  CxrCompareResponse,
+  ChatRequest,
+  DocumentDetail,
+  DocumentProcessResponse,
+  LocalizationResponse,
+  OcrRefinementResponse,
+  PatientInsightsResponse,
+  RecordResponse,
+  VisionChatResponse,
+  VolumeChatResponse,
+  WsiChatResponse,
+} from './api/generated';
 
 const normalizeApiBase = (base: string) => {
   const trimmed = base.replace(/\/+$/, '');
@@ -387,15 +401,33 @@ export const api = {
   },
 
   async getRecords(patientId?: number): Promise<MedicalRecord[]> {
-    return MedicalRecordsService.listRecordsApiV1RecordsGet(patientId ?? null);
+    const records = await MedicalRecordsService.listRecordsApiV1RecordsGet(patientId ?? null);
+    return records.map((r: RecordResponse) => ({
+      ...r,
+      record_type: r.record_type ?? 'general',
+      created_at: r.created_at ?? new Date().toISOString(),
+    }));
   },
 
   async createRecord(patientId: number, payload: CreateRecordPayload): Promise<MedicalRecord> {
-    return MedicalRecordsService.createRecordApiV1RecordsPost(patientId, payload);
+    const r = await MedicalRecordsService.createRecordApiV1RecordsPost(patientId, payload);
+    return {
+      ...r,
+      record_type: r.record_type ?? 'general',
+      created_at: r.created_at ?? new Date().toISOString(),
+    };
   },
 
   async listDocuments(patientId: number): Promise<DocumentItem[]> {
     return DocumentsService.listDocumentsApiV1DocumentsGet(patientId);
+  },
+
+  async getDocument(documentId: number): Promise<DocumentDetail> {
+    return DocumentsService.getDocumentApiV1DocumentsDocumentIdGet(documentId);
+  },
+
+  async deleteDocument(documentId: number): Promise<void> {
+    return DocumentsService.deleteDocumentApiV1DocumentsDocumentIdDelete(documentId);
   },
 
   async uploadDocument(
@@ -421,7 +453,7 @@ export const api = {
     });
   },
 
-  async processDocument(documentId: number): Promise<{ status: string; chunks_created: number }> {
+  async processDocument(documentId: number): Promise<DocumentProcessResponse> {
     return DocumentsService.processDocumentApiV1DocumentsDocumentIdProcessPost(documentId, {
       create_memory_chunks: true,
     });
@@ -431,29 +463,46 @@ export const api = {
     return DocumentsService.getDocumentTextApiV1DocumentsDocumentIdTextGet(documentId);
   },
 
-  async getDocumentOcr(documentId: number): Promise<{
-    document_id: number;
-    ocr_language?: string | null;
-    ocr_confidence?: number | null;
-    ocr_text_raw?: string | null;
-    ocr_text_cleaned?: string | null;
-    ocr_entities?: Record<string, unknown>;
-    used_ocr: boolean;
-  }> {
+  async getDocumentOcr(documentId: number): Promise<OcrRefinementResponse> {
     return DocumentsService.getDocumentOcrApiV1DocumentsDocumentIdOcrGet(documentId);
+  },
+
+  async getDocumentStatus(documentId: number): Promise<{
+    document_id: number;
+    patient_id: number;
+    processing_status: string;
+    is_processed: boolean;
+    processed_at: string | null;
+    processing_error: string | null;
+    extracted_text_length: number;
+    extracted_text_preview: string | null;
+    chunks: { total: number; indexed: number; not_indexed: number };
+    ocr_confidence: number | null;
+    ocr_language: string | null;
+    page_count: number | null;
+  }> {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const response = await request(`${base}/documents/${documentId}/status`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+    return response as any;
+  },
+
+  async checkOcrAvailability(): Promise<{ available: boolean; message: string }> {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const response = await request(`${base}/documents/health/ocr`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+    return response as any;
   },
 
   async visionChat(
     patientId: number,
     prompt: string,
     image: File,
-  ): Promise<{
-    answer: string;
-    tokens_input: number;
-    tokens_generated: number;
-    tokens_total: number;
-    generation_time_ms: number;
-  }> {
+  ): Promise<VisionChatResponse> {
     return ChatService.askWithImageApiV1ChatVisionPost({
       prompt,
       patient_id: patientId,
@@ -466,18 +515,7 @@ export const api = {
     prompt: string,
     volume: File,
     options?: { sampleCount?: number; tileSize?: number; modality?: string },
-  ): Promise<{
-    answer: string;
-    total_slices: number;
-    sampled_indices: number[];
-    grid_rows: number;
-    grid_cols: number;
-    tile_size: number;
-    tokens_input: number;
-    tokens_generated: number;
-    tokens_total: number;
-    generation_time_ms: number;
-  }> {
+  ): Promise<VolumeChatResponse> {
     return ChatService.askWithVolumeApiV1ChatVolumePost({
       prompt,
       patient_id: patientId,
@@ -493,18 +531,7 @@ export const api = {
     prompt: string,
     patches: File,
     options?: { sampleCount?: number; tileSize?: number },
-  ): Promise<{
-    answer: string;
-    total_patches: number;
-    sampled_indices: number[];
-    grid_rows: number;
-    grid_cols: number;
-    tile_size: number;
-    tokens_input: number;
-    tokens_generated: number;
-    tokens_total: number;
-    generation_time_ms: number;
-  }> {
+  ): Promise<WsiChatResponse> {
     return ChatService.askWithWsiApiV1ChatWsiPost({
       prompt,
       patient_id: patientId,
@@ -519,13 +546,7 @@ export const api = {
     prompt: string,
     currentImage: File,
     priorImage: File,
-  ): Promise<{
-    answer: string;
-    tokens_input: number;
-    tokens_generated: number;
-    tokens_total: number;
-    generation_time_ms: number;
-  }> {
+  ): Promise<CxrCompareResponse> {
     return ChatService.compareCxrApiV1ChatCxrComparePost({
       prompt,
       patient_id: patientId,
@@ -539,27 +560,7 @@ export const api = {
     prompt: string,
     image: File,
     modality: string,
-  ): Promise<{
-    answer: string;
-    boxes: Array<{
-      label: string;
-      confidence: number;
-      x_min: number;
-      y_min: number;
-      x_max: number;
-      y_max: number;
-      x_min_norm: number;
-      y_min_norm: number;
-      x_max_norm: number;
-      y_max_norm: number;
-    }>;
-    image_width: number;
-    image_height: number;
-    tokens_input: number;
-    tokens_generated: number;
-    tokens_total: number;
-    generation_time_ms: number;
-  }> {
+  ): Promise<LocalizationResponse> {
     return ChatService.localizeFindingsApiV1ChatLocalizePost({
       prompt,
       patient_id: patientId,
@@ -568,28 +569,7 @@ export const api = {
     });
   },
 
-  async getPatientInsights(patientId: number): Promise<{
-    patient_id: number;
-    lab_total: number;
-    lab_abnormal: number;
-    recent_labs: Array<{
-      test_name: string;
-      value?: string | null;
-      unit?: string | null;
-      collected_at?: string | null;
-      is_abnormal: boolean;
-    }>;
-    active_medications: number;
-    recent_medications: Array<{
-      name: string;
-      dosage?: string | null;
-      frequency?: string | null;
-      status?: string | null;
-      prescribed_at?: string | null;
-      start_date?: string | null;
-    }>;
-    a1c_series: number[];
-  }> {
+  async getPatientInsights(patientId: number): Promise<PatientInsightsResponse> {
     return InsightsService.getPatientInsightsApiV1InsightsPatientPatientIdGet(patientId);
   },
 
@@ -609,18 +589,19 @@ export const api = {
     });
   },
 
-  async ingestBatch(payload: {
-    labs?: unknown[];
-    medications?: unknown[];
-    encounters?: unknown[];
-  }) {
+  async ingestBatch(payload: BatchIngestionRequest) {
     return DataIngestionService.ingestBatchApiV1IngestBatchPost(payload);
   },
 
-  async chatAsk(patientId: number, question: string): Promise<{ answer: string } & Record<string, unknown>> {
+  async chatAsk(
+    patientId: number,
+    question: string,
+    options?: Partial<ChatRequest>,
+  ): Promise<{ answer: string } & Record<string, unknown>> {
     return ChatService.askQuestionApiV1ChatAskPost({
       question,
       patient_id: patientId,
+      ...options,
     });
   },
 
@@ -629,10 +610,16 @@ export const api = {
     question: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,
+    options?: { clinicianMode?: boolean },
   ) {
     const headers = await withAuthHeaders();
+    const params = new URLSearchParams({
+      patient_id: String(patientId),
+      question,
+    });
+    if (options?.clinicianMode) params.set('clinician_mode', 'true');
     const res = await fetch(
-      `${API_BASE}/chat/stream?patient_id=${patientId}&question=${encodeURIComponent(question)}`,
+      `${API_BASE}/chat/stream?${params.toString()}`,
       {
         method: 'POST',
         headers,
@@ -679,6 +666,199 @@ export const api = {
         }
       }
     }
+  },
+
+  async getAuthHeaders(): Promise<Record<string, string>> {
+    return getAuthHeaders();
+  },
+
+  // ----- Clinician API -----
+  async clinicianSignup(payload: {
+    email: string;
+    password: string;
+    full_name: string;
+    registration_number: string;
+    specialty?: string;
+    organization_name?: string;
+    phone?: string;
+    address?: string;
+  }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<{
+      access_token: string;
+      refresh_token: string;
+      token_type: string;
+      expires_in: number;
+      user_id: number;
+      email: string;
+    }>(`${base}/clinician/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async clinicianLogin(email: string, password: string) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<{
+      access_token: string;
+      refresh_token: string;
+      token_type: string;
+      expires_in: number;
+      user_id: number;
+      email: string;
+    }>(`${base}/clinician/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  async getClinicianProfile() {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<{
+      user_id: number;
+      email: string;
+      full_name: string;
+      npi?: string | null;
+      license_number?: string | null;
+      specialty?: string | null;
+      organization_name?: string | null;
+      phone?: string | null;
+      address?: string | null;
+      verified_at?: string | null;
+      created_at?: string | null;
+      updated_at?: string | null;
+    }>(`${base}/clinician/profile`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+  },
+
+  async updateClinicianProfile(payload: {
+    full_name?: string;
+    npi?: string;
+    license_number?: string;
+    specialty?: string;
+    organization_name?: string;
+    phone?: string;
+    address?: string;
+  }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<Parameters<typeof api.getClinicianProfile>[0]>(`${base}/clinician/profile`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async listClinicianPatients(statusFilter?: string) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const q = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : '';
+    return request<Array<{
+      patient_id: number;
+      patient_first_name: string;
+      patient_last_name: string;
+      patient_full_name: string;
+      grant_id: number;
+      grant_status: string;
+      grant_scopes: string;
+      granted_at?: string | null;
+      expires_at?: string | null;
+    }>>(`${base}/clinician/patients${q}`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+  },
+
+  async requestPatientAccess(payload: { patient_id: number; scopes?: string; expires_in_days?: number }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<{ id: number; patient_id: number; status: string; scopes: string }>(`${base}/clinician/access/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async listClinicianUploads(params?: { patient_id?: number; status_filter?: string; skip?: number; limit?: number }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const sp = new URLSearchParams();
+    if (params?.patient_id != null) sp.set('patient_id', String(params.patient_id));
+    if (params?.status_filter) sp.set('status_filter', params.status_filter);
+    if (params?.skip != null) sp.set('skip', String(params.skip));
+    if (params?.limit != null) sp.set('limit', String(params.limit));
+    const q = sp.toString() ? `?${sp.toString()}` : '';
+    return request<DocumentItem[]>(`${base}/clinician/uploads${q}`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+  },
+
+  async listClinicianPatientDocuments(
+    patientId: number,
+    params?: { document_type?: string; processed_only?: boolean; skip?: number; limit?: number },
+  ) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const sp = new URLSearchParams();
+    if (params?.document_type) sp.set('document_type', params.document_type);
+    if (params?.processed_only) sp.set('processed_only', 'true');
+    if (params?.skip != null) sp.set('skip', String(params.skip));
+    if (params?.limit != null) sp.set('limit', String(params.limit));
+    const q = sp.toString() ? `?${sp.toString()}` : '';
+    return request<DocumentItem[]>(`${base}/clinician/patient/${patientId}/documents${q}`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+  },
+
+  async listClinicianPatientRecords(patientId: number, params?: { record_type?: string; skip?: number; limit?: number }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const sp = new URLSearchParams();
+    if (params?.record_type) sp.set('record_type', params.record_type);
+    if (params?.skip != null) sp.set('skip', String(params.skip));
+    if (params?.limit != null) sp.set('limit', String(params.limit));
+    const q = sp.toString() ? `?${sp.toString()}` : '';
+    return request<MedicalRecord[]>(`${base}/clinician/patient/${patientId}/records${q}`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+  },
+
+  async patientAccessGrant(payload: { grant_id: number; scopes?: string; expires_in_days?: number }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<{ id: number; status: string }>(`${base}/patient/access/grant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async patientAccessRevoke(payload: { grant_id: number }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<{ id: number; status: string }>(`${base}/patient/access/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async listPatientAccessRequests(statusFilter?: string) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const q = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : '';
+    return request<Array<{
+      grant_id: number;
+      patient_id: number;
+      patient_name: string;
+      clinician_user_id: number;
+      clinician_name: string;
+      clinician_email: string;
+      status: string;
+      scopes: string;
+      created_at: string;
+    }>>(`${base}/patient/access/requests${q}`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
   },
 };
 
