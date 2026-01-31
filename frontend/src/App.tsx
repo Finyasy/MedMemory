@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
-import { ApiError, api, getUserFriendlyMessage } from './api';
+import { ApiError, api } from './api';
 import useToast from './hooks/useToast';
 import useAppStore from './store/useAppStore';
 import usePatients from './hooks/usePatients';
 import usePatientRecords from './hooks/usePatientRecords';
 import usePatientDocuments from './hooks/usePatientDocuments';
 import useChat from './hooks/useChat';
+import useDocumentUpload from './hooks/useDocumentUpload';
+import useAppErrorHandler from './hooks/useAppErrorHandler';
+import useDocumentWorkspace from './hooks/useDocumentWorkspace';
+import useChatUploads from './hooks/useChatUploads';
 import TopBar from './components/TopBar';
 import ErrorBanner from './components/ErrorBanner';
 import ToastStack from './components/ToastStack';
@@ -15,8 +19,9 @@ import DocumentsPanel from './components/DocumentsPanel';
 import RecordsPanel from './components/RecordsPanel';
 import ChatInterface from './components/ChatInterface';
 import LocalizationModal from './components/LocalizationModal';
-import type { DocumentOcrRefinement, LocalizationBox, PatientSummary } from './types';
-import { getChatUploadKind, isCxrFilename } from './utils/uploadRouting';
+import ClinicianApp from './pages/ClinicianApp';
+import type { PatientSummary } from './types';
+import type { InsightsLabItem, InsightsMedicationItem } from './api/generated';
 
 const defaultHighlights = [
   { title: 'LDL Cholesterol', value: '167 mg/dL', trend: 'down', note: 'Jun 2025' },
@@ -41,88 +46,80 @@ const buildPath = (values: number[]) => {
     .join(' ');
 };
 
-const getExistingDocumentId = (error: unknown) => {
-  let message = '';
-  if (error instanceof ApiError) {
-    message = error.message;
-  } else if (error && typeof error === 'object' && 'body' in error) {
-    const body = (error as { body?: { detail?: string; error?: { message?: string } }; message?: string }).body;
-    message = body?.detail || body?.error?.message || (error as { message?: string }).message || '';
-  } else if (error instanceof Error) {
-    message = error.message;
-  }
-  const match = /Document already exists with ID (\d+)/.exec(message);
-  return match ? Number(match[1]) : null;
-};
-
 function App() {
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+  if (pathname.startsWith('/clinician')) {
+    return <ClinicianApp />;
+  }
+
   const patientId = useAppStore((state) => state.patientId);
   const patientSearch = useAppStore((state) => state.patientSearch);
   const accessToken = useAppStore((state) => state.accessToken);
   const currentUser = useAppStore((state) => state.user);
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
+  const isClinician = useAppStore((state) => state.isClinician);
+
+  if (isAuthenticated && isClinician) {
+    window.location.href = '/clinician';
+    return null;
+  }
   const setAccessToken = useAppStore((state) => state.setAccessToken);
   const setUser = useAppStore((state) => state.setUser);
-  const setPatientId = useAppStore((state) => state.setPatientId);
+  const setPatientIdStore = useAppStore((state) => state.setPatientId);
   const setPatientSearch = useAppStore((state) => state.setPatientSearch);
-  const [processingDocs, setProcessingDocs] = useState<number[]>([]);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [documentStatus, setDocumentStatus] = useState('');
-  const [chatUploadStatus, setChatUploadStatus] = useState('');
-  const [isChatUploading, setIsChatUploading] = useState(false);
+  const setPatientId = useCallback((id: number | null) => {
+    setPatientIdStore(id ?? 0);
+  }, [setPatientIdStore]);
   const [formData, setFormData] = useState({ title: '', content: '', record_type: 'general' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [patientLoadingFailed, setPatientLoadingFailed] = useState(false);
   const [autoSelectedPatient, setAutoSelectedPatient] = useState<PatientSummary | null>(null);
-  const [viewMode, setViewMode] = useState<'chat' | 'dashboard'>('chat');
-  const [documentPreview, setDocumentPreview] = useState<{
+  const [profileSummary, setProfileSummary] = useState<{
     id: number;
-    title: string;
-    text: string;
-    description?: string | null;
-    pageCount?: number | null;
-    ocr?: DocumentOcrRefinement | null;
+    is_dependent: boolean;
+    profile_completion?: { overall_percentage: number };
   } | null>(null);
-  const [localizationPreview, setLocalizationPreview] = useState<{
-    imageUrl: string;
-    boxes: LocalizationBox[];
-  } | null>(null);
-  const [documentDownloadUrl, setDocumentDownloadUrl] = useState<string | null>(null);
+  const [primaryPatientId, setPrimaryPatientId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'chat' | 'dashboard'>('chat');
+  // Document preview is now managed by useDocumentWorkspace hook
   const [insights, setInsights] = useState<{
     lab_total: number;
     lab_abnormal: number;
-    recent_labs: Array<{
-      test_name: string;
-      value?: string | null;
-      unit?: string | null;
-      collected_at?: string | null;
-      is_abnormal: boolean;
-    }>;
+    recent_labs: InsightsLabItem[];
     active_medications: number;
-    recent_medications: Array<{
-      name: string;
-      dosage?: string | null;
-      frequency?: string | null;
-      status?: string | null;
-      prescribed_at?: string | null;
-      start_date?: string | null;
-    }>;
+    recent_medications: InsightsMedicationItem[];
     a1c_series: number[];
   } | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
+  const [ocrAvailable, setOcrAvailable] = useState<boolean | null>(null);
+  const [latestDocumentStatus, setLatestDocumentStatus] = useState<{
+    chunks: { total: number; indexed: number; not_indexed: number };
+    processing_status: string;
+    processing_error: string | null;
+  } | null>(null);
+  const [accessRequests, setAccessRequests] = useState<Array<{
+    grant_id: number;
+    patient_id: number;
+    patient_name: string;
+    clinician_user_id: number;
+    clinician_name: string;
+    clinician_email: string;
+    status: string;
+    scopes: string;
+    created_at: string;
+  }>>([]);
+  const [accessRequestsLoading, setAccessRequestsLoading] = useState(false);
+  const [actingGrantId, setActingGrantId] = useState<number | null>(null);
   const { toasts, pushToast } = useToast();
+  const { handleError, clearBanner } = useAppErrorHandler({
+    setBanner: setErrorBanner,
+    pushToast,
+  });
+  const clearErrorBanner = clearBanner;
 
-  const handleError = useCallback((label: string, error: unknown) => {
-    const message = getUserFriendlyMessage(error);
-    setErrorBanner(`${label}: ${message}`);
-    pushToast('error', `${label}. ${message}`);
-  }, [pushToast]);
-  const clearErrorBanner = useCallback(() => {
-    setErrorBanner(null);
-  }, []);
 
-  const { patients, isLoading: patientLoading } = usePatients({
+  const { patients, isLoading: patientLoading, reload: reloadPatients, hasLoadedSuccessfully } = usePatients({
     search: patientSearch,
     isAuthenticated,
     onError: handleError,
@@ -141,16 +138,55 @@ function App() {
     patientId,
     onError: handleError,
   });
-  
+  const { uploadWithDuplicateCheck } = useDocumentUpload(patientId);
+
+  const documentWorkspace = useDocumentWorkspace({
+    patientId,
+    documents,
+    reloadDocuments,
+    uploadWithDuplicateCheck,
+    pushToast,
+    handleError,
+  });
+
+  const {
+    localizationPreview,
+    handleChatUpload,
+    handleLocalizeUpload,
+    clearLocalizationPreview,
+  } = useChatUploads({
+    patientId,
+    question,
+    setQuestion,
+    reloadDocuments,
+    uploadWithDuplicateCheck,
+    pushToast,
+    handleError,
+    sendVision,
+    sendVolume,
+    sendWsi,
+    pushMessage,
+  });
 
   // Compute selectedPatient early so it can be used in useEffect hooks
+  // Only use autoSelectedPatient if it matches the current patientId
   const selectedPatient = useMemo(
-    () => autoSelectedPatient || patients.find((patient) => patient.id === patientId),
+    () => {
+      if (autoSelectedPatient && autoSelectedPatient.id === patientId) {
+        return autoSelectedPatient;
+      }
+      return patients.find((patient) => patient.id === patientId) || null;
+    },
     [autoSelectedPatient, patients, patientId]
   );
 
+  const requestOpenProfile = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const targetId = selectedPatient?.id ?? patientId ?? undefined;
+    window.dispatchEvent(new CustomEvent('medmemory:open-profile', { detail: { patientId: targetId } }));
+  }, [selectedPatient, patientId]);
+
   useEffect(() => {
-    // Test if backend is accessible through proxy
     api.getHealth()
       .then((health) => {
         console.log('[App] Backend health check passed:', health);
@@ -182,7 +218,6 @@ function App() {
     return () => window.removeEventListener('keydown', handleShortcut);
   }, []);
 
-  // Fetch user info if we have a token but no user
   useEffect(() => {
     if (!accessToken || currentUser) return;
     api
@@ -200,26 +235,30 @@ function App() {
       });
   }, [accessToken, currentUser, setAccessToken, setUser, handleError]);
 
-  // Verify patient exists if patientId is set but selectedPatient is not available
-  // Only run this after patients have been loaded (not loading and not empty due to no patients)
+  // Verify patient exists when patientId is set but not found in loaded patients list
   useEffect(() => {
-    if (!currentUser || !accessToken || !patientId || patientId <= 0) {
-      return;
-    }
-    
-    // Only verify if patients have been loaded (not currently loading)
-    // If we have a patientId but no selectedPatient, and patients list is available, verify it exists
-    if (!selectedPatient && !patientLoading && patients.length >= 0) {
-      const patientExists = patients.some((p) => p.id === patientId);
-      if (!patientExists && patients.length > 0) {
-        // Patient list is loaded and patient doesn't exist - clear it
-        console.warn('Patient ID does not exist in patient list, clearing it');
-        setPatientId(0);
-      }
-    }
-  }, [currentUser, accessToken, patientId, selectedPatient, patients, patientLoading, setPatientId]);
+    if (!currentUser || !accessToken || !patientId || patientId <= 0) return;
+    if (patientLoading || selectedPatient || !hasLoadedSuccessfully) return;
+    if (patientSearch.trim().length > 0) return;
 
-  // Auto-select or create patient when user is set and no patient is selected
+    const patientExists = patients.some((p) => p.id === patientId);
+    if (!patientExists && patients.length > 0) {
+      console.warn('Patient ID does not exist in patient list, clearing it');
+      setPatientId(0);
+    }
+  }, [
+    currentUser,
+    accessToken,
+    patientId,
+    selectedPatient,
+    patients,
+    patientLoading,
+    patientSearch,
+    hasLoadedSuccessfully,
+    setPatientId,
+  ]);
+
+  // Auto-select or create patient when user logs in
   useEffect(() => {
     if (!currentUser || !accessToken || patientId > 0) {
       setPatientLoadingFailed(false);
@@ -229,22 +268,19 @@ function App() {
     let cancelled = false;
     setPatientLoadingFailed(false);
     
-    // Add a timeout to prevent infinite loading
     const maxWaitTimeout = setTimeout(() => {
       if (cancelled || patientId > 0) return;
-      console.error('Patient loading timeout - taking too long');
+      console.error('Patient loading timeout');
       setPatientLoadingFailed(true);
-      handleError('Loading timeout', new Error('Patient profile loading is taking too long. Please refresh the page or check your connection.'));
-    }, 15000); // 15 second timeout
+      handleError('Loading timeout', new Error('Patient profile loading is taking too long. Please refresh the page.'));
+    }, 15000);
     
-    // Small delay to ensure token is fully persisted
     const timeoutId = setTimeout(() => {
       if (cancelled) return;
       
-      // Verify token is still available
       const token = window.localStorage.getItem('medmemory_access_token');
       if (!token) {
-        console.error('Access token not found in localStorage');
+        console.error('Access token not found');
         setPatientLoadingFailed(true);
         handleError('Authentication error', new Error('Access token missing'));
         clearTimeout(maxWaitTimeout);
@@ -253,28 +289,23 @@ function App() {
       
       console.log('Loading patient profile...');
       
-      // Auto-select or create patient for the logged-in user
-      api
-        .listPatients()
+      api.listPatients()
         .then((patientList) => {
           if (cancelled) return;
           clearTimeout(maxWaitTimeout);
           console.log('Patient list loaded:', patientList);
           
           if (patientList.length > 0) {
-            // Auto-select the first patient
             console.log('Selecting patient:', patientList[0].id);
             setPatientId(patientList[0].id);
             setAutoSelectedPatient(patientList[0]);
             setPatientLoadingFailed(false);
           } else {
-            // Auto-create a patient from user info
-            console.log('No patients found, creating new patient profile...');
+            console.log('Creating new patient profile...');
             const nameParts = currentUser.full_name.split(' ');
             const firstName = nameParts[0] || currentUser.email.split('@')[0];
             const lastName = nameParts.slice(1).join(' ') || 'User';
-            api
-              .createPatient({
+            api.createPatient({
                 first_name: firstName,
                 last_name: lastName,
                 email: currentUser.email,
@@ -299,16 +330,11 @@ function App() {
         .catch((error) => {
           if (cancelled) return;
           clearTimeout(maxWaitTimeout);
-          // More detailed error logging
           console.error('Failed to load patient profile:', error);
-          if (error instanceof Error) {
-            console.error('Error details:', error.message, error.stack);
-          }
           setPatientLoadingFailed(true);
-          // Always show error to user so they know something went wrong
           handleError('Failed to load patient profile', error);
         });
-    }, 100); // Small delay to ensure state is settled
+    }, 100);
     
     return () => {
       cancelled = true;
@@ -325,10 +351,58 @@ function App() {
     }
   }, [patients, autoSelectedPatient]);
 
+  // Load primary patient ID on authentication (for "Back to My Health" functionality)
   useEffect(() => {
-    setDocumentPreview(null);
-    setDocumentDownloadUrl(null);
-  }, [patientId]);
+    if (!isAuthenticated) {
+      setPrimaryPatientId(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getAuthHeaders()
+      .then((headers) => fetch('/api/v1/profile', { headers }))
+      .then(async (res) => {
+        if (!res.ok) throw new Error('Failed to load primary profile');
+        const data = await res.json();
+        if (cancelled) return;
+        if (typeof data.id === 'number') {
+          setPrimaryPatientId(data.id);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !patientId) {
+      setProfileSummary(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getAuthHeaders()
+      .then((headers) => fetch(`/api/v1/profile?patient_id=${patientId}`, { headers }))
+      .then(async (res) => {
+        if (!res.ok) throw new Error('Failed to load profile summary');
+        const data = await res.json();
+        if (cancelled) return;
+        setProfileSummary({
+          id: data.id,
+          is_dependent: !!data.is_dependent,
+          profile_completion: data.profile_completion,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setProfileSummary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, patientId]);
+
+  // Document preview reset is handled by useDocumentWorkspace hook
 
   useEffect(() => {
     if (!patientId || selectedPatient || !isAuthenticated) return;
@@ -337,56 +411,62 @@ function App() {
       .then((patient) => {
         setAutoSelectedPatient(patient);
       })
-      .catch(() => {
-        // Let other flows handle errors; avoid blocking login UX.
-      });
+      .catch(() => {});
   }, [patientId, selectedPatient, isAuthenticated]);
 
+  // Load insights only after patient is verified to exist
   useEffect(() => {
-    // Only load insights if we have a valid patient selected and authenticated
-    // Wait for selectedPatient to be available to ensure patient exists
     if (!patientId || patientId <= 0 || !isAuthenticated) {
       setInsights(null);
       return;
     }
     
-    // If we have a patientId but no selectedPatient, verify the patient exists first
-    // This handles the case where patientId might be stale or invalid
     if (!selectedPatient && currentUser) {
-      // Patient verification is in progress, don't load insights yet
       setInsights(null);
       return;
     }
     
     setInsightsLoading(true);
-    api
-      .getPatientInsights(patientId)
-      .then((data) => {
-        setInsights(data);
-      })
+    api.getPatientInsights(patientId)
+      .then((data) => setInsights(data))
       .catch((error) => {
-        // If patient not found (404), clear patientId and let auto-select handle it
         if (error instanceof ApiError && error.status === 404) {
-          console.warn('Patient not found for insights, clearing patientId');
+          console.warn('Patient not found, clearing patientId');
           setPatientId(0);
           setInsights(null);
         } else {
-          // Only show error for non-404 errors (network, server errors, etc.)
-          // Don't show error for 404s as they're handled gracefully
           handleError('Failed to load insights', error);
         }
       })
       .finally(() => setInsightsLoading(false));
   }, [patientId, isAuthenticated, selectedPatient, currentUser, setPatientId, handleError]);
 
+  // Auto-refresh documents while processing (with scroll position preservation)
   useEffect(() => {
     const needsRefresh = documents.some((doc) =>
       ['pending', 'processing'].includes(doc.processing_status),
     );
     if (!needsRefresh) return;
+    
+    // Preserve scroll position before reload
+    let scrollY = window.scrollY;
+    let scrollX = window.scrollX;
+    
     const interval = setInterval(() => {
+      // Save current scroll position
+      scrollY = window.scrollY;
+      scrollX = window.scrollX;
+      
       reloadDocuments();
+      
+      // Restore scroll position after a brief delay (allowing render to complete)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          window.scrollTo(scrollX, scrollY);
+        });
+      });
     }, 4000);
+    
     return () => clearInterval(interval);
   }, [documents, reloadDocuments]);
 
@@ -411,225 +491,17 @@ function App() {
     }
   };
 
+  const handleDependentAdded = useCallback((dependentId: number, dependentName: string) => {
+    pushToast('success', `${dependentName} has been added to your family.`);
+    setTimeout(() => {
+      pushToast('info', `Upload ${dependentName}'s medical records to start tracking their health.`);
+    }, 1500);
+    reloadPatients();
+    setAutoSelectedPatient({ id: dependentId, full_name: dependentName });
+  }, [pushToast, reloadPatients]);
+
   const handleUploadDocument = async () => {
-    if (!selectedFile) return;
-    setDocumentStatus('Uploading document...');
-    try {
-      await api.uploadDocument(patientId, selectedFile, { title: selectedFile.name });
-      setSelectedFile(null);
-      setDocumentStatus('Upload complete.');
-      pushToast('success', 'Document uploaded.');
-      await reloadDocuments();
-    } catch (error) {
-      const existingId = getExistingDocumentId(error);
-      if (existingId) {
-        setSelectedFile(null);
-        setDocumentStatus('Already uploaded. Using existing document.');
-        pushToast('info', `Document already exists (ID ${existingId}). Using existing file.`);
-        await reloadDocuments();
-        return;
-      }
-      handleError('Failed to upload document', error);
-      setDocumentStatus('Upload failed.');
-    }
-  };
-
-  const handleChatUpload = async (file: File | File[]) => {
-    const files = Array.isArray(file) ? file : [file];
-    for (const single of files) {
-      await handleSingleChatUpload(single);
-    }
-  };
-
-  const handleLocalizeUpload = async (file: File) => {
-    if (!patientId) {
-      pushToast('info', 'Select a patient before localizing.');
-      return;
-    }
-    setIsChatUploading(true);
-    setChatUploadStatus('Localizing findings...');
-    const imageUrl = URL.createObjectURL(file);
-    try {
-      const modality = isCxrFilename(file.name) ? 'cxr' : 'imaging';
-      const prompt = question.trim() || 'Localize findings in this image.';
-      pushMessage({ role: 'user', content: `${prompt}\n[Localization: ${file.name}]` });
-      const response = await api.localizeFindings(patientId, prompt, file, modality);
-      setLocalizationPreview({ imageUrl, boxes: response.boxes });
-      const topLabels = response.boxes
-        .slice(0, 3)
-        .map((box) => `${box.label} (${Math.round(box.confidence * 100)}%)`)
-        .join(', ');
-      const summaryText = response.boxes.length
-        ? `Localization found ${response.boxes.length} region(s): ${topLabels}.`
-        : 'Localization found no regions.';
-      pushMessage({ role: 'assistant', content: summaryText });
-      try {
-        await api.uploadDocument(patientId, file, {
-          title: file.name,
-          document_type: 'imaging',
-          category: 'localization',
-          description: `Auto localization: ${summaryText}`,
-        });
-      } catch {
-        // Optional persistence; ignore failures.
-      }
-      setChatUploadStatus('Localization complete.');
-      pushToast('success', 'Localization ready.');
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        pushToast('error', 'Localization endpoint unavailable. Restart the backend.');
-      } else {
-        handleError('Failed to localize image', error);
-      }
-      setChatUploadStatus('Localization failed.');
-      URL.revokeObjectURL(imageUrl);
-    } finally {
-      setIsChatUploading(false);
-    }
-  };
-
-  const handleSingleChatUpload = async (single: File) => {
-    const uploadKind = getChatUploadKind(single);
-    if (!patientId) {
-      pushToast('info', 'Select a patient before uploading a report.');
-      return;
-    }
-    if (uploadKind === 'dicom') {
-      pushToast('info', 'Please upload DICOM series as a .zip file.');
-      return;
-    }
-    if (uploadKind === 'wsi') {
-      setIsChatUploading(true);
-      setChatUploadStatus('Analyzing WSI patches...');
-      try {
-        await sendWsi(single, question);
-        setChatUploadStatus('WSI analysis complete.');
-      } catch (error) {
-        setChatUploadStatus('WSI analysis failed.');
-      } finally {
-        setIsChatUploading(false);
-      }
-      return;
-    }
-    if (uploadKind === 'volume') {
-      setIsChatUploading(true);
-      setChatUploadStatus('Analyzing volume...');
-      try {
-        await sendVolume(single, question);
-        setChatUploadStatus('Volume analysis complete.');
-      } catch (error) {
-        setChatUploadStatus('Volume analysis failed.');
-      } finally {
-        setIsChatUploading(false);
-      }
-      return;
-    }
-    if (uploadKind === 'image') {
-      if (isCxrFilename(single.name)) {
-        setIsChatUploading(true);
-        setChatUploadStatus('Uploading chest X-ray...');
-        try {
-          const uploaded = await api.uploadDocument(patientId, single, { title: single.name });
-          setChatUploadStatus('Generating CXR comparison...');
-          await api.processDocument(uploaded.id);
-          setChatUploadStatus('CXR uploaded with comparison.');
-          pushToast('success', 'Chest X-ray uploaded. Comparison added to document.');
-          await reloadDocuments();
-        } catch (error) {
-          handleError('Failed to upload chest X-ray', error);
-          setChatUploadStatus('Upload failed.');
-        } finally {
-          setIsChatUploading(false);
-        }
-        return;
-      }
-      setIsChatUploading(true);
-      setChatUploadStatus('Analyzing image...');
-      try {
-        await sendVision(single, question);
-        setChatUploadStatus('Image analysis complete.');
-        pushToast('success', 'Image analyzed with MedGemma.');
-      } catch (error) {
-        handleError('Failed to analyze image', error);
-        setChatUploadStatus('Image analysis failed.');
-      } finally {
-        setIsChatUploading(false);
-      }
-      return;
-    }
-    setIsChatUploading(true);
-    setChatUploadStatus('Uploading report...');
-    try {
-      const uploaded = await api.uploadDocument(patientId, single, { title: single.name });
-      setChatUploadStatus('Processing for chat...');
-      await api.processDocument(uploaded.id);
-      setChatUploadStatus('Ready to chat with this report.');
-      pushToast('success', 'Report uploaded and processed.');
-      await reloadDocuments();
-    } catch (error) {
-      const existingId = getExistingDocumentId(error);
-      if (existingId) {
-        try {
-          setChatUploadStatus('Processing existing report...');
-          await api.processDocument(existingId);
-          setChatUploadStatus('Ready to chat with this report.');
-          pushToast('info', `Report already exists (ID ${existingId}). Using existing document.`);
-          await reloadDocuments();
-          return;
-        } catch (processError) {
-          handleError('Failed to process existing report', processError);
-          setChatUploadStatus('Processing failed.');
-          return;
-        }
-      }
-      handleError('Failed to upload chat file', error);
-      setChatUploadStatus('Upload failed.');
-    } finally {
-      setIsChatUploading(false);
-    }
-  };
-
-  const handleProcessDocument = async (documentId: number) => {
-    setProcessingDocs((prev) => [...prev, documentId]);
-    setDocumentStatus('Processing document...');
-    try {
-      await api.processDocument(documentId);
-      setDocumentStatus('Processing complete.');
-      pushToast('success', 'Document processed.');
-      await reloadDocuments();
-    } catch (error) {
-      handleError('Failed to process document', error);
-      setDocumentStatus('Processing failed.');
-    } finally {
-      setProcessingDocs((prev) => prev.filter((id) => id !== documentId));
-    }
-  };
-
-  const handleViewDocument = async (documentId: number) => {
-    const doc = documents.find((item) => item.id === documentId);
-    if (!doc) return;
-    if (!doc.is_processed) {
-      pushToast('info', 'Process the document to view extracted text.');
-      return;
-    }
-    try {
-      const [textResponse, ocrResponse] = await Promise.all([
-        api.getDocumentText(documentId),
-        api.getDocumentOcr(documentId).catch(() => null),
-      ]);
-      setDocumentPreview({
-        id: documentId,
-        title: doc.title || doc.original_filename,
-        text: textResponse.extracted_text,
-        description: doc.description,
-        pageCount: textResponse.page_count,
-        ocr: ocrResponse,
-      });
-      setDocumentDownloadUrl(`${window.location.origin}/api/v1/documents/${documentId}/download`);
-      pushToast('success', 'Document loaded.');
-    } catch (error) {
-      handleError('Failed to load document text', error);
-    }
+    await documentWorkspace.handleUpload();
   };
 
 
@@ -650,9 +522,80 @@ function App() {
     [documents],
   );
   const latestDocument = documents[0];
+
+  // Load patient access requests (for clinician approve/deny)
+  const loadAccessRequests = useCallback(async () => {
+    if (!isAuthenticated) return;
+    setAccessRequestsLoading(true);
+    try {
+      const list = await api.listPatientAccessRequests();
+      setAccessRequests(list);
+    } catch {
+      setAccessRequests([]);
+    } finally {
+      setAccessRequestsLoading(false);
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated) loadAccessRequests();
+  }, [isAuthenticated, loadAccessRequests]);
+
+  const handleApproveAccess = useCallback(async (grantId: number) => {
+    setActingGrantId(grantId);
+    try {
+      await api.patientAccessGrant({ grant_id: grantId });
+      pushToast('success', 'Access approved. The clinician can now view this profile.');
+      await loadAccessRequests();
+    } catch (err) {
+      handleError('Failed to approve access', err);
+    } finally {
+      setActingGrantId(null);
+    }
+  }, [pushToast, loadAccessRequests, handleError]);
+
+  const handleDenyAccess = useCallback(async (grantId: number) => {
+    setActingGrantId(grantId);
+    try {
+      await api.patientAccessRevoke({ grant_id: grantId });
+      pushToast('success', 'Access request denied.');
+      await loadAccessRequests();
+    } catch (err) {
+      handleError('Failed to deny access', err);
+    } finally {
+      setActingGrantId(null);
+    }
+  }, [pushToast, loadAccessRequests, handleError]);
+
+  // Check OCR availability on mount
+  useEffect(() => {
+    if (isAuthenticated) {
+      api.checkOcrAvailability()
+        .then((result) => setOcrAvailable(result.available))
+        .catch(() => setOcrAvailable(null));
+    }
+  }, [isAuthenticated]);
+
+  // Check latest document status when it changes
+  useEffect(() => {
+    if (latestDocument?.id && isAuthenticated) {
+      api.getDocumentStatus(latestDocument.id)
+        .then((status) => {
+          setLatestDocumentStatus({
+            chunks: status.chunks,
+            processing_status: status.processing_status,
+            processing_error: status.processing_error,
+          });
+        })
+        .catch(() => setLatestDocumentStatus(null));
+    } else {
+      setLatestDocumentStatus(null);
+    }
+  }, [latestDocument?.id, isAuthenticated]);
   const latestRecord = records[0];
   const a1cSeriesData = insights?.a1c_series?.length ? insights.a1c_series : a1cSeries;
-  const highlightItems = useMemo(() => {
+  // highlightItems can be used for a summary strip in the future
+  const _highlightItems = useMemo(() => {
     if (!insights?.recent_labs?.length) return defaultHighlights;
     return insights.recent_labs.map((lab) => ({
       title: lab.test_name,
@@ -661,15 +604,13 @@ function App() {
       note: lab.collected_at ? formatDate(lab.collected_at) : 'Latest',
     }));
   }, [insights, formatDate]);
+  void _highlightItems; // Suppress unused warning - reserved for future use
 
   const localizationModal = localizationPreview ? (
     <LocalizationModal
       imageUrl={localizationPreview.imageUrl}
       boxes={localizationPreview.boxes}
-      onClose={() => {
-        URL.revokeObjectURL(localizationPreview.imageUrl);
-        setLocalizationPreview(null);
-      }}
+      onClose={clearLocalizationPreview}
     />
   ) : null;
   const insightSummary = useMemo(() => {
@@ -706,7 +647,32 @@ function App() {
     },
   ]), [recordCount, documents.length, processedDocs]);
 
-  // Show landing page if not authenticated
+  // Only show viewing banner when viewing a dependent's profile
+  const viewingBanner = selectedPatient && profileSummary?.is_dependent ? (
+    <div className="viewing-dependent-banner">
+      <div className="viewing-dependent-info">
+        <span className="viewing-dependent-icon">👶</span>
+        <span className="viewing-dependent-name">Viewing: {selectedPatient.full_name}</span>
+        {selectedPatient.age != null && (
+          <span className="viewing-dependent-age">(Age {selectedPatient.age})</span>
+        )}
+      </div>
+      <div className="viewing-dependent-actions">
+        <button type="button" onClick={requestOpenProfile}>
+          Edit Profile
+        </button>
+        {primaryPatientId && (
+          <button type="button" onClick={() => setPatientId(primaryPatientId)}>
+            Back to My Health
+          </button>
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  const profileCompletionPct = profileSummary?.profile_completion?.overall_percentage;
+  const showProfileCta = typeof profileCompletionPct === 'number' && profileCompletionPct < 80;
+
   if (!isAuthenticated) {
     return (
       <div className="app-shell landing">
@@ -714,14 +680,14 @@ function App() {
         <ErrorBanner message={errorBanner} />
         <main className="landing-main">
           <HeroSection
-            selectedPatient={selectedPatient}
+            selectedPatient={selectedPatient ?? undefined}
             isLoading={patientLoading}
             patients={patients}
             searchValue={patientSearch}
             isSearchLoading={patientLoading}
             selectedPatientId={patientId}
             onSearchChange={setPatientSearch}
-            onSelectPatient={setPatientId}
+            onSelectPatient={(id) => setPatientId(id)}
             isAuthenticated={isAuthenticated}
           />
         </main>
@@ -731,15 +697,19 @@ function App() {
     );
   }
 
-  // Show full-screen chat interface when authenticated
-  // Show loading state while patient is being created/selected
-  // Only show loading if we're actively loading and haven't failed
   const isLoadingPatient = patientId === 0 && isAuthenticated && currentUser && !patientLoadingFailed;
   
   if (isLoadingPatient) {
     return (
       <div className="app-shell chat-mode">
-        <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
+        <TopBar
+          viewMode={viewMode}
+          onViewChange={setViewMode}
+          patientMeta={selectedPatient}
+          selectedPatientId={patientId}
+          onPatientChange={setPatientId}
+          onDependentAdded={handleDependentAdded}
+        />
         <ErrorBanner message={errorBanner} />
         <div className="chat-loading-state">
           <div className="loading-spinner" />
@@ -752,12 +722,17 @@ function App() {
     );
   }
   
-  // If there's an error loading patient, show chat interface with error message
-  // This prevents the user from being stuck on the loading screen
   if (!selectedPatient && isAuthenticated && currentUser && patientLoadingFailed) {
     return (
       <div className="app-shell chat-mode">
-        <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
+        <TopBar
+          viewMode={viewMode}
+          onViewChange={setViewMode}
+          patientMeta={selectedPatient}
+          selectedPatientId={patientId}
+          onPatientChange={setPatientId}
+          onDependentAdded={handleDependentAdded}
+        />
         <ErrorBanner message={errorBanner || 'Unable to load your medical profile. Please refresh the page.'} />
         <div className="chat-error-state">
           <h2>Unable to Load Profile</h2>
@@ -804,9 +779,17 @@ function App() {
   if (showDashboard) {
     return (
       <div className="app-shell">
-        <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
+        <TopBar
+          viewMode={viewMode}
+          onViewChange={setViewMode}
+          patientMeta={selectedPatient}
+          selectedPatientId={patientId}
+          onPatientChange={setPatientId}
+          onDependentAdded={handleDependentAdded}
+        />
         <ErrorBanner message={errorBanner} />
         <main className="dashboard">
+          {viewingBanner}
           <div className="dashboard-header">
             <div>
               <p className="eyebrow">Patient overview</p>
@@ -835,6 +818,25 @@ function App() {
               </span>
             </div>
           </div>
+          {showProfileCta ? (
+            <div className="profile-cta">
+              <div>
+                <h3>
+                  {profileSummary?.is_dependent && selectedPatient
+                    ? `Complete ${selectedPatient.full_name}'s health profile`
+                    : 'Complete your health profile'}
+                </h3>
+                <p>
+                  {profileSummary?.is_dependent && selectedPatient
+                    ? `${selectedPatient.full_name}'s profile is ${profileCompletionPct}% complete. Add medical history and providers for better insights.`
+                    : `You're ${profileCompletionPct}% complete. Add providers and lifestyle details for more personal insights.`}
+                </p>
+              </div>
+              <button className="primary-button" type="button" onClick={requestOpenProfile}>
+                {profileSummary?.is_dependent ? 'Complete profile' : 'Finish profile'}
+              </button>
+            </div>
+          ) : null}
           <div className="insight-strip">
             {insightCards.map((card) => (
               <div className="insight-card" key={card.title}>
@@ -847,6 +849,65 @@ function App() {
               </div>
             ))}
           </div>
+          <section className="dashboard-main clinician-access-section">
+            <div className="insight-panel clinician-access-panel">
+              <div className="clinician-access-header">
+                <p className="eyebrow">Clinician access</p>
+                <h2>Your Patient ID & access requests</h2>
+                <p className="subtitle">
+                  Share your Patient ID with your clinician so they can request access. Approve or deny requests below.
+                </p>
+              </div>
+              {patientId > 0 && (
+                <div className="patient-id-block">
+                  <strong>Your Patient ID (share with your clinician):</strong>
+                  <span className="patient-id-value">{patientId}</span>
+                </div>
+              )}
+              <div className="access-requests-block">
+                <h3>Access requests</h3>
+                {accessRequestsLoading ? (
+                  <p className="clinician-access-loading">Loading…</p>
+                ) : accessRequests.length === 0 ? (
+                  <p className="clinician-access-empty">No access requests.</p>
+                ) : (
+                  <ul className="access-requests-list">
+                    {accessRequests.map((req) => (
+                      <li key={req.grant_id} className={`access-request-item access-request-${req.status}`}>
+                        <div className="access-request-info">
+                          <strong>{req.clinician_name}</strong>
+                          <span className="access-request-meta">{req.clinician_email}</span>
+                          <span className="access-request-meta">
+                            For: {req.patient_name} · {req.status}
+                          </span>
+                        </div>
+                        {req.status === 'pending' && (
+                          <div className="access-request-actions">
+                            <button
+                              type="button"
+                              className="primary-button compact"
+                              disabled={actingGrantId !== null}
+                              onClick={() => handleApproveAccess(req.grant_id)}
+                            >
+                              {actingGrantId === req.grant_id ? 'Approving…' : 'Approve'}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button compact"
+                              disabled={actingGrantId !== null}
+                              onClick={() => handleDenyAccess(req.grant_id)}
+                            >
+                              Deny
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </section>
           <section className="dashboard-main">
             <div className={`insight-panel trends ${!insights?.recent_labs?.length && !documents.length ? 'empty-guidance' : ''}`}>
               <div className="insight-panel-header">
@@ -919,15 +980,54 @@ function App() {
                   <h3>{latestDocument?.title || latestDocument?.original_filename || 'No documents yet'}</h3>
                   <p className="subtitle">
                     {latestDocument
-                      ? `Processed · ${latestDocument.page_count || 1} page${latestDocument.page_count === 1 ? '' : 's'}`
+                      ? (() => {
+                          const status = latestDocumentStatus;
+                          const chunksInfo = status?.chunks;
+                          const isReady = status?.processing_status === 'completed' && chunksInfo && chunksInfo.indexed > 0;
+                          const hasError = status?.processing_error;
+                          const isProcessing = status?.processing_status === 'processing' || status?.processing_status === 'pending';
+                          
+                          if (hasError) {
+                            return `⚠️ ${status.processing_error}`;
+                          }
+                          if (isProcessing) {
+                            return `Processing... · ${latestDocument.page_count || 1} page${latestDocument.page_count === 1 ? '' : 's'}`;
+                          }
+                          if (chunksInfo && chunksInfo.indexed === 0 && chunksInfo.total > 0) {
+                            return `⚠️ ${chunksInfo.total} chunks not indexed · Reprocess needed`;
+                          }
+                          if (chunksInfo && chunksInfo.indexed > 0) {
+                            return `Ready · ${chunksInfo.indexed} indexed chunks · ${latestDocument.page_count || 1} page${latestDocument.page_count === 1 ? '' : 's'}`;
+                          }
+                          return `Processed · ${latestDocument.page_count || 1} page${latestDocument.page_count === 1 ? '' : 's'}`;
+                        })()
                       : 'Upload a report to see document insights.'}
                   </p>
+                  {ocrAvailable === false && latestDocument && (
+                    <p className="subtitle" style={{ color: '#ff9800', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                      ⚠️ OCR unavailable - scanned/image documents may not extract text
+                    </p>
+                  )}
                 </div>
                 <button
                   className="ghost-button compact"
                   type="button"
-                  onClick={() => setViewMode('chat')}
-                  disabled={!latestDocument}
+                  onClick={() => {
+                    setViewMode('chat');
+                    send(
+                      `Summarize the most recent document using only values explicitly shown. Use short, friendly sentences. Do not infer meanings or add follow-ups. If no numeric values are shown, say so in one sentence.`,
+                    );
+                  }}
+                  disabled={!latestDocument || latestDocumentStatus?.processing_status === 'processing' || latestDocumentStatus?.processing_status === 'pending'}
+                  title={
+                    latestDocument && (latestDocumentStatus?.processing_status === 'processing' || latestDocumentStatus?.processing_status === 'pending')
+                      ? 'Document is still processing. Please wait...'
+                      : latestDocument && latestDocumentStatus?.processing_status === 'failed'
+                      ? 'Document processing failed. Please reprocess the document.'
+                      : latestDocument && (latestDocumentStatus?.chunks.indexed ?? 0) === 0 && latestDocumentStatus?.processing_status === 'completed'
+                      ? 'Document processed but not yet indexed. Chat may have limited information.'
+                      : undefined
+                  }
                 >
                   Summarize in chat
                 </button>
@@ -943,8 +1043,15 @@ function App() {
                 <button
                   className="ghost-button compact"
                   type="button"
-                  onClick={() => setViewMode('chat')}
+                  onClick={() => {
+                    setViewMode('chat');
+                    const recordName = latestRecord?.title || 'my latest record';
+                    send(
+                      `Please review the record "${recordName}" and summarize only what is explicitly stated. Do not add recommendations unless they are listed in the record.`,
+                    );
+                  }}
                   disabled={!latestRecord}
+                  title={!latestRecord ? 'No records available. Add a clinical note first to enable this feature.' : undefined}
                 >
                   Review in chat
                 </button>
@@ -970,20 +1077,23 @@ function App() {
             <DocumentsPanel
               documents={documents}
               isLoading={documentsLoading}
-              processingIds={processingDocs}
-              selectedFile={selectedFile}
-              status={documentStatus}
-              preview={documentPreview}
-              downloadUrl={documentDownloadUrl}
+              processingIds={documentWorkspace.processingIds}
+              deletingIds={documentWorkspace.deletingIds}
+              selectedFile={documentWorkspace.selectedFile}
+              status={documentWorkspace.status}
+              preview={documentWorkspace.preview}
+              downloadUrl={documentWorkspace.downloadUrl}
               isDisabled={!selectedPatient}
-              onFileChange={setSelectedFile}
+              selectedPatient={selectedPatient ? {
+                full_name: selectedPatient.full_name,
+                is_dependent: profileSummary?.is_dependent,
+              } : null}
+              onFileChange={documentWorkspace.setSelectedFile}
               onUpload={handleUploadDocument}
-              onProcess={handleProcessDocument}
-              onView={handleViewDocument}
-              onClosePreview={() => {
-                setDocumentPreview(null);
-                setDocumentDownloadUrl(null);
-              }}
+              onProcess={documentWorkspace.handleProcess}
+              onView={documentWorkspace.handleView}
+              onDelete={documentWorkspace.handleDelete}
+              onClosePreview={documentWorkspace.handleClosePreview}
             />
             <RecordsPanel
               records={records}
@@ -1006,14 +1116,25 @@ function App() {
 
   return (
     <div className="app-shell chat-mode">
-      <TopBar viewMode={viewMode} onViewChange={setViewMode} patientMeta={selectedPatient} />
+      <TopBar
+        viewMode={viewMode}
+        onViewChange={setViewMode}
+        patientMeta={selectedPatient}
+        selectedPatientId={patientId}
+        onPatientChange={setPatientId}
+        onDependentAdded={handleDependentAdded}
+      />
       <ErrorBanner message={errorBanner} />
+      {viewingBanner}
       <ChatInterface
         messages={messages}
         question={question}
         isStreaming={isStreaming}
         isDisabled={!patientId}
-        selectedPatient={selectedPatient}
+        selectedPatient={selectedPatient ? {
+          ...selectedPatient,
+          is_dependent: profileSummary?.is_dependent,
+        } : undefined}
         showHeader={false}
         onQuestionChange={setQuestion}
         onSend={send}
