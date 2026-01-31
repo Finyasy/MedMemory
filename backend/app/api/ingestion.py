@@ -43,10 +43,6 @@ async def _ensure_patient_ids_for_user(
         raise HTTPException(status_code=404, detail="Patient not found")
 
 
-# ============================================
-# Lab Results Ingestion
-# ============================================
-
 @router.post("/labs", response_model=LabResultResponse, status_code=201)
 async def ingest_lab_result(
     data: LabResultIngest,
@@ -100,10 +96,6 @@ async def ingest_lab_panel(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-# ============================================
-# Medication Ingestion
-# ============================================
 
 @router.post("/medications", response_model=MedicationResponse, status_code=201)
 async def ingest_medication(
@@ -166,10 +158,6 @@ async def discontinue_medication(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# ============================================
-# Encounter Ingestion
-# ============================================
-
 @router.post("/encounters", response_model=EncounterResponse, status_code=201)
 async def ingest_encounter(
     data: EncounterIngest,
@@ -203,21 +191,13 @@ async def ingest_encounters_batch(
     return IngestionResultResponse(**result.to_dict())
 
 
-# ============================================
-# Batch Ingestion (Multiple Types)
-# ============================================
-
 @router.post("/batch", response_model=dict)
 async def ingest_batch(
     data: BatchIngestionRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Ingest multiple record types in a single request.
-    
-    This endpoint allows you to ingest labs, medications, and encounters
-    all at once, which is useful for importing data from EHR exports.
-    """
+    """Ingest multiple record types in a single request."""
     results = {}
     
     if data.labs:
@@ -249,8 +229,6 @@ async def ingest_batch(
         service = EncounterIngestionService(db, user_id=current_user.id)
         result = await service.ingest_batch([d.model_dump() for d in data.encounters])
         results["encounters"] = result.to_dict()
-    
-    # Calculate totals
     total_created = sum(r.get("records_created", 0) for r in results.values())
     total_errors = sum(len(r.get("errors", [])) for r in results.values())
     
