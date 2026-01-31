@@ -1,8 +1,4 @@
-"""Memory and search API endpoints.
-
-Provides semantic search over the medical memory and
-endpoints for managing the vector index.
-"""
+"""Memory and search API endpoints."""
 
 from typing import Optional
 
@@ -14,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
 from app.config import settings
-from app.utils.cache import clear_cache, get_cached, set_cached
+from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
 from app.models import MemoryChunk, Patient, User
 from app.schemas.memory import (
     ContextRequest,
@@ -55,26 +51,13 @@ async def _get_chunk_for_user(
     return chunk
 
 
-# ============================================
-# Semantic Search
-# ============================================
-
 @router.post("/search", response_model=SearchResponse)
 async def semantic_search(
     request: SearchRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Perform semantic search over the medical memory.
-    
-    Finds relevant medical information based on natural language queries.
-    Uses vector similarity to match queries against indexed medical records.
-    
-    Examples:
-    - "What are the patient's current medications?"
-    - "Any abnormal lab results in the past year?"
-    - "History of cardiac conditions"
-    """
+    """Perform semantic search over the medical memory."""
     search_service = SimilaritySearchService(db)
     
     response = await search_service.search(
@@ -116,11 +99,7 @@ async def search_patient_history(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Search within a specific patient's medical history.
-    
-    Convenient endpoint for patient-specific searches.
-    """
-    # Verify patient exists
+    """Search within a specific patient's medical history."""
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
     
     search_service = SimilaritySearchService(db)
@@ -151,21 +130,13 @@ async def search_patient_history(
     )
 
 
-# ============================================
-# Context Retrieval (for LLM)
-# ============================================
-
 @router.post("/context", response_model=ContextResponse)
 async def get_context_for_question(
     request: ContextRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Get relevant context for answering a question.
-    
-    Returns concatenated relevant chunks optimized for feeding into an LLM.
-    Useful for RAG (Retrieval-Augmented Generation) workflows.
-    """
+    """Get relevant context for answering a question (RAG)."""
     search_service = SimilaritySearchService(db)
     
     context = await search_service.get_patient_context(
@@ -174,8 +145,6 @@ async def get_context_for_question(
         max_chunks=request.max_chunks,
         max_tokens=request.max_tokens,
     )
-    
-    # Count chunks in context
     num_chunks = context.count("---") + 1 if context else 0
     
     return ContextResponse(
@@ -187,20 +156,13 @@ async def get_context_for_question(
     )
 
 
-# ============================================
-# Similar Chunks
-# ============================================
-
 @router.post("/similar", response_model=SimilarChunksResponse)
 async def find_similar_chunks(
     request: SimilarChunksRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Find chunks similar to a given chunk.
-    
-    Useful for finding related information or expanding context.
-    """
+    """Find chunks similar to a given chunk."""
     search_service = SimilaritySearchService(db)
     await _get_chunk_for_user(
         chunk_id=request.chunk_id,
@@ -232,21 +194,13 @@ async def find_similar_chunks(
     )
 
 
-# ============================================
-# Indexing
-# ============================================
-
 @router.post("/index/text", response_model=IndexingStatsResponse)
 async def index_custom_text(
     request: IndexTextRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Index custom text content into memory.
-    
-    Useful for adding notes, summaries, or other text that
-    isn't part of standard medical records.
-    """
+    """Index custom text content into memory."""
     indexing_service = MemoryIndexingService(db)
     
     chunks = await indexing_service.index_text(
@@ -267,16 +221,7 @@ async def index_patient_records(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Index all records for a patient.
-    
-    This indexes:
-    - Lab results
-    - Medications
-    - Encounters
-    - Processed documents
-    
-    Run this after ingesting patient data to enable semantic search.
-    """
+    """Index all records for a patient."""
     # Verify patient exists
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
     
@@ -380,9 +325,8 @@ async def delete_memory_chunk(
 ):
     """Delete a specific memory chunk."""
     chunk = await _get_chunk_for_user(chunk_id=chunk_id, db=db, current_user=current_user)
-    
-    await db.delete(chunk)
-    await clear_cache(f"memory_stats:{current_user.id}:")
+    db.delete(chunk)
+    await clear_cache(CacheKeys.memory_stats_prefix(current_user.id))
 
 
 @router.delete("/patient/{patient_id}/memory", status_code=200)
@@ -391,20 +335,13 @@ async def delete_patient_memory(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Delete all memory chunks for a patient.
-    
-    Warning: This is irreversible. You'll need to re-index the patient's data.
-    """
+    """Delete all memory chunks for a patient (irreversible)."""
     indexing_service = MemoryIndexingService(db)
     count = await indexing_service.delete_patient_memory(patient_id)
-    await clear_cache(f"memory_stats:{current_user.id}:")
+    await clear_cache(CacheKeys.memory_stats_prefix(current_user.id))
     return {"deleted_chunks": count}
 
 
-
-# ============================================
-# Statistics
-# ============================================
 
 @router.get("/stats", response_model=MemoryStatsResponse)
 async def get_memory_stats(
@@ -415,7 +352,7 @@ async def get_memory_stats(
     """Get statistics about indexed memory."""
     if patient_id is not None:
         await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
-    cache_key = f"memory_stats:{current_user.id}:{patient_id or 'all'}"
+    cache_key = CacheKeys.memory_stats(current_user.id, patient_id)
     cached = await get_cached(cache_key)
     if cached is not None:
         return cached
@@ -432,10 +369,6 @@ async def get_memory_stats(
     await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
     return response
 
-
-# ============================================
-# Embedding Info
-# ============================================
 
 @router.get("/embedding/info")
 async def get_embedding_info():
