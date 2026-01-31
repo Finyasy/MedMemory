@@ -11,7 +11,7 @@ from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import rate_limit_auth
+from app.api.deps import rate_limit_auth, get_authenticated_user
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
@@ -87,7 +87,11 @@ async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
-    """Get the current authenticated user from JWT token."""
+    """Get the current authenticated user from JWT token.
+    
+    DEPRECATED: Use get_authenticated_user from app.api.deps instead.
+    This function is kept for backward compatibility.
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -149,8 +153,9 @@ async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_
     await db.refresh(new_user)
     
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    role = getattr(new_user, "role", "patient")
     access_token = create_access_token(
-        data={"sub": str(new_user.id)},
+        data={"sub": str(new_user.id), "role": role},
         expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": str(new_user.id)})
@@ -187,10 +192,17 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive"
         )
+
+    role = getattr(user, "role", "patient")
+    if role == "clinician":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Use the Clinician portal to sign in. Go to /clinician",
+        )
     
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     access_token = create_access_token(
-        data={"sub": str(user.id)},
+        data={"sub": str(user.id), "role": role},
         expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": str(user.id)})
@@ -206,7 +218,7 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
 
 
 @router.get("/auth/me", response_model=UserResponse)
-async def get_current_user_info(current_user: Annotated[User, Depends(get_current_user)]):
+async def get_current_user_info(current_user: Annotated[User, Depends(get_authenticated_user)]):
     """Get current user information."""
     return UserResponse(
         id=current_user.id,
@@ -255,8 +267,9 @@ async def refresh_access_token(
         await blacklist_token(jti)
     
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    role = getattr(user, "role", "patient")
     access_token = create_access_token(
-        data={"sub": str(user.id)},
+        data={"sub": str(user.id), "role": role},
         expires_delta=access_token_expires
     )
     new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
