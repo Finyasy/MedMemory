@@ -5,10 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_authenticated_user
+from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
 from app.config import settings
-from app.utils.cache import clear_cache, get_cached, set_cached
+from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
 from app.models import Patient, User
 from app.schemas.patient import (
     PatientCreate,
@@ -29,7 +29,7 @@ async def list_patients(
     current_user: User = Depends(get_authenticated_user),
 ):
     """List all patients with optional search."""
-    cache_key = f"patients:{current_user.id}:{search or ''}:{skip}:{limit}"
+    cache_key = CacheKeys.patients(current_user.id, search, skip, limit)
     cached = await get_cached(cache_key)
     if cached is not None:
         return cached
@@ -97,79 +97,27 @@ async def create_patient(
     db.add(patient)
     await db.flush()
     await db.refresh(patient)
-    await clear_cache(f"patients:{current_user.id}:")
+    await clear_cache(CacheKeys.patients_prefix(current_user.id))
     
-    return PatientResponse(
-        id=patient.id,
-        external_id=patient.external_id,
-        first_name=patient.first_name,
-        last_name=patient.last_name,
-        date_of_birth=patient.date_of_birth,
-        gender=patient.gender,
-        email=patient.email,
-        phone=patient.phone,
-        address=patient.address,
-        blood_type=patient.blood_type,
-        allergies=patient.allergies,
-        medical_conditions=patient.medical_conditions,
-        created_at=patient.created_at,
-        updated_at=patient.updated_at,
-        full_name=patient.full_name,
-        age=patient.age,
-    )
+    return PatientResponse.model_validate(patient, from_attributes=True)
 
 
 @router.get("/{patient_id}", response_model=PatientResponse)
 async def get_patient(
-    patient_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_authenticated_user),
+    patient: Patient = Depends(get_patient_for_user),
 ):
     """Get a specific patient by ID."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
-    )
-    patient = result.scalar_one_or_none()
-    
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
-    return PatientResponse(
-        id=patient.id,
-        external_id=patient.external_id,
-        first_name=patient.first_name,
-        last_name=patient.last_name,
-        date_of_birth=patient.date_of_birth,
-        gender=patient.gender,
-        email=patient.email,
-        phone=patient.phone,
-        address=patient.address,
-        blood_type=patient.blood_type,
-        allergies=patient.allergies,
-        medical_conditions=patient.medical_conditions,
-        created_at=patient.created_at,
-        updated_at=patient.updated_at,
-        full_name=patient.full_name,
-        age=patient.age,
-    )
+    return PatientResponse.model_validate(patient, from_attributes=True)
 
 
 @router.patch("/{patient_id}", response_model=PatientResponse)
 async def update_patient(
-    patient_id: int,
     patient_data: PatientUpdate,
+    patient: Patient = Depends(get_patient_for_user),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Update a patient's information."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
-    )
-    patient = result.scalar_one_or_none()
-    
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
     # Update only provided fields
     update_data = patient_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -177,43 +125,19 @@ async def update_patient(
     
     await db.flush()
     await db.refresh(patient)
-    await clear_cache(f"patients:{current_user.id}:")
+    await clear_cache(CacheKeys.patients_prefix(current_user.id))
     
-    return PatientResponse(
-        id=patient.id,
-        external_id=patient.external_id,
-        first_name=patient.first_name,
-        last_name=patient.last_name,
-        date_of_birth=patient.date_of_birth,
-        gender=patient.gender,
-        email=patient.email,
-        phone=patient.phone,
-        address=patient.address,
-        blood_type=patient.blood_type,
-        allergies=patient.allergies,
-        medical_conditions=patient.medical_conditions,
-        created_at=patient.created_at,
-        updated_at=patient.updated_at,
-        full_name=patient.full_name,
-        age=patient.age,
-    )
+    return PatientResponse.model_validate(patient, from_attributes=True)
 
 
 @router.delete("/{patient_id}", status_code=204)
 async def delete_patient(
-    patient_id: int,
+    patient: Patient = Depends(get_patient_for_user),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Delete a patient and all associated records."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
-    )
-    patient = result.scalar_one_or_none()
-    
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
     # Delete patient (cascade deletes related records)
-    await db.delete(patient)
-    await clear_cache(f"patients:{current_user.id}:")
+    # Note: db.delete() is synchronous in SQLAlchemy, commit handled by middleware
+    db.delete(patient)
+    await clear_cache(CacheKeys.patients_prefix(current_user.id))
