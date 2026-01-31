@@ -67,7 +67,7 @@ fi
   set -a
   source "${ENV_FILE}"
   set +a
-  nohup "${UVICORN_BIN}" app.main:app --host 0.0.0.0 --port 8000 > "${LOG_FILE}" 2>&1 &
+  nohup "${UVICORN_BIN}" app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir "${ROOT_DIR}/backend" > "${LOG_FILE}" 2>&1 &
   echo $! > "${PID_FILE}"
 )
 
