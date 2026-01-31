@@ -6,6 +6,7 @@ Optimized for MPS (Apple Silicon) and CUDA.
 
 import asyncio
 import io
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -20,6 +21,8 @@ from transformers import (
 )
 
 from app.config import settings
+
+logger = logging.getLogger("medmemory")
 
 
 @dataclass
@@ -166,11 +169,11 @@ class LLMService:
         Optimized for MPS (Apple Silicon) and CUDA.
         """
         source = "local path" if self.use_local_model else "Hugging Face"
-        print(f"🔄 Loading LLM model from {source}: {self.model_name}")
-        print(f"   Device: {self.device}")
+        logger.info("Loading LLM model from %s: %s", source, self.model_name)
+        logger.info("Device: %s", self.device)
         
         dtype = self._pick_dtype()
-        print(f"   DType: {dtype}")
+        logger.info("DType: %s", dtype)
         
         # Model loading kwargs
         model_kwargs = {
@@ -198,7 +201,7 @@ class LLMService:
         # Add quantization if requested (CUDA only)
         quant_cfg = None
         if self.load_in_4bit and self.device == "cuda":
-            print("   Using INT4 (4-bit) quantization with best practices")
+            logger.info("Using INT4 (4-bit) quantization with best practices")
             quant_cfg = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
@@ -207,11 +210,11 @@ class LLMService:
             )
             model_kwargs["quantization_config"] = quant_cfg
         elif self.load_in_8bit and self.device == "cuda":
-            print("   Using INT8 (8-bit) quantization")
+            logger.info("Using INT8 (8-bit) quantization")
             quant_cfg = BitsAndBytesConfig(load_in_8bit=True)
             model_kwargs["quantization_config"] = quant_cfg
         elif (self.load_in_4bit or self.load_in_8bit) and self.device != "cuda":
-            print("   ⚠️  Warning: 4-bit quantization requires CUDA. Skipping quantization.")
+            logger.warning("4-bit quantization requires CUDA. Skipping quantization.")
         
         # Load model
         try:
@@ -230,18 +233,18 @@ class LLMService:
             
             # Display model info
             if quant_cfg:
-                print(f"✅ Model loaded successfully with quantization")
+                logger.info("Model loaded successfully with quantization")
             else:
-                print(f"✅ Model loaded successfully")
+                logger.info("Model loaded successfully")
             
             # Show memory usage
             if self.device == "cuda" and torch.cuda.is_available():
                 memory_gb = torch.cuda.memory_allocated() / 1e9
-                print(f"   GPU memory used: {memory_gb:.2f} GB")
+                logger.info("GPU memory used: %.2f GB", memory_gb)
             elif self.device == "mps":
                 # MPS doesn't have direct memory reporting, but we can check model size
                 param_count = sum(p.numel() for p in model.parameters())
-                print(f"   Model parameters: {param_count / 1e9:.2f}B")
+                logger.info("Model parameters: %.2fB", param_count / 1e9)
             
             return model
         
@@ -253,10 +256,10 @@ class LLMService:
                 ) from e
             raise
         except Exception as e:
-            print(f"❌ Error loading model: {e}")
+            logger.error("Error loading model: %s", e)
             if self.use_local_model:
-                print(f"   Hint: Make sure the model is downloaded to: {self.model_path}")
-                print(f"   Run: python scripts/download_model.py")
+                logger.error("Hint: Make sure the model is downloaded to: %s", self.model_path)
+                logger.error("Run: python scripts/download_model.py")
             raise
     
     def _load_processor(self):
@@ -264,7 +267,7 @@ class LLMService:
         
         MedGemma uses AutoProcessor which handles both text and vision inputs.
         """
-        print(f"🔄 Loading processor for {self.model_name}")
+        logger.info("Loading processor for %s", self.model_name)
         
         processor_kwargs = {
             "trust_remote_code": True,
@@ -274,13 +277,22 @@ class LLMService:
         if self.use_local_model:
             processor_kwargs["local_files_only"] = True
         
+        # Check if torchvision is available for fast processor
+        try:
+            import torchvision
+            use_fast = True
+            logger.debug("torchvision available, using fast processor")
+        except ImportError:
+            use_fast = False
+            logger.info("torchvision not available, using slow image processor (this is fine)")
+        
         processor = AutoProcessor.from_pretrained(
             self.model_name,
-            use_fast=True,  # Use fast processor to avoid deprecation warning
+            use_fast=use_fast,  # Explicitly set based on torchvision availability
             **processor_kwargs,
         )
         
-        print(f"✅ Processor loaded")
+        logger.info("Processor loaded successfully")
         return processor
     
     async def generate(
@@ -413,39 +425,56 @@ class LLMService:
                 conversation_history=conversation_history,
             )
 
-        if hasattr(self.processor, "tokenizer") and hasattr(self.processor.tokenizer, "apply_chat_template"):
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            if conversation_history:
-                for turn in conversation_history:
-                    role = turn.get("role", "user")
-                    content = turn.get("content", "")
-                    messages.append({"role": role, "content": content})
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt},
-                ],
-            })
-            full_prompt = self.processor.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        else:
-            full_prompt = self._ensure_image_token(full_prompt)
+        # Load and convert image first
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        inputs = self.processor(
-            text=full_prompt,
-            images=image,
+        
+        # Build messages with image in the official MedGemma format
+        # For multimodal, ALL message contents must be list-of-dicts format
+        messages = []
+        if system_prompt:
+            # System prompt as text-only content list
+            messages.append({
+                "role": "system", 
+                "content": [{"type": "text", "text": system_prompt}]
+            })
+        if conversation_history:
+            for turn in conversation_history:
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                # Convert string content to list format
+                messages.append({
+                    "role": role, 
+                    "content": [{"type": "text", "text": content}]
+                })
+        
+        # User message with image and text (official MedGemma format)
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": prompt},
+            ],
+        })
+        
+        # Use processor.apply_chat_template directly (not tokenizer)
+        # This is the official MedGemma 1.5 approach
+        inputs = self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
             return_tensors="pt",
         )
 
+        # Move inputs to model device with proper dtype
         model_device = next(self.model.parameters()).device
-        inputs = {k: v.to(model_device) if hasattr(v, "to") else v for k, v in inputs.items()}
-        input_tokens = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
+        model_dtype = next(self.model.parameters()).dtype
+        inputs = {
+            k: v.to(model_device, dtype=model_dtype if v.dtype in (torch.float32, torch.float16, torch.bfloat16) else None) 
+            if hasattr(v, "to") else v 
+            for k, v in inputs.items()
+        }
+        input_tokens = inputs["input_ids"].shape[-1] if "input_ids" in inputs else 0
 
         tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
         gen_kwargs = {
@@ -637,13 +666,32 @@ class LLMService:
         conversation_history: Optional[list[dict]] = None,
     ) -> str:
         """Build the full prompt with system message and history."""
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if conversation_history:
+            for turn in conversation_history:
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if role not in {"user", "assistant", "system"}:
+                    role = "user"
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": prompt})
+
+        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
+        if tokenizer and hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
+            try:
+                return tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except Exception:
+                pass
+
         parts = []
-        
-        # System prompt
         if system_prompt:
             parts.append(f"System: {system_prompt}\n")
-        
-        # Conversation history
         if conversation_history:
             for turn in conversation_history:
                 role = turn.get("role", "user")
@@ -652,11 +700,8 @@ class LLMService:
                     parts.append(f"User: {content}\n")
                 elif role == "assistant":
                     parts.append(f"Assistant: {content}\n")
-        
-        # Current prompt
         parts.append(f"User: {prompt}\n")
         parts.append("Assistant:")
-        
         return "".join(parts)
     
     async def stream_generate(
