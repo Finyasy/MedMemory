@@ -1,13 +1,14 @@
 """Document management API endpoints."""
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,9 +26,10 @@ from app.schemas.document import (
 )
 from app.services.documents import DocumentProcessor, DocumentUploadService
 from app.services.llm import LLMService
-from app.utils.cache import clear_cache, get_cached, set_cached
+from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+logger = logging.getLogger("medmemory")
 
 
 def _is_cxr_document(document: Document) -> bool:
@@ -59,10 +61,6 @@ async def _get_document_for_user(
     return document
 
 
-# ============================================
-# Document Upload
-# ============================================
-
 @router.post("/upload", response_model=DocumentResponse, status_code=201)
 async def upload_document(
     file: UploadFile = File(...),
@@ -74,11 +72,7 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Upload a new document for a patient.
-    
-    Supported file types: PDF, PNG, JPEG, TIFF, DOCX, TXT
-    Maximum file size: 50MB
-    """
+    """Upload a new document for a patient."""
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
     service = DocumentUploadService(db)
     
@@ -135,16 +129,27 @@ async def upload_document(
                         document.description = comparison
             except Exception:
                 pass
+
+        try:
+            processor = DocumentProcessor(db)
+            await processor.process_document(
+                document_id=document.id,
+                create_memory_chunks=True,
+            )
+            await db.refresh(document)
+        except Exception as exc:  # noqa: BLE001 - do not fail upload on processing errors
+            logger.warning(
+                "Auto-processing failed for document %s: %s",
+                document.id,
+                exc,
+            )
+
         return DocumentResponse.model_validate(document)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         await clear_cache(f"documents:{current_user.id}:")
 
-
-# ============================================
-# Document Processing
-# ============================================
 
 @router.post("/{document_id}/process", response_model=DocumentProcessResponse)
 async def process_document(
@@ -153,15 +158,7 @@ async def process_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Process a document: extract text and create memory chunks.
-    
-    This extracts text from the document using appropriate methods:
-    - PDFs: Direct text extraction + OCR for image pages
-    - Images: OCR
-    - DOCX: Text extraction
-    
-    Memory chunks are created for semantic search in later phases.
-    """
+    """Process a document: extract text and create memory chunks."""
     await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
     processor = DocumentProcessor(db)
     
@@ -170,8 +167,6 @@ async def process_document(
             document_id=document_id,
             create_memory_chunks=request.create_memory_chunks,
         )
-        
-        # Count memory chunks created
         result = await db.execute(
             select(MemoryChunk).where(MemoryChunk.document_id == document_id)
         )
@@ -197,10 +192,7 @@ async def process_pending_documents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """Process all pending documents.
-    
-    Useful for batch processing after uploading multiple documents.
-    """
+    """Process all pending documents."""
     processor = DocumentProcessor(db)
     result = await db.execute(
         select(Document)
@@ -225,6 +217,27 @@ async def process_pending_documents(
             stats["errors"].append(f"Document {doc.id}: {str(exc)}")
 
     return BatchProcessResponse(**stats)
+
+
+@router.get("/health/ocr", response_model=dict)
+async def check_ocr_availability() -> dict:
+    """Check if OCR (Tesseract) is available on the backend."""
+    from app.services.documents.extraction import ImageExtractor
+
+    extractor = ImageExtractor()
+    available = extractor._tesseract_available  # noqa: SLF001 - simple feature flag
+    return {
+        "available": available,
+        "message": (
+            "OCR is available"
+            if available
+            else (
+                "Tesseract OCR is not installed or not working. "
+                "Image/scanned PDF processing will return empty text. "
+                "Install Tesseract (for example, 'brew install tesseract' on macOS)."
+            )
+        ),
+    }
 
 
 @router.post("/{document_id}/reprocess", response_model=DocumentProcessResponse)
@@ -258,10 +271,6 @@ async def reprocess_document(
         await clear_cache(f"documents:{current_user.id}:")
 
 
-# ============================================
-# Document Retrieval
-# ============================================
-
 @router.get("/", response_model=list[DocumentResponse])
 async def list_documents(
     patient_id: Optional[int] = None,
@@ -273,7 +282,7 @@ async def list_documents(
     current_user: User = Depends(get_authenticated_user),
 ):
     """List documents with optional filtering."""
-    cache_key = f"documents:{current_user.id}:{patient_id or 'all'}:{document_type or ''}:{processed_only}:{skip}:{limit}"
+    cache_key = CacheKeys.documents(current_user.id, patient_id, document_type, processed_only, skip, limit)
     cached = await get_cached(cache_key)
     if cached is not None:
         return cached
@@ -322,6 +331,53 @@ async def list_documents(
     response = [DocumentResponse.model_validate(doc) for doc in documents]
     await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
     return response
+
+
+@router.get("/{document_id}/status", response_model=dict)
+async def get_document_status(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> dict:
+    """Get detailed processing and indexing status for a document."""
+    document = await _get_document_for_user(
+        document_id=document_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    result = await db.execute(
+        select(
+            func.count(MemoryChunk.id).label("total"),
+            func.sum(cast(MemoryChunk.is_indexed, Integer)).label("indexed"),
+        ).where(MemoryChunk.document_id == document_id)
+    )
+    stats = result.first()
+    total_chunks = int(stats.total or 0)
+    indexed_chunks = int(stats.indexed or 0)
+
+    return {
+        "document_id": document.id,
+        "patient_id": document.patient_id,
+        "processing_status": document.processing_status,
+        "is_processed": document.is_processed,
+        "processed_at": document.processed_at,
+        "processing_error": document.processing_error,
+        "extracted_text_length": len(document.extracted_text)
+        if document.extracted_text
+        else 0,
+        "extracted_text_preview": (
+            document.extracted_text[:200] if document.extracted_text else None
+        ),
+        "chunks": {
+            "total": total_chunks,
+            "indexed": indexed_chunks,
+            "not_indexed": max(total_chunks - indexed_chunks, 0),
+        },
+        "ocr_confidence": document.ocr_confidence,
+        "ocr_language": document.ocr_language,
+        "page_count": document.page_count,
+    }
 
 
 @router.get("/{document_id}", response_model=DocumentDetail)
@@ -401,10 +457,6 @@ async def get_document_ocr(
     )
 
 
-# ============================================
-# Document Deletion
-# ============================================
-
 @router.delete("/{document_id}", status_code=204)
 async def delete_document(
     document_id: int,
@@ -413,13 +465,9 @@ async def delete_document(
 ):
     """Delete a document and its associated file and memory chunks."""
     service = DocumentUploadService(db)
-    
-    # Delete memory chunks first
     await db.execute(
         MemoryChunk.__table__.delete().where(MemoryChunk.document_id == document_id)
     )
-    
-    # Delete document
     await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
     deleted = await service.delete_document(document_id)
     
@@ -427,10 +475,6 @@ async def delete_document(
         raise HTTPException(status_code=404, detail="Document not found")
     await clear_cache(f"documents:{current_user.id}:")
 
-
-# ============================================
-# Patient Documents
-# ============================================
 
 @router.get("/patient/{patient_id}", response_model=list[DocumentResponse])
 async def get_patient_documents(
