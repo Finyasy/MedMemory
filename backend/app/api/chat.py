@@ -1,8 +1,7 @@
-"""Chat API endpoints for medical Q&A.
+"""Chat API endpoints for medical Q&A."""
 
-Provides conversational interface using RAG with MedGemma-4B-IT.
-"""
-
+import logging
+import re
 from typing import Optional
 from uuid import UUID
 
@@ -10,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_authenticated_user, get_patient_for_user
+from app.api.deps import get_authenticated_user, get_authorized_patient, get_patient_for_user
 from app.database import get_db
 from app.models import User
 from app.schemas.chat import (
@@ -109,9 +108,23 @@ def _parse_localization_payload(payload: str, width: int, height: int) -> list[d
     return results
 
 
+def _chat_system_prompt(
+    clinician_mode: bool,
+    explicit_system_prompt: Optional[str] | None,
+) -> Optional[str]:
+    """Resolve system prompt: explicit override, or clinician prompt when clinician_mode."""
+    if explicit_system_prompt:
+        return explicit_system_prompt
+    if clinician_mode:
+        return RAGService.CLINICIAN_SYSTEM_PROMPT
+    return None
+
+
 @router.post("/ask", response_model=ChatResponse)
 async def ask_question(
     request: ChatRequest,
+    structured: bool = Query(False, description="Return structured JSON response"),
+    clinician_mode: bool = Query(False, description="Use clinician-oriented prompt and citations"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
@@ -122,49 +135,88 @@ async def ask_question(
     2. Generates an answer using MedGemma-4B-IT
     3. Stores the conversation for history
     
+    Use clinician_mode=true for clinician-facing output (terse, citations, "Not in documents").
+    Access: owner or clinician with active grant including "chat" scope.
+    
     Example questions:
     - "What medications is the patient currently taking?"
     - "Show me any abnormal lab results from the past year"
     - "What is the patient's diagnosis history?"
+    
+    Args:
+        structured: If True, returns structured JSON response with parsed data
+        clinician_mode: If True, use clinician system prompt and allow clinician access via grant
     """
-    # Verify patient exists
-    await get_patient_for_user(
+    await get_authorized_patient(
         patient_id=request.patient_id,
         db=db,
         current_user=current_user,
+        scope="chat",
     )
     
-    # Run RAG
+    system_prompt = _chat_system_prompt(clinician_mode, request.system_prompt)
     rag_service = RAGService(db)
-    rag_response = await rag_service.ask(
-        question=request.question,
-        patient_id=request.patient_id,
-        conversation_id=request.conversation_id,
-        system_prompt=request.system_prompt,
-        max_context_tokens=request.max_context_tokens,
-        use_conversation_history=request.use_conversation_history,
-    )
     
-    return ChatResponse(
-        answer=rag_response.answer,
-        conversation_id=rag_response.conversation_id,
-        message_id=rag_response.message_id,
-        num_sources=rag_response.num_sources,
-        sources=[
-            SourceInfo(
-                source_type=s["source_type"],
-                source_id=s["source_id"],
-                relevance=s["relevance"],
-            )
-            for s in rag_response.sources_summary
-        ],
-        tokens_input=rag_response.llm_response.tokens_input,
-        tokens_generated=rag_response.llm_response.tokens_generated,
-        tokens_total=rag_response.llm_response.total_tokens,
-        context_time_ms=rag_response.context_time_ms,
-        generation_time_ms=rag_response.generation_time_ms,
-        total_time_ms=rag_response.total_time_ms,
-    )
+    if structured:
+        rag_response, structured_data = await rag_service.ask_structured(
+            question=request.question,
+            patient_id=request.patient_id,
+            conversation_id=request.conversation_id,
+            system_prompt=system_prompt,
+            max_context_tokens=request.max_context_tokens,
+            use_conversation_history=request.use_conversation_history,
+        )
+        return ChatResponse(
+            answer=rag_response.answer,
+            structured_data=structured_data.model_dump() if structured_data else None,
+            conversation_id=rag_response.conversation_id,
+            message_id=rag_response.message_id,
+            num_sources=rag_response.num_sources,
+            sources=[
+                SourceInfo(
+                    source_type=s["source_type"],
+                    source_id=s["source_id"],
+                    relevance=s["relevance"],
+                )
+                for s in rag_response.sources_summary
+            ],
+            tokens_input=rag_response.llm_response.tokens_input,
+            tokens_generated=rag_response.llm_response.tokens_generated,
+            tokens_total=rag_response.llm_response.total_tokens,
+            context_time_ms=rag_response.context_time_ms,
+            generation_time_ms=rag_response.generation_time_ms,
+            total_time_ms=rag_response.total_time_ms,
+        )
+    else:
+        rag_response = await rag_service.ask(
+            question=request.question,
+            patient_id=request.patient_id,
+            conversation_id=request.conversation_id,
+            system_prompt=system_prompt,
+            max_context_tokens=request.max_context_tokens,
+            use_conversation_history=request.use_conversation_history,
+        )
+        
+        return ChatResponse(
+            answer=rag_response.answer,
+            conversation_id=rag_response.conversation_id,
+            message_id=rag_response.message_id,
+            num_sources=rag_response.num_sources,
+            sources=[
+                SourceInfo(
+                    source_type=s["source_type"],
+                    source_id=s["source_id"],
+                    relevance=s["relevance"],
+                )
+                for s in rag_response.sources_summary
+            ],
+            tokens_input=rag_response.llm_response.tokens_input,
+            tokens_generated=rag_response.llm_response.tokens_generated,
+            tokens_total=rag_response.llm_response.total_tokens,
+            context_time_ms=rag_response.context_time_ms,
+            generation_time_ms=rag_response.generation_time_ms,
+            total_time_ms=rag_response.total_time_ms,
+        )
 
 
 @router.post("/stream")
@@ -172,22 +224,24 @@ async def stream_ask(
     question: str = Query(..., min_length=1, max_length=2000),
     patient_id: int = Query(...),
     conversation_id: Optional[UUID] = Query(None),
+    clinician_mode: bool = Query(False, description="Use clinician-oriented prompt and citations"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Stream answer generation token by token.
     
     Useful for real-time chat interfaces where you want to show
-    the answer as it's being generated.
+    the answer as it's being generated. Use clinician_mode=true for clinician output.
+    Access: owner or clinician with active grant including "chat" scope.
     """
-    # Verify patient exists
-    await get_patient_for_user(
+    await get_authorized_patient(
         patient_id=patient_id,
         db=db,
         current_user=current_user,
+        scope="chat",
     )
     
-    # Get or create conversation
+    system_prompt = _chat_system_prompt(clinician_mode, None)
     manager = ConversationManager(db)
     conversation_uuid = conversation_id
     if conversation_uuid is None:
@@ -197,15 +251,25 @@ async def stream_ask(
     rag_service = RAGService(db)
     
     async def generate():
-        async for chunk in rag_service.stream_ask(
-            question=question,
-            patient_id=patient_id,
-            conversation_id=conversation_uuid,
-        ):
-            yield f"data: {StreamChatChunk(chunk=chunk, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
-        
-        # Send completion with conversation ID
-        yield f"data: {StreamChatChunk(chunk='', conversation_id=conversation_uuid, is_complete=True).model_dump_json()}\n\n"
+        import logging
+
+        logger = logging.getLogger("medmemory")
+        try:
+            async for chunk in rag_service.stream_ask(
+                question=question,
+                patient_id=patient_id,
+                conversation_id=conversation_uuid,
+                system_prompt=system_prompt,
+            ):
+                yield f"data: {StreamChatChunk(chunk=chunk, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
+        except Exception:
+            # Ensure we log the traceback server-side and still close the SSE stream cleanly.
+            logger.exception("Chat stream failed patient_id=%s conv=%s", patient_id, conversation_uuid)
+            err_msg = "Chat failed due to a server error. Please try again."
+            yield f"data: {StreamChatChunk(chunk=err_msg, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
+        finally:
+            # Send completion with conversation ID
+            yield f"data: {StreamChatChunk(chunk='', conversation_id=conversation_uuid, is_complete=True).model_dump_json()}\n\n"
     
     return StreamingResponse(
         generate(),
@@ -240,27 +304,130 @@ async def ask_with_image(
         raise HTTPException(status_code=400, detail="Empty image upload.")
 
     llm_service = LLMService.get_instance()
-    user_prompt = f"""You are a medical imaging AI assistant. Analyze this medical image and provide findings.
+    
+    vision_system_prompt = """You are MedGemma, a medical AI assistant analyzing medical images and documents.
 
-Task: {prompt}
+CRITICAL SAFETY RULES (NON-NEGOTIABLE):
+- NEVER invent measurements, numbers, or values that are not explicitly visible in the image.
+- NEVER guess or estimate dimensions unless there is a visible scale, ruler, or measurement tool.
+- NEVER add measurements to medical images (X-rays, CT scans, MRIs) unless the image contains visible measurement annotations.
+- Only report text, numbers, or values that are actually visible and readable.
+- If you cannot read something clearly, do NOT list it as "partially visible" - only mention clearly readable text.
 
-Describe the key findings in this image in 3-5 sentences. Include:
-- Image type and quality assessment
-- Normal anatomical structures visible
-- Any abnormal findings or areas of concern
-- Overall impression
-
-Findings:"""
+Your job:
+- Identify the image type (e.g., "Chest X-ray", "MRI brain scan", "Lab report").
+- For medical images: Focus on describing actual anatomical structures and findings. Avoid listing every possible label - only mention text that is clearly readable.
+- For documents: Extract all visible text, numbers, and values exactly as written.
+- Be concise and focus on what is actually visible, not what might be there.
+- Use simple, clear language. Avoid repetitive descriptions."""
 
     llm_response = await llm_service.generate_with_image(
-        prompt=user_prompt,
+        prompt=prompt,
         image_bytes=image_bytes,
-        system_prompt=None,
-        max_new_tokens=300,
+        system_prompt=vision_system_prompt,
+        max_new_tokens=1500,
     )
+    
+    logger = logging.getLogger("medmemory")
+    
+    response_text = llm_response.text
+    
+    # Post-process to remove hallucinated measurements
+    lines = response_text.split('\n')
+    cleaned_lines = []
+    in_findings = False
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        if 'findings:' in stripped.lower() and not stripped.startswith('-'):
+            in_findings = True
+            cleaned_lines.append(line)
+            continue
+        
+        if in_findings and stripped.startswith('-'):
+            # Pattern: "- 1: 24 mm" or "- 2: 25 mm" - suspicious isolated measurements
+            if re.match(r'^-\s*\d+:\s*\d+\s*(mm|cm|m|in|inches)', stripped, re.IGNORECASE):
+                logger.warning(f"Removed potentially hallucinated measurement: {stripped}")
+                continue
+            # Pattern: "- Label: number unit" without descriptive context
+            if re.match(r'^-\s*\w+:\s*\d+\s*(mm|cm|m|in|inches)', stripped, re.IGNORECASE) and len(stripped) < 30:
+                logger.warning(f"Removed potentially hallucinated measurement: {stripped}")
+                continue
+        
+        cleaned_lines.append(line)
+    
+    response_text = '\n'.join(cleaned_lines)
+    
+    # Remove generic unhelpful statements
+    response_text = re.sub(
+        r'(?i)(^|\n)\s*no overall impression stated\.?\s*',
+        '',
+        response_text
+    )
+    
+    # Remove standalone "Summary" with no content
+    response_text = re.sub(
+        r'(?i)^\s*summary\s*$',
+        '',
+        response_text,
+        flags=re.MULTILINE
+    )
+    
+    # Remove overly verbose "partially visible" lists
+    # Pattern: Multiple lines saying "X is partially visible"
+    lines = response_text.split('\n')
+    cleaned_lines = []
+    skip_partial_visible = False
+    partial_visible_count = 0
+    
+    for line in lines:
+        stripped = line.strip()
+        if 'partially visible' in stripped.lower():
+            partial_visible_count += 1
+            # Skip if we've seen more than 3 "partially visible" items in a row
+            if partial_visible_count > 3:
+                skip_partial_visible = True
+                continue
+        else:
+            if skip_partial_visible and not stripped:
+                # Skip empty lines after a long list of "partially visible"
+                continue
+            skip_partial_visible = False
+            partial_visible_count = 0
+        
+        cleaned_lines.append(line)
+    
+    response_text = '\n'.join(cleaned_lines)
+    
+    # Remove repetitive descriptions (e.g., "White stars are marked" repeated for each panel)
+    # Keep only unique information
+    response_text = re.sub(
+        r'(White stars are marked on the brain surface\.\s*)+',
+        'White stars are marked on the brain surface in multiple views.\n',
+        response_text,
+        flags=re.IGNORECASE | re.MULTILINE
+    )
+    
+    # Clean up multiple empty lines
+    response_text = re.sub(r'\n{3,}', '\n\n', response_text)
+    response_text = response_text.strip()
+    
+    # If response is too generic or empty, provide helpful guidance
+    if len(response_text.strip()) < 50 or ('no overall impression' in response_text.lower() and len(response_text) < 100):
+        response_text = (
+            "I can see this is a medical image. To provide a more detailed analysis, please tell me:\n"
+            "- What type of image this is (X-ray, lab report, etc.)\n"
+            "- What specific information you'd like me to extract or analyze\n"
+            "- Any particular findings or measurements you're looking for\n\n"
+            "I can describe what I see in the image, but I will only report information that is clearly visible and will not invent measurements or values."
+        )
+    
+    logger.info(f"Vision response length: {len(response_text)} chars")
+    logger.info(f"Vision response preview: {response_text[:500] if response_text else 'EMPTY'}")
 
     return VisionChatResponse(
-        answer=llm_response.text,
+        answer=response_text,
         tokens_input=llm_response.tokens_input,
         tokens_generated=llm_response.tokens_generated,
         tokens_total=llm_response.total_tokens,
