@@ -14,11 +14,11 @@ def test_settings_defaults_and_cache():
     assert settings.api_prefix == "/api/v1"
 
 
-def test_main_app_metadata():
+def test_main_app_metadata(monkeypatch):
     import sys
     import types
 
-    db_mod = sys.modules.get("app.database") or types.ModuleType("app.database")
+    db_mod = types.ModuleType("app.database")
 
     async def init_db():
         return None
@@ -28,7 +28,7 @@ def test_main_app_metadata():
 
     db_mod.init_db = init_db
     db_mod.close_db = close_db
-    sys.modules["app.database"] = db_mod
+    monkeypatch.setitem(sys.modules, "app.database", db_mod)
 
     os.environ["DEBUG"] = "true"
     config = importlib.import_module("app.config")
