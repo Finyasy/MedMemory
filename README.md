@@ -87,6 +87,11 @@ Or use the helper:
 ./start-hybrid.sh dev
 ```
 
+By default, the helper starts the backend in stable no-reload mode and waits for Docker DB health before launching API startup. To opt into auto-reload locally:
+```bash
+HYBRID_BACKEND_RELOAD=1 ./start-hybrid.sh dev
+```
+
 Stop or check status:
 ```bash
 ./stop-hybrid.sh dev
@@ -255,6 +260,30 @@ uv run pytest
 cd frontend
 npm run test
 ```
+
+### Hallucination Rollout Automation
+
+Run the full local hallucination eval + gate pipeline:
+
+```bash
+./scripts/automate_hallucination_next_steps.sh --local-only
+```
+
+Run end-to-end automation (local checks + push + PR + nightly dispatch + artifact verification):
+
+```bash
+# Optional: set webhook secret value before running
+export HALLUCINATION_ALERT_WEBHOOK="https://hooks.slack.com/services/..."
+./scripts/automate_hallucination_next_steps.sh --base=main
+```
+
+Requirements for GitHub automation mode:
+- `gh` CLI installed
+- `gh auth login` completed
+- current branch is a feature branch (not `main`)
+
+If `gh` is unavailable or not authenticated, the script still completes local
+hallucination evaluation/gate checks and exits without failing.
 
 ---
 

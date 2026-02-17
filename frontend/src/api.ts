@@ -1,11 +1,20 @@
 import type {
+  AlertsEvaluateResponse,
   ChatMessage,
+  ChatSource,
   ContextSimpleResponse,
   CreateRecordPayload,
+  DashboardHighlightsResponse,
+  DataConnection,
+  DataConnectionUpsertPayload,
   DocumentItem,
+  MetricAlert,
+  MetricDetail,
   MedicalRecord,
   MemorySearchResponse,
   PatientSummary,
+  WatchMetric,
+  WatchMetricPayload,
 } from './types';
 import {
   ApiError as GeneratedApiError,
@@ -50,6 +59,12 @@ const API_BASE = import.meta.env.VITE_API_BASE
 const API_ORIGIN = import.meta.env.VITE_API_BASE
   ? new URL(normalizeApiBase(import.meta.env.VITE_API_BASE)).origin
   : window.location.origin;
+
+export const buildBackendUrl = (path: string) => {
+  if (/^https?:\/\//i.test(path)) return path;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${API_ORIGIN}${normalizedPath}`;
+};
 
 const resolveAuthRecoveryUrls = (path: string) => {
   const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
@@ -288,6 +303,15 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
   }
 };
 
+export type ChatAskResponse = {
+  answer: string;
+  conversation_id?: string;
+  message_id?: number | null;
+  num_sources?: number;
+  sources?: ChatSource[];
+  structured_data?: Record<string, unknown> | null;
+} & Record<string, unknown>;
+
 export const api = {
   async getHealth(): Promise<{ status: string; service: string }> {
     return HealthService.healthCheckHealthGet();
@@ -482,20 +506,31 @@ export const api = {
     page_count: number | null;
   }> {
     const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
-    const response = await request(`${base}/documents/${documentId}/status`, {
+    return request<{
+      document_id: number;
+      patient_id: number;
+      processing_status: string;
+      is_processed: boolean;
+      processed_at: string | null;
+      processing_error: string | null;
+      extracted_text_length: number;
+      extracted_text_preview: string | null;
+      chunks: { total: number; indexed: number; not_indexed: number };
+      ocr_confidence: number | null;
+      ocr_language: string | null;
+      page_count: number | null;
+    }>(`${base}/documents/${documentId}/status`, {
       method: 'GET',
       headers: await getAuthHeaders(),
     });
-    return response as any;
   },
 
   async checkOcrAvailability(): Promise<{ available: boolean; message: string }> {
     const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
-    const response = await request(`${base}/documents/health/ocr`, {
+    return request<{ available: boolean; message: string }>(`${base}/documents/health/ocr`, {
       method: 'GET',
       headers: await getAuthHeaders(),
     });
-    return response as any;
   },
 
   async visionChat(
@@ -573,6 +608,134 @@ export const api = {
     return InsightsService.getPatientInsightsApiV1InsightsPatientPatientIdGet(patientId);
   },
 
+  async listDataConnections(patientId: number): Promise<DataConnection[]> {
+    return request<DataConnection[]>(`${API_BASE}/dashboard/patient/${patientId}/connections`, {
+      method: 'GET',
+      headers: await withAuthHeaders(),
+    });
+  },
+
+  async upsertDataConnection(
+    patientId: number,
+    payload: DataConnectionUpsertPayload,
+  ): Promise<DataConnection> {
+    return request<DataConnection>(`${API_BASE}/dashboard/patient/${patientId}/connections`, {
+      method: 'POST',
+      headers: await withAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async markConnectionSynced(patientId: number, connectionId: number): Promise<DataConnection> {
+    return request<DataConnection>(
+      `${API_BASE}/dashboard/patient/${patientId}/connections/${connectionId}/sync`,
+      {
+        method: 'POST',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async getDashboardHighlights(
+    patientId: number,
+    limit = 5,
+  ): Promise<DashboardHighlightsResponse> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    return request<DashboardHighlightsResponse>(
+      `${API_BASE}/dashboard/patient/${patientId}/highlights?${params.toString()}`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async getMetricDetail(patientId: number, metricKey: string): Promise<MetricDetail> {
+    return request<MetricDetail>(
+      `${API_BASE}/dashboard/patient/${patientId}/metrics/${encodeURIComponent(metricKey)}`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async listWatchMetrics(patientId: number): Promise<WatchMetric[]> {
+    return request<WatchMetric[]>(`${API_BASE}/dashboard/patient/${patientId}/watchlist`, {
+      method: 'GET',
+      headers: await withAuthHeaders(),
+    });
+  },
+
+  async upsertWatchMetric(patientId: number, payload: WatchMetricPayload): Promise<WatchMetric> {
+    return request<WatchMetric>(`${API_BASE}/dashboard/patient/${patientId}/watchlist`, {
+      method: 'POST',
+      headers: await withAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateWatchMetric(
+    patientId: number,
+    watchMetricId: number,
+    payload: Partial<WatchMetricPayload>,
+  ): Promise<WatchMetric> {
+    return request<WatchMetric>(
+      `${API_BASE}/dashboard/patient/${patientId}/watchlist/${watchMetricId}`,
+      {
+        method: 'PATCH',
+        headers: await withAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+    );
+  },
+
+  async deleteWatchMetric(patientId: number, watchMetricId: number): Promise<void> {
+    await request(
+      `${API_BASE}/dashboard/patient/${patientId}/watchlist/${watchMetricId}`,
+      {
+        method: 'DELETE',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async listMetricAlerts(
+    patientId: number,
+    options?: { includeAcknowledged?: boolean },
+  ): Promise<MetricAlert[]> {
+    const params = new URLSearchParams();
+    if (options?.includeAcknowledged) params.set('include_acknowledged', 'true');
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<MetricAlert[]>(
+      `${API_BASE}/dashboard/patient/${patientId}/alerts${suffix}`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async evaluateMetricAlerts(patientId: number): Promise<AlertsEvaluateResponse> {
+    return request<AlertsEvaluateResponse>(
+      `${API_BASE}/dashboard/patient/${patientId}/alerts/evaluate`,
+      {
+        method: 'POST',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async acknowledgeMetricAlert(patientId: number, alertId: number): Promise<MetricAlert> {
+    return request<MetricAlert>(
+      `${API_BASE}/dashboard/patient/${patientId}/alerts/${alertId}/ack`,
+      {
+        method: 'POST',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
   async memorySearch(patientId: number, query: string): Promise<MemorySearchResponse> {
     return MemorySearchService.semanticSearchApiV1MemorySearchPost({
       query,
@@ -596,13 +759,29 @@ export const api = {
   async chatAsk(
     patientId: number,
     question: string,
-    options?: Partial<ChatRequest>,
-  ): Promise<{ answer: string } & Record<string, unknown>> {
-    return ChatService.askQuestionApiV1ChatAskPost({
-      question,
-      patient_id: patientId,
-      ...options,
+    options?: Partial<ChatRequest> & { structured?: boolean; clinicianMode?: boolean },
+  ): Promise<ChatAskResponse> {
+    const { structured, clinicianMode, ...bodyOptions } = options || {};
+    const params = new URLSearchParams();
+    if (structured) params.set('structured', 'true');
+    if (clinicianMode) params.set('clinician_mode', 'true');
+    const query = params.toString();
+    const headers = await withAuthHeaders({
+      'Content-Type': 'application/json',
     });
+
+    return request<ChatAskResponse>(
+      `${API_BASE}/chat/ask${query ? `?${query}` : ''}`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          question,
+          patient_id: patientId,
+          ...bodyOptions,
+        }),
+      },
+    );
   },
 
   async streamChat(
@@ -610,7 +789,14 @@ export const api = {
     question: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,
-    options?: { clinicianMode?: boolean },
+    options?: {
+      clinicianMode?: boolean;
+      onMetadata?: (metadata: {
+        num_sources?: number;
+        sources?: ChatSource[];
+        structured_data?: Record<string, unknown> | null;
+      }) => void;
+    },
   ) {
     const headers = await withAuthHeaders();
     const params = new URLSearchParams({
@@ -654,11 +840,28 @@ export const api = {
         const jsonStr = line.replace('data:', '').trim();
         if (!jsonStr) continue;
         try {
-          const payload = JSON.parse(jsonStr) as { chunk?: string; is_complete?: boolean };
+          const payload = JSON.parse(jsonStr) as {
+            chunk?: string;
+            is_complete?: boolean;
+            num_sources?: number;
+            sources?: ChatSource[];
+            structured_data?: Record<string, unknown> | null;
+          };
           if (payload.chunk) {
             onChunk(payload.chunk);
           }
           if (payload.is_complete) {
+            options?.onMetadata?.({
+              num_sources:
+                typeof payload.num_sources === 'number' ? payload.num_sources : undefined,
+              sources: Array.isArray(payload.sources)
+                ? payload.sources
+                : undefined,
+              structured_data:
+                payload.structured_data && typeof payload.structured_data === 'object'
+                  ? payload.structured_data
+                  : null,
+            });
             onDone();
           }
         } catch {
@@ -745,7 +948,20 @@ export const api = {
     address?: string;
   }) {
     const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
-    return request<Parameters<typeof api.getClinicianProfile>[0]>(`${base}/clinician/profile`, {
+    return request<{
+      user_id: number;
+      email: string;
+      full_name: string;
+      npi?: string | null;
+      license_number?: string | null;
+      specialty?: string | null;
+      organization_name?: string | null;
+      phone?: string | null;
+      address?: string | null;
+      verified_at?: string | null;
+      created_at?: string | null;
+      updated_at?: string | null;
+    }>(`${base}/clinician/profile`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
       body: JSON.stringify(payload),

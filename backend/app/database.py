@@ -1,6 +1,7 @@
-from contextlib import asynccontextmanager
+import asyncio
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import settings
 from app.models import Base
-
 
 logger = logging.getLogger("medmemory.database")
 
@@ -34,21 +34,40 @@ async_session_maker = async_sessionmaker(
 
 
 async def init_db() -> None:
-    """Initialize database tables.
-    
-    Creates all tables defined in the models.
-    In production, use Alembic migrations instead.
-    """
-    try:
-        async with engine.begin() as conn:
-            await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
-            if settings.debug:
-                await conn.run_sync(Base.metadata.create_all)
-            else:
-                logger.info("Skipping create_all in non-debug mode; run Alembic migrations.")
-    except Exception:
-        logger.exception("Database initialization failed")
-        raise
+    """Initialize database (creates tables in debug; use Alembic in production)."""
+    total_attempts = settings.database_init_retries + 1
+    for attempt in range(1, total_attempts + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
+                if settings.debug:
+                    await conn.run_sync(Base.metadata.create_all)
+                else:
+                    logger.info(
+                        "Skipping create_all in non-debug mode; run Alembic migrations."
+                    )
+            if attempt > 1:
+                logger.info("Database initialized after %d attempts", attempt)
+            return
+        except Exception as exc:
+            is_last_attempt = attempt >= total_attempts
+            if is_last_attempt:
+                logger.exception(
+                    "Database initialization failed after %d attempts", attempt
+                )
+                raise
+            delay_seconds = min(
+                settings.database_init_retry_delay_seconds * attempt,
+                10.0,
+            )
+            logger.warning(
+                "Database initialization attempt %d/%d failed (%s). Retrying in %.1fs.",
+                attempt,
+                total_attempts,
+                exc.__class__.__name__,
+                delay_seconds,
+            )
+            await asyncio.sleep(delay_seconds)
 
 
 async def close_db() -> None:
@@ -57,13 +76,7 @@ async def close_db() -> None:
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency for getting database sessions.
-    
-    Usage:
-        @app.get("/items")
-        async def get_items(db: AsyncSession = Depends(get_db)):
-            ...
-    """
+    """Dependency for database sessions."""
     async with async_session_maker() as session:
         try:
             yield session
@@ -77,12 +90,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
-    """Context manager for database sessions.
-    
-    Usage:
-        async with get_db_context() as db:
-            ...
-    """
+    """Context manager for database sessions."""
     async with async_session_maker() as session:
         try:
             yield session

@@ -1,10 +1,19 @@
 services:
-  # ============================================
-  # PostgreSQL Database with pgvector
-  # ============================================
   db:
     image: pgvector/pgvector:pg16
     container_name: medmemory-db-local-dev
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - random_page_cost=1.1
     environment:
       POSTGRES_USER: medmemory
       POSTGRES_PASSWORD: medmemory_dev
@@ -22,9 +31,6 @@ services:
     networks:
       - medmemory-network
 
-  # ============================================
-  # Frontend Service (Vite dev server)
-  # ============================================
   frontend:
     image: node:20-alpine
     container_name: medmemory-frontend-local-dev
@@ -32,7 +38,10 @@ services:
     ports:
       - "5173:5173"
     environment:
+      - API_PROXY_TARGET=http://host.docker.internal:8000
       - VITE_API_BASE=http://localhost:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -43,16 +52,10 @@ services:
     networks:
       - medmemory-network
 
-# ============================================
-# Volumes
-# ============================================
 volumes:
   postgres_data_local_dev:
     driver: local
 
-# ============================================
-# Networks
-# ============================================
 networks:
   medmemory-network:
     driver: bridge

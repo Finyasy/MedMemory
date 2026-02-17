@@ -38,3 +38,9 @@ if [[ -f "${PID_FILE}" ]]; then
 else
   echo "Local backend: not running"
 fi
+
+if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+  echo "Backend health: healthy (GET /health)"
+else
+  echo "Backend health: unreachable (GET /health failed)"
+fi

@@ -9,7 +9,7 @@ from app.config import settings
 from app.models import User
 from app.schemas.records import RecordCreate, RecordResponse
 from app.services.records import RecordRepository, SQLRecordRepository
-from app.utils.cache import clear_cache, get_cached, set_cached
+from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
 
 router = APIRouter(prefix="/records", tags=["Medical Records"])
 
@@ -33,7 +33,7 @@ async def list_records(
     """List all medical records with optional filtering."""
     if patient_id is not None:
         await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
-    cache_key = f"records:{current_user.id}:{patient_id or 'all'}:{record_type or ''}:{skip}:{limit}"
+    cache_key = CacheKeys.records(current_user.id, patient_id, record_type, skip, limit)
     cached = await get_cached(cache_key)
     if cached is not None:
         return cached
