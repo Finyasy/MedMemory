@@ -56,9 +56,18 @@ export interface ContextSimpleResponse {
   estimated_tokens: number;
 }
 
+export interface ChatSource {
+  source_type: string;
+  source_id?: number | null;
+  relevance: number;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  num_sources?: number;
+  sources?: ChatSource[];
+  structured_data?: Record<string, unknown> | null;
 }
 
 export interface LocalizationBox {
@@ -87,4 +96,138 @@ export interface PatientSummary {
   date_of_birth?: string | null;
   age?: number | null;
   gender?: string | null;
+}
+
+export interface DataConnection {
+  id: number;
+  patient_id: number;
+  provider_name: string;
+  provider_slug: string;
+  status: 'connected' | 'syncing' | 'error' | 'disconnected';
+  source_count: number;
+  last_error?: string | null;
+  last_synced_at?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DataConnectionUpsertPayload {
+  provider_name: string;
+  provider_slug: string;
+  status?: 'connected' | 'syncing' | 'error' | 'disconnected';
+  source_count?: number;
+  last_error?: string | null;
+  last_synced_at?: string | null;
+  is_active?: boolean;
+}
+
+export interface DashboardSummary {
+  out_of_range: number;
+  in_range: number;
+  tracked_metrics: number;
+  last_updated_at?: string | null;
+}
+
+export interface HighlightItem {
+  metric_key: string;
+  metric_name: string;
+  value?: string | null;
+  numeric_value?: number | null;
+  unit?: string | null;
+  observed_at?: string | null;
+  status: 'out_of_range' | 'in_range';
+  direction?: string | null;
+  trend_delta?: number | null;
+  reference_range?: string | null;
+  source_type: string;
+  source_id?: number | null;
+}
+
+export interface DashboardHighlightsResponse {
+  patient_id: number;
+  summary: DashboardSummary;
+  highlights: HighlightItem[];
+}
+
+export interface MetricTrendPoint {
+  value?: number | null;
+  value_text?: string | null;
+  observed_at?: string | null;
+  source_id?: number | null;
+}
+
+export interface MetricDetail {
+  patient_id: number;
+  metric_key: string;
+  metric_name: string;
+  latest_value?: string | null;
+  latest_numeric_value?: number | null;
+  unit?: string | null;
+  observed_at?: string | null;
+  reference_range?: string | null;
+  range_min?: number | null;
+  range_max?: number | null;
+  in_range?: boolean | null;
+  about: string;
+  trend: MetricTrendPoint[];
+}
+
+export interface WatchMetric {
+  id: number;
+  patient_id: number;
+  metric_name: string;
+  metric_key: string;
+  lower_bound?: number | null;
+  upper_bound?: number | null;
+  direction: 'above' | 'below' | 'both';
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WatchMetricPayload {
+  metric_name: string;
+  metric_key: string;
+  lower_bound?: number | null;
+  upper_bound?: number | null;
+  direction?: 'above' | 'below' | 'both';
+  is_active?: boolean;
+}
+
+export interface MetricAlert {
+  id: number;
+  patient_id: number;
+  watch_metric_id?: number | null;
+  metric_key: string;
+  metric_name: string;
+  numeric_value?: number | null;
+  value_text?: string | null;
+  unit?: string | null;
+  severity: 'info' | 'warning' | 'critical';
+  reason: string;
+  source_type: string;
+  source_id?: number | null;
+  observed_at?: string | null;
+  acknowledged: boolean;
+  acknowledged_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertsEvaluateResponse {
+  generated: number;
+  total_active_unacknowledged: number;
+}
+
+export interface ClinicianAccessRequest {
+  grant_id: number;
+  patient_id: number;
+  patient_name: string;
+  clinician_user_id: number;
+  clinician_name: string;
+  clinician_email: string;
+  status: string;
+  scopes: string;
+  created_at: string;
 }

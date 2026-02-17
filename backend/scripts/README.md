@@ -95,3 +95,132 @@ tail -f model_download.log
 2. **GPU Memory**: For 4-bit quantization, 6-8 GB GPU memory is recommended
 3. **Internet**: Model download requires stable internet connection (~8-10 GB download)
 4. **Time**: Download and quantization can take 10-30 minutes depending on hardware
+
+---
+
+## Real Use-Case QLoRA Pipeline
+
+These scripts implement a practical decision loop for MedMemory:
+
+1. Build a small eval set from real conversations (50-200 examples).
+2. Fine-tune with QLoRA on the train split.
+3. Compare baseline vs tuned outputs using factuality and accuracy proxies.
+
+### Install Fine-Tuning Dependencies
+
+```bash
+cd backend
+uv sync --group finetune
+```
+
+### 1) Build Dataset from Real Use Cases
+
+```bash
+cd backend
+uv run python scripts/build_real_usecase_dataset.py \
+  --num-examples 120 \
+  --output-dir data/qlora_usecases
+```
+
+Outputs:
+- `data/qlora_usecases/train.jsonl`
+- `data/qlora_usecases/eval.jsonl`
+- `data/qlora_usecases/all_examples.jsonl`
+- `data/qlora_usecases/summary.json`
+
+### 2) Train QLoRA Adapter
+
+```bash
+cd backend
+uv run python scripts/train_qlora_on_usecases.py \
+  --train-file data/qlora_usecases/train.jsonl \
+  --eval-file data/qlora_usecases/eval.jsonl \
+  --model-id models/medgemma-1.5-4b-it \
+  --output-dir artifacts/qlora_usecase_run
+```
+
+Notes:
+- 4-bit QLoRA requires CUDA (`--no-use-4bit` for non-CUDA fallback).
+- Adapter weights are saved under `artifacts/qlora_usecase_run/adapter`.
+
+### 3) Evaluate Baseline vs QLoRA
+
+```bash
+cd backend
+uv run python scripts/evaluate_baseline_vs_qlora.py \
+  --eval-file data/qlora_usecases/eval.jsonl \
+  --model-id models/medgemma-1.5-4b-it \
+  --adapter-dir artifacts/qlora_usecase_run/adapter \
+  --output-dir artifacts/qlora_usecase_run/eval_compare
+```
+
+Outputs:
+- `artifacts/qlora_usecase_run/eval_compare/metrics_summary.json`
+- `artifacts/qlora_usecase_run/eval_compare/predictions.jsonl`
+- `artifacts/qlora_usecase_run/eval_compare/report.md`
+
+### 4) Run Hallucination Regression Gate
+
+Use this gate to fail when hallucination-focused metrics fall below minimums or
+regress against a stored baseline run.
+
+```bash
+cd backend
+uv run python scripts/hallucination_regression_gate.py \
+  --candidate-metrics artifacts/qlora_usecase_run/eval_compare/metrics_summary.json \
+  --candidate-scope baseline \
+  --baseline-metrics artifacts/hallucination_eval/baseline_metrics_summary.json \
+  --baseline-scope baseline \
+  --output-json artifacts/hallucination_eval/gate_report.json
+```
+
+Notes:
+- `--baseline-metrics` is optional; if omitted, only absolute thresholds are enforced.
+- Use `--candidate-scope finetuned` to gate tuned-model quality instead of baseline.
+- `--warn-only` returns exit code `0` while still printing failures (dry-run mode).
+- Use `--min-candidate-examples` and `--min-baseline-examples` to reject tiny eval runs.
+- Use `--min-task-policy-pass-rate task=value` to enforce task-specific pass rates.
+- Use `--min-task-examples task=value` to enforce task coverage by category.
+- CI default baseline snapshot: `data/hallucination_eval/baseline_metrics_summary.json` (22 examples).
+- Baseline update policy: `data/hallucination_eval/BASELINE_POLICY.md`.
+
+### 5) Refresh RAG Hallucination Baseline Snapshot
+
+This path is lightweight and CI-safe because it evaluates deterministic
+guardrail behavior instead of running large model inference.
+
+```bash
+cd backend
+uv run python scripts/evaluate_rag_hallucination.py \
+  --eval-file data/hallucination_rag_eval/eval.jsonl \
+  --output-dir artifacts/hallucination_eval/current \
+  --scope baseline \
+  --min-policy-pass-rate 1.0
+cp artifacts/hallucination_eval/current/metrics_summary.json \
+  data/hallucination_eval/baseline_metrics_summary.json
+```
+
+### 6) Real MedGemma Runtime Smoke (Non-Mock)
+
+Use this when you want to verify actual local model inference, not only guardrail
+helpers with mocked/stubbed LLM behavior.
+
+```bash
+cd backend
+RUN_REAL_MEDGEMMA_INFERENCE=1 uv run pytest tests/test_real_medgemma_inference.py -q
+uv run python scripts/run_real_medgemma_smoke.py \
+  --output-json artifacts/hallucination_eval/real_inference_smoke.json
+```
+
+### One-Command Orchestration
+
+```bash
+cd backend
+uv run python scripts/run_qlora_experiment.py \
+  --model-id models/medgemma-1.5-4b-it \
+  --num-examples 120 \
+  --output-root artifacts/qlora_experiment
+```
+
+Notes:
+- On non-CUDA backends (MPS/CPU), the orchestrator automatically adds compatibility flags (`--no-use-4bit --no-bf16`) for both training and evaluation.
