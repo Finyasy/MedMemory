@@ -1,6 +1,7 @@
-import { FullConfig } from '@playwright/test';
+import type { FullConfig } from '@playwright/test';
 
-async function globalSetup(config: FullConfig) {
+async function globalSetup(_config: FullConfig) {
+  void _config; // Config available for future use
   const apiBaseURL = process.env.E2E_API_BASE_URL || 'http://localhost:8000';
   const email = process.env.E2E_EMAIL || 'demo@medmemory.ai';
   const password = process.env.E2E_PASSWORD || 'demo-password';
@@ -30,7 +31,7 @@ async function globalSetup(config: FullConfig) {
 
     if (signupResponse.ok) {
       console.log(`[Global Setup] ✓ Test user created: ${email}`);
-      const signupData = await signupResponse.json();
+      const signupData = await signupResponse.json() as { access_token: string };
       accessToken = signupData.access_token;
     } else if (signupResponse.status === 400) {
       const body = await signupResponse.text();
@@ -43,7 +44,7 @@ async function globalSetup(config: FullConfig) {
           signal: AbortSignal.timeout(10000),
         });
         if (loginResponse.ok) {
-          const loginData = await loginResponse.json();
+          const loginData = await loginResponse.json() as { access_token: string };
           accessToken = loginData.access_token;
         }
       } else {
@@ -58,7 +59,7 @@ async function globalSetup(config: FullConfig) {
       const testPatientFirstName = process.env.E2E_PATIENT_FIRST_NAME || 'Test';
       const testPatientLastName = process.env.E2E_PATIENT_LAST_NAME || 'Patient';
 
-      const patientsResponse = await fetch(`${apiBaseURL}/api/v1/patients`, {
+      const patientsResponse = await fetch(`${apiBaseURL}/api/v1/patients/?limit=100`, {
         method: 'GET',
         headers: { 'Authorization': `Bearer ${accessToken}` },
         signal: AbortSignal.timeout(10000),
@@ -69,7 +70,7 @@ async function globalSetup(config: FullConfig) {
         if (Array.isArray(patients) && patients.length > 0) {
           console.log(`[Global Setup] ✓ Test patient already exists (${patients.length} patient(s))`);
         } else {
-          const createPatientResponse = await fetch(`${apiBaseURL}/api/v1/patients`, {
+          const createPatientResponse = await fetch(`${apiBaseURL}/api/v1/patients/`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${accessToken}`,
@@ -84,7 +85,7 @@ async function globalSetup(config: FullConfig) {
           });
 
           if (createPatientResponse.ok) {
-            const patient = await createPatientResponse.json();
+            const patient = await createPatientResponse.json() as { full_name?: string };
             console.log(`[Global Setup] ✓ Test patient created: ${patient.full_name || `${testPatientFirstName} ${testPatientLastName}`}`);
           } else {
             const body = await createPatientResponse.text();
