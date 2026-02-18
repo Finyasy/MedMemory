@@ -4,11 +4,6 @@
   flex-direction: column;
 }
 
-/* Dashboard stability mode: disable scroll-time compositor jitter. */
-.app-shell.dashboard-mode .topbar {
-  position: static;
-}
-
 .topbar {
   position: sticky;
   top: 0;
@@ -17,9 +12,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 1.25rem 6vw;
-  background: rgba(255, 247, 239, 0.96);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  background: rgba(255, 247, 239, 0.88);
+  backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--border-soft);
 }
 

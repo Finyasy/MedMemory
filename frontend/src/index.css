@@ -55,17 +55,12 @@ html, body {
   height: 100%;
 }
 
-html {
-  scrollbar-gutter: stable;
-}
-
 body {
   font-family: var(--font-body);
   color: var(--text-primary);
   background: var(--bg-base);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  overflow-y: scroll;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 

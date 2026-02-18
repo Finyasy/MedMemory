@@ -848,7 +848,7 @@ function PatientApp() {
 
   if (showDashboard) {
     return (
-      <div className="app-shell dashboard-mode">
+      <div className="app-shell">
         <TopBar
           backendStatus={backendStatus}
           viewMode={viewMode}
