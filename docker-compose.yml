@@ -6,6 +6,18 @@ services:
     image: pgvector/pgvector:pg16
     container_name: medmemory-db
     restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - random_page_cost=1.1
     environment:
       POSTGRES_USER: medmemory
       POSTGRES_PASSWORD: medmemory_secret
