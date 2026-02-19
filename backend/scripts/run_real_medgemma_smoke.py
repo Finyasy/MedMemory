@@ -64,7 +64,10 @@ async def run_smoke(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
     if not passed:
         failure_reason = "empty_output"
-    elif args.expect_substring and args.expect_substring.lower() not in output_text.lower():
+    elif (
+        args.expect_substring
+        and args.expect_substring.lower() not in output_text.lower()
+    ):
         passed = False
         failure_reason = "missing_expected_substring"
 
@@ -116,4 +119,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
