@@ -2,11 +2,10 @@
 
 import logging
 import smtplib
+from collections.abc import Iterable
 from email.message import EmailMessage
-from typing import Iterable
 
 from app.config import settings
-
 
 logger = logging.getLogger("medmemory.email")
 
