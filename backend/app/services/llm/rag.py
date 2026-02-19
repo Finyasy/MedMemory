@@ -45,6 +45,11 @@ class RAGService:
     """RAG: context retrieval, prompt build, LLM generation, conversation storage."""
 
     STRICT_GROUNDING_REFUSAL = "I do not know from the available records."
+    LATEST_DOCUMENT_UNAVAILABLE = (
+        "I could not summarize the latest document because no completed "
+        "document text is available yet. Please upload a document or wait "
+        "for processing to finish."
+    )
     CLINICIAN_CITATION_REFUSAL = "Not in documents."
     STRICT_GROUNDING_INTENTS = {
         QueryIntent.LIST,
@@ -54,6 +59,16 @@ class RAGService:
     FEW_SHOT_FACTUAL_MARKER = "## Factual Grounded Examples"
     FEW_SHOT_CLINICIAN_MARKER = "## Clinician Citation Examples"
     _global_guardrail_counters: Counter[str] = Counter()
+    PROMPT_PROFILE_BASELINE = "baseline_current"
+    PROMPT_PROFILE_WARM_CONCISE_V1 = "warm_concise_v1"
+    PROMPT_PROFILE_WARM_CONCISE_V2 = "warm_concise_v2"
+    PROMPT_PROFILE_CLINICIAN_TERSE_HUMANIZED = "clinician_terse_humanized"
+    SUPPORTED_PROMPT_PROFILES = {
+        PROMPT_PROFILE_BASELINE,
+        PROMPT_PROFILE_WARM_CONCISE_V1,
+        PROMPT_PROFILE_WARM_CONCISE_V2,
+        PROMPT_PROFILE_CLINICIAN_TERSE_HUMANIZED,
+    }
 
     DEFAULT_SYSTEM_PROMPT = """You are a friendly medical assistant helping patients understand their medical documents.
 
@@ -123,9 +138,189 @@ Questions/Unclear:
 
 - Do not add interpretations, dates, or conclusions not explicitly in the documents."""
 
+    def _active_prompt_profile(self) -> str:
+        """Resolve active prompt profile with baseline fallback."""
+        configured = (
+            str(
+                getattr(
+                    settings,
+                    "llm_prompt_profile",
+                    self.PROMPT_PROFILE_BASELINE,
+                )
+                or self.PROMPT_PROFILE_BASELINE
+            )
+            .strip()
+            .lower()
+        )
+        if configured in self.SUPPORTED_PROMPT_PROFILES:
+            return configured
+        self.logger.warning(
+            "Unknown llm_prompt_profile '%s'; falling back to %s",
+            configured,
+            self.PROMPT_PROFILE_BASELINE,
+        )
+        return self.PROMPT_PROFILE_BASELINE
+
+    def _prompt_profile_overlay(self, *, clinician_mode: bool) -> str:
+        """Return optional profile-specific tone overlay instructions."""
+        profile = self._active_prompt_profile()
+
+        if profile == self.PROMPT_PROFILE_WARM_CONCISE_V1 and not clinician_mode:
+            return (
+                "Tone profile: warm_concise_v1.\n"
+                "- Lead with the direct answer in the first sentence.\n"
+                "- Keep answers short and natural (about 2-5 sentences unless asked for detail).\n"
+                "- Use plain conversational language; avoid rigid templates and repetitive framing.\n"
+                "- Use at most one short supportive sentence."
+            )
+
+        if profile == self.PROMPT_PROFILE_WARM_CONCISE_V2 and not clinician_mode:
+            return (
+                "Tone profile: warm_concise_v2.\n"
+                "- Lead with the direct answer in the first sentence.\n"
+                "- Keep answers concise and natural (2-5 sentences unless asked for detail).\n"
+                "- Avoid repeating sentence starters or boilerplate phrases.\n"
+                "- Avoid restating the same fact in multiple sentences.\n"
+                "- Use at most one short supportive sentence."
+            )
+
+        if (
+            profile == self.PROMPT_PROFILE_CLINICIAN_TERSE_HUMANIZED
+            and clinician_mode
+        ):
+            return (
+                "Tone profile: clinician_terse_humanized.\n"
+                "- Keep output terse, factual, and source-cited.\n"
+                "- Use one-line synthesis followed by concise findings when useful.\n"
+                "- Use plain human wording; avoid robotic boilerplate.\n"
+                '- If evidence is missing, answer exactly: "Not in documents."'
+            )
+
+        return ""
+
+    def _apply_prompt_profile(
+        self,
+        *,
+        system_prompt: str,
+        clinician_mode: bool,
+    ) -> str:
+        """Append selected prompt-profile overlay to the active system prompt."""
+        overlay = self._prompt_profile_overlay(clinician_mode=clinician_mode)
+        if not overlay:
+            return system_prompt
+        return f"{system_prompt}\n\n{overlay}"
+
+    def _summary_tone_override_block(self, *, clinician_mode: bool) -> str:
+        """Return optional profile override block for direct-summary prompts."""
+        profile = self._active_prompt_profile()
+        if clinician_mode:
+            if profile == self.PROMPT_PROFILE_CLINICIAN_TERSE_HUMANIZED:
+                return (
+                    "Tone profile override (higher priority than stylistic hints above):\n"
+                    "- Keep a terse clinical style with citations.\n"
+                    "- Prefer one short synthesis line plus concise findings.\n"
+                    "- Avoid repetitive preambles and formulaic wording."
+                )
+            return ""
+
+        if profile == self.PROMPT_PROFILE_WARM_CONCISE_V1:
+            return (
+                "Tone profile override (higher priority than stylistic hints above):\n"
+                "- Prefer one short overview paragraph plus up to 3 bullets.\n"
+                "- Keep response under about 140 words unless user asks for more detail.\n"
+                "- Do not use decorative heading templates unless the user explicitly asks."
+            )
+
+        if profile == self.PROMPT_PROFILE_WARM_CONCISE_V2:
+            return (
+                "Tone profile override (higher priority than stylistic hints above):\n"
+                "- Prefer one short overview paragraph plus up to 3 bullets.\n"
+                "- Keep response under about 120 words unless user asks for more detail.\n"
+                "- Avoid repeated sentence starters and repeated safety boilerplate.\n"
+                "- Do not use decorative heading templates unless the user explicitly asks."
+            )
+
+        return ""
+
+    def _apply_tone_guardrails(
+        self,
+        *,
+        response_text: str,
+        clinician_mode: bool,
+    ) -> str:
+        """Apply lightweight profile-specific post-processing for conversational tone."""
+        if not response_text:
+            return response_text
+
+        profile = self._active_prompt_profile()
+        if profile == self.PROMPT_PROFILE_BASELINE:
+            return response_text
+
+        original = response_text
+        text = response_text
+
+        if (
+            profile
+            in {
+                self.PROMPT_PROFILE_WARM_CONCISE_V1,
+                self.PROMPT_PROFILE_WARM_CONCISE_V2,
+            }
+            and not clinician_mode
+        ):
+            deduped_lines: list[str] = []
+            seen_line_keys: set[str] = set()
+            for line in text.splitlines():
+                line_key = re.sub(r"\s+", " ", line).strip().lower()
+                if line_key and line_key in seen_line_keys:
+                    continue
+                if line_key:
+                    seen_line_keys.add(line_key)
+                deduped_lines.append(line)
+            text = "\n".join(deduped_lines)
+            text = re.sub(
+                r"(?im)^(from your records,\s*){2,}",
+                "From your records, ",
+                text,
+            )
+            text = re.sub(r"\b(i understand|here is the summary)\b[:\s-]*", "", text, flags=re.IGNORECASE)
+            if profile == self.PROMPT_PROFILE_WARM_CONCISE_V2:
+                text = re.sub(
+                    r"(?im)^(the document does not record this information\.\s*){2,}",
+                    "The document does not record this information.",
+                    text,
+                )
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+        if (
+            profile == self.PROMPT_PROFILE_CLINICIAN_TERSE_HUMANIZED
+            and clinician_mode
+        ):
+            text = re.sub(
+                r"(?im)^\s*(as an ai[^.\n]*\.?|based on the provided context[:,]?\s*)",
+                "",
+                text,
+            )
+            text = re.sub(
+                r"(?im)^(Not in documents\.\s*){2,}$",
+                "Not in documents.",
+                text,
+            )
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+        if text != original:
+            self._record_guardrail_event(
+                "tone_profile_postprocessed",
+                profile=profile,
+            )
+        return text
+
     def _is_strict_grounding_intent(self, context_result) -> bool:
         """Return True when query intent requires strict factual evidence."""
-        intent = getattr(getattr(context_result, "query_analysis", None), "intent", None)
+        intent = getattr(
+            getattr(context_result, "query_analysis", None), "intent", None
+        )
         return intent in self.STRICT_GROUNDING_INTENTS
 
     def _top_ranked_score(self, context_result) -> float:
@@ -165,7 +360,7 @@ Questions/Unclear:
 
         return (
             "The records do not explicitly state this value. "
-            f"A related note says: \"{snippet}\" "
+            f'A related note says: "{snippet}" '
             "(low-confidence inference from available records)."
         )
 
@@ -200,7 +395,10 @@ Questions/Unclear:
     def _is_clinician_mode(self, system_prompt: str | None) -> bool:
         """Best-effort check for clinician-mode prompting."""
         prompt = (system_prompt or "").lower()
-        return "clinical assistant supporting a clinician" in prompt or "cite sources" in prompt
+        return (
+            "clinical assistant supporting a clinician" in prompt
+            or "cite sources" in prompt
+        )
 
     def _build_task_instruction(self, routing: RoutingResult) -> str:
         """Return concise task-specific guidance for routed query types."""
@@ -236,7 +434,9 @@ Questions/Unclear:
         context_result=None,
     ) -> DecodingProfile:
         """Select intent-aware decoding settings for the current query."""
-        query_intent = getattr(getattr(context_result, "query_analysis", None), "intent", None)
+        query_intent = getattr(
+            getattr(context_result, "query_analysis", None), "intent", None
+        )
         profile = self.intent_classifier.decoding_profile(
             question=question,
             routing_task=routing.task if routing else None,
@@ -277,9 +477,7 @@ Questions/Unclear:
             unsupported_count=len(unsupported),
             profile=decoding_profile.label,
         )
-        preview_unsupported = "\n".join(
-            f"- {sentence}" for sentence in unsupported[:5]
-        )
+        preview_unsupported = "\n".join(f"- {sentence}" for sentence in unsupported[:5])
         critique_prompt = (
             "You previously answered a medical records question with unsupported values.\n"
             "Correct the answer using ONLY values explicitly present in the records context.\n"
@@ -351,7 +549,9 @@ Questions/Unclear:
         clinician_mode: bool,
     ) -> str:
         """Build compact few-shot prompt block for high-risk grounded tasks."""
-        intent = getattr(getattr(context_result, "query_analysis", None), "intent", None)
+        intent = getattr(
+            getattr(context_result, "query_analysis", None), "intent", None
+        )
         if not clinician_mode and intent not in self.STRICT_GROUNDING_INTENTS:
             return ""
 
@@ -734,6 +934,10 @@ Questions/Unclear:
         task_instruction = self._build_task_instruction(routing)
         if task_instruction:
             enhanced_system_prompt = f"{enhanced_system_prompt}\n\n{task_instruction}"
+        enhanced_system_prompt = self._apply_prompt_profile(
+            system_prompt=enhanced_system_prompt,
+            clinician_mode=clinician_mode,
+        )
 
         wants_latest_doc_summary = is_summary_query and any(
             phrase in question.lower()
@@ -749,7 +953,7 @@ Questions/Unclear:
 
         latest_doc: Document | None = None
         latest_doc_text: str | None = None
-        if wants_latest_doc_summary:
+        if wants_latest_doc_summary and self.db is not None:
             latest_doc_result = await self.db.execute(
                 select(Document)
                 .where(
@@ -942,6 +1146,11 @@ Questions/Unclear:
                 f"Patient question: {question}\n\n"
                 f"Answer (MUST start with '{greeting}'):"
             )
+            summary_tone_override = self._summary_tone_override_block(
+                clinician_mode=clinician_mode
+            )
+            if summary_tone_override:
+                direct_prompt = f"{direct_prompt}\n\n{summary_tone_override}"
 
             generation_start = time.time()
             llm_response = await self.llm_service.generate(
@@ -1332,6 +1541,10 @@ Questions/Unclear:
             cleaned_response_text = re.sub(
                 r"\s*\n\s*", "\n", cleaned_response_text
             ).strip()
+            cleaned_response_text = self._apply_tone_guardrails(
+                response_text=cleaned_response_text,
+                clinician_mode=clinician_mode,
+            )
             cleaned_response_text = self._enforce_numeric_grounding(
                 response_text=cleaned_response_text,
                 context_text=latest_doc_text,
@@ -1396,6 +1609,42 @@ Questions/Unclear:
                 total_time_ms=total_time,
             )
         else:
+            if wants_latest_doc_summary:
+                answer = self.LATEST_DOCUMENT_UNAVAILABLE
+                self._record_guardrail_event(
+                    "latest_document_unavailable",
+                    mode="ask",
+                )
+                self.logger.warning(
+                    "Latest-document summary unavailable: patient=%s question=%s",
+                    patient_id,
+                    question,
+                )
+                assistant_message = await self.conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=answer,
+                )
+                context_time = (time.time() - context_start) * 1000
+                total_time = (time.time() - total_start) * 1000
+                return RAGResponse(
+                    answer=answer,
+                    llm_response=LLMResponse(
+                        text=answer,
+                        tokens_generated=0,
+                        tokens_input=0,
+                        generation_time_ms=0.0,
+                        finish_reason="latest_document_unavailable",
+                    ),
+                    context_used="",
+                    num_sources=0,
+                    sources_summary=[],
+                    conversation_id=conversation_id,
+                    message_id=assistant_message.message_id,
+                    context_time_ms=context_time,
+                    generation_time_ms=0.0,
+                    total_time_ms=total_time,
+                )
             context_result = await self.context_engine.get_context(
                 query=question,
                 patient_id=patient_id,
@@ -1709,6 +1958,10 @@ Questions/Unclear:
                 response_text=direct_structured_answer,
                 sources_summary=sources_summary,
             )
+            direct_structured_answer = self._apply_tone_guardrails(
+                response_text=direct_structured_answer,
+                clinician_mode=clinician_mode,
+            )
             self._record_guardrail_event("structured_direct", mode="ask")
             assistant_message = await self.conversation_manager.add_message(
                 conversation_id=conversation_id,
@@ -2018,6 +2271,10 @@ Questions/Unclear:
         # Clean up multiple spaces and normalize whitespace
         cleaned_response_text = re.sub(r"[ \t]+", " ", cleaned_response_text)
         cleaned_response_text = re.sub(r"\s*\n\s*", "\n", cleaned_response_text).strip()
+        cleaned_response_text = self._apply_tone_guardrails(
+            response_text=cleaned_response_text,
+            clinician_mode=clinician_mode,
+        )
         cleaned_response_text = self._enforce_numeric_grounding(
             response_text=cleaned_response_text,
             context_text=context_text,
@@ -2204,6 +2461,10 @@ Questions/Unclear:
         task_instruction = self._build_task_instruction(routing)
         if task_instruction:
             enhanced_system_prompt = f"{enhanced_system_prompt}\n\n{task_instruction}"
+        enhanced_system_prompt = self._apply_prompt_profile(
+            system_prompt=enhanced_system_prompt,
+            clinician_mode=clinician_mode,
+        )
 
         # Special case (streaming): summaries of the "most recent/latest document" should be grounded
         # in the actual latest processed document text (not just vector retrieval), to avoid generic output.
@@ -2218,7 +2479,7 @@ Questions/Unclear:
                 "latest upload",
             ]
         )
-        if wants_latest_doc_summary:
+        if wants_latest_doc_summary and self.db is not None:
             latest_doc_result = await self.db.execute(
                 select(Document)
                 .where(
@@ -2271,6 +2532,11 @@ Questions/Unclear:
                     f"Patient question: {question}\n\n"
                     f"Answer (MUST start with '{greeting}'):"
                 )
+                summary_tone_override = self._summary_tone_override_block(
+                    clinician_mode=clinician_mode
+                )
+                if summary_tone_override:
+                    direct_prompt = f"{direct_prompt}\n\n{summary_tone_override}"
 
                 llm_response = await self.llm_service.generate(
                     prompt=direct_prompt,
@@ -2457,7 +2723,9 @@ Questions/Unclear:
                 # Remove any remaining placeholder patterns
                 text = re.sub(
                     r"\b\w+\s+was\s+(recorded|measured|checked)\s+as\s+\*{2,}",
-                    lambda m: f"The document does not record your {m.group(0).split()[0]}.",
+                    lambda m: (
+                        f"The document does not record your {m.group(0).split()[0]}."
+                    ),
                     text,
                     flags=re.IGNORECASE,
                 )
@@ -2493,6 +2761,10 @@ Questions/Unclear:
 
                 text = re.sub(r"[ \t]+", " ", text)
                 text = re.sub(r"\s*\n\s*", "\n", text).strip()
+                text = self._apply_tone_guardrails(
+                    response_text=text,
+                    clinician_mode=clinician_mode,
+                )
                 text = self._enforce_numeric_grounding(
                     response_text=text,
                     context_text=latest_doc_text,
@@ -2529,6 +2801,26 @@ Questions/Unclear:
                         content=text,
                     )
                     return
+
+        if wants_latest_doc_summary:
+            answer = self.LATEST_DOCUMENT_UNAVAILABLE
+            self._record_guardrail_event(
+                "latest_document_unavailable",
+                mode="stream",
+            )
+            self._set_stream_metadata(num_sources=0, sources_summary=[])
+            self.logger.warning(
+                "Latest-document summary unavailable (stream): patient=%s question=%s",
+                patient_id,
+                question,
+            )
+            yield answer
+            await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+            )
+            return
 
         context_result = await self.context_engine.get_context(
             query=question,
@@ -2605,7 +2897,9 @@ Questions/Unclear:
                         "evidence_gating_blocked",
                         mode="stream",
                     )
-                answer = reason_if_no or "The document does not record this information."
+                answer = (
+                    reason_if_no or "The document does not record this information."
+                )
                 self.logger.warning(
                     "Evidence gating blocked stream answer: question=%s reason=%s",
                     question,
@@ -2699,6 +2993,10 @@ Questions/Unclear:
                 response_text=direct_structured_answer,
                 sources_summary=sources_summary,
             )
+            direct_structured_answer = self._apply_tone_guardrails(
+                response_text=direct_structured_answer,
+                clinician_mode=clinician_mode,
+            )
             self._record_guardrail_event("structured_direct", mode="stream")
             self._set_stream_metadata(
                 num_sources=context_result.synthesized_context.total_chunks_used,
@@ -2728,7 +3026,9 @@ Questions/Unclear:
             )
             if few_shot_block:
                 clean_prompt = f"{few_shot_block}\n\n{clean_prompt}"
-        stream_sources_summary = self._build_sources_summary(context_result.ranked_results)
+        stream_sources_summary = self._build_sources_summary(
+            context_result.ranked_results
+        )
         self._set_stream_metadata(
             num_sources=context_result.synthesized_context.total_chunks_used,
             sources_summary=stream_sources_summary,
@@ -2737,12 +3037,9 @@ Questions/Unclear:
         # Stream generation
         full_answer = ""
         yielded_chunks = False
-        requires_buffered_validation = (
-            clinician_mode
-            or (
-                settings.llm_strict_grounding
-                and self._is_strict_grounding_intent(context_result)
-            )
+        requires_buffered_validation = clinician_mode or (
+            settings.llm_strict_grounding
+            and self._is_strict_grounding_intent(context_result)
         )
         # MPS/CPU streaming can hang; strict factual queries also run buffered
         # so we can validate numeric grounding before any output is emitted.
@@ -2924,6 +3221,10 @@ Questions/Unclear:
             response_text=full_answer,
             decoding_profile=decoding_profile,
         )
+        full_answer = self._apply_tone_guardrails(
+            response_text=full_answer,
+            clinician_mode=clinician_mode,
+        )
         full_answer = self._enforce_numeric_grounding(
             response_text=full_answer,
             context_text=context_result.synthesized_context.full_context,
@@ -2941,9 +3242,8 @@ Questions/Unclear:
         if not full_answer:
             if clinician_mode:
                 full_answer = self.CLINICIAN_CITATION_REFUSAL
-            elif (
-                settings.llm_strict_grounding
-                and self._is_strict_grounding_intent(context_result)
+            elif settings.llm_strict_grounding and self._is_strict_grounding_intent(
+                context_result
             ):
                 full_answer = self.STRICT_GROUNDING_REFUSAL
             else:
@@ -3045,7 +3345,12 @@ Questions/Unclear:
             routing.task == QueryTask.DOC_SUMMARY
             and routing.temporal_intent == "latest"
         )
-        clinician_mode = self._is_clinician_mode(system_prompt)
+        resolved_system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
+        clinician_mode = self._is_clinician_mode(resolved_system_prompt)
+        effective_system_prompt = self._apply_prompt_profile(
+            system_prompt=resolved_system_prompt,
+            clinician_mode=clinician_mode,
+        )
         context_text = ""
         sources_summary: list[dict] = []
         context_time_ms = 0.0
@@ -3056,13 +3361,10 @@ Questions/Unclear:
             finish_reason: str,
             message: str | None = None,
         ) -> tuple[RAGResponse, StructuredSummaryResponse | None]:
-            refusal = (
-                message
-                or (
-                    self.CLINICIAN_CITATION_REFUSAL
-                    if clinician_mode
-                    else self.STRICT_GROUNDING_REFUSAL
-                )
+            refusal = message or (
+                self.CLINICIAN_CITATION_REFUSAL
+                if clinician_mode
+                else self.STRICT_GROUNDING_REFUSAL
             )
             assistant_message = await self.conversation_manager.add_message(
                 conversation_id=conversation_id,
@@ -3095,41 +3397,48 @@ Questions/Unclear:
         context_start = time.time()
         latest_doc: Document | None = None
         latest_doc_text: str | None = None
-        if wants_latest_doc and self.db is not None:
-            latest_doc_result = await self.db.execute(
-                select(Document)
-                .where(
-                    Document.patient_id == patient_id,
-                    Document.processing_status == "completed",
-                    Document.extracted_text.is_not(None),
+        if wants_latest_doc:
+            if self.db is not None:
+                latest_doc_result = await self.db.execute(
+                    select(Document)
+                    .where(
+                        Document.patient_id == patient_id,
+                        Document.processing_status == "completed",
+                        Document.extracted_text.is_not(None),
+                    )
+                    .order_by(Document.received_date.desc())
+                    .limit(1)
                 )
-                .order_by(Document.received_date.desc())
-                .limit(1)
-            )
-            latest_doc = latest_doc_result.scalar_one_or_none()
-            if (
-                latest_doc
-                and latest_doc.extracted_text
-                and latest_doc.extracted_text.strip()
-            ):
-                latest_doc_text = latest_doc.extracted_text.strip()
-                sources_summary = [
-                    {
-                        "source_type": "document",
-                        "source_id": latest_doc.id,
-                        "relevance": 1.0,
-                        "snippet_excerpt": latest_doc_text[:320]
-                        + ("..." if len(latest_doc_text) > 320 else ""),
-                    }
-                ]
-                context_text = latest_doc_text
+                latest_doc = latest_doc_result.scalar_one_or_none()
+                if (
+                    latest_doc
+                    and latest_doc.extracted_text
+                    and latest_doc.extracted_text.strip()
+                ):
+                    latest_doc_text = latest_doc.extracted_text.strip()
+                    sources_summary = [
+                        {
+                            "source_type": "document",
+                            "source_id": latest_doc.id,
+                            "relevance": 1.0,
+                            "snippet_excerpt": latest_doc_text[:320]
+                            + ("..." if len(latest_doc_text) > 320 else ""),
+                        }
+                    ]
+                    context_text = latest_doc_text
+            if not latest_doc_text:
+                self._record_guardrail_event("structured_latest_document_unavailable")
+                return await _structured_refusal(
+                    finish_reason="structured_latest_document_unavailable",
+                    message=self.LATEST_DOCUMENT_UNAVAILABLE,
+                )
 
         if not context_text:
             context_result = await self.context_engine.get_context(
                 query=question,
                 patient_id=patient_id,
                 max_tokens=max_context_tokens,
-                system_prompt=system_prompt or self.DEFAULT_SYSTEM_PROMPT,
+                system_prompt=effective_system_prompt,
                 min_score=0.2,
             )
             sources_summary = self._build_sources_summary(
@@ -3148,7 +3457,9 @@ Questions/Unclear:
                 self._record_guardrail_event("structured_no_evidence")
                 return await _structured_refusal(finish_reason="structured_no_evidence")
 
-            strict_violation, _top_score = self._strict_grounding_violation(context_result)
+            strict_violation, _top_score = self._strict_grounding_violation(
+                context_result
+            )
             if strict_violation:
                 self._record_guardrail_event("structured_strict_grounding_refusal")
                 return await _structured_refusal(
@@ -3177,6 +3488,9 @@ Questions/Unclear:
             '  "vital_signs": {"pulse": "72 bpm", "blood_pressure": "120/80 mmHg", "temperature": "37.0°C"},\n'
             '  "follow_ups": ["Action 1", "Action 2"],\n'
             '  "concerns": ["Concern 1"],\n'
+            '  "what_changed": ["Record-grounded change statement"],\n'
+            '  "why_it_matters": ["Record-grounded impact statement"],\n'
+            '  "suggested_next_discussion_points": ["Question to discuss with clinician"],\n'
             '  "source_document_id": 123,\n'
             '  "extraction_date": "2026-01-27"\n'
             "}\n\n"
@@ -3186,6 +3500,7 @@ Questions/Unclear:
             "- source_snippet is REQUIRED for every key_result and medication (exact text from document)\n"
             "- Include ONLY numbers/values that appear in the document\n"
             "- If a value is missing, use null (not a placeholder)\n"
+            "- what_changed / why_it_matters / suggested_next_discussion_points must stay record-grounded\n"
             "- Dates must be in YYYY-MM-DD format\n\n"
             f"DOCUMENT TEXT:\n{context_text}\n\n"
             f"Question: {question}\n\n"
@@ -3284,11 +3599,30 @@ Questions/Unclear:
             self._record_guardrail_event("structured_empty_refusal")
             return await _structured_refusal(finish_reason="structured_empty")
 
+        structured = self._enrich_structured_context_cards(structured)
+        structured = self._attach_structured_section_sources(
+            structured=structured,
+            sources_summary=sources_summary,
+        )
+
         # Convert structured to friendly text
         friendly_text = (
             self._structured_to_friendly(structured)
             if structured
             else llm_response.text
+        )
+        friendly_text = self._apply_tone_guardrails(
+            response_text=friendly_text,
+            clinician_mode=clinician_mode,
+        )
+        friendly_text = self._append_numeric_claim_citations(
+            response_text=friendly_text,
+            sources_summary=sources_summary,
+        )
+        friendly_text = self._enforce_clinician_numeric_citations(
+            response_text=friendly_text,
+            question=question,
+            clinician_mode=clinician_mode,
         )
 
         # Add assistant message
@@ -3331,6 +3665,11 @@ Questions/Unclear:
         query_analysis = getattr(context_result, "query_analysis", None)
         intent = getattr(query_analysis, "intent", None)
         question_lower = question.lower()
+        question_terms = {
+            token
+            for token in re.findall(r"\b[a-zA-Z][a-zA-Z0-9_]+\b", question_lower)
+            if token not in {"what", "which", "from", "your", "records", "latest"}
+        }
         requested_tests = [
             t.lower() for t in getattr(query_analysis, "test_names", []) if t
         ]
@@ -3389,32 +3728,87 @@ Questions/Unclear:
             for token in ["medication", "medications", "meds", "drug", "taking"]
         )
         if medication_query:
+            discontinued_query = any(
+                token in question_lower
+                for token in ["discontinued", "stopped", "inactive", "ended"]
+            )
+            active_only_query = (
+                any(
+                    token in question_lower
+                    for token in ["active", "currently", "current", "ongoing"]
+                )
+                and not discontinued_query
+            )
             med_lines = []
             for ranked in structured_results:
                 if ranked.result.source_type != "medication":
                     continue
-                line = self._normalize_structured_content(ranked.result.content)
-                if line:
-                    med_lines.append(line)
+                med_lines.extend(
+                    self._extract_medication_lines(ranked.result.content)
+                )
+
+            if discontinued_query:
+                med_lines = [
+                    line
+                    for line in med_lines
+                    if "discontinued" in line.lower()
+                    or "stopped" in line.lower()
+                    or "inactive" in line.lower()
+                ]
+            elif active_only_query:
+                med_lines = [
+                    line
+                    for line in med_lines
+                    if "active" in line.lower() and "discontinued" not in line.lower()
+                ]
+
             med_lines = list(dict.fromkeys(med_lines))
             if not med_lines:
                 return "The document does not record this information."
             if len(med_lines) == 1:
-                return f"From your records, your active medication is: {med_lines[0]}"
+                if discontinued_query:
+                    return (
+                        "From your records, the medication marked as discontinued is: "
+                        f"{med_lines[0]}"
+                    )
+                if active_only_query:
+                    return f"From your records, your active medication is: {med_lines[0]}"
+                return f"From your records, one listed medication is: {med_lines[0]}"
             bullets = "\n".join(f"- {line}" for line in med_lines[:8])
-            return f"From your records, your active medications are:\n{bullets}"
+            if discontinued_query:
+                return f"From your records, discontinued medications include:\n{bullets}"
+            if active_only_query:
+                return f"From your records, your active medications are:\n{bullets}"
+            return f"From your records, listed medications include:\n{bullets}"
 
         # Default factual response from lab/med retrieval lines.
+        contradiction_query = any(
+            token in question_lower
+            for token in ["conflict", "contradict", "both lines", "disagree"]
+        )
+        tb_query = "tb" in question_lower or "tuberculosis" in question_lower
         fact_lines = []
         for ranked in structured_results:
-            line = self._normalize_structured_content(ranked.result.content)
-            if not line:
-                continue
-            if ranked.result.source_type == "lab_result" and requested_tests:
+            source_type = getattr(ranked.result, "source_type", "")
+            for line in self._extract_fact_lines(ranked.result.content):
                 line_lower = line.lower()
-                if not any(test in line_lower for test in requested_tests):
-                    continue
-            fact_lines.append(line)
+                if contradiction_query:
+                    if tb_query and not (
+                        "tb" in line_lower or "screen" in line_lower
+                    ):
+                        continue
+                    if not any(
+                        token in line_lower
+                        for token in ["positive", "negative", "reactive"]
+                    ):
+                        continue
+                elif source_type == "lab_result" and requested_tests:
+                    if not any(test in line_lower for test in requested_tests):
+                        continue
+                elif question_terms:
+                    if not any(term in line_lower for term in question_terms):
+                        continue
+                fact_lines.append(line)
 
         if not fact_lines:
             return None
@@ -3446,7 +3840,9 @@ Questions/Unclear:
             if not line:
                 continue
             line_lower = line.lower()
-            if requested_tests and not any(test in line_lower for test in requested_tests):
+            if requested_tests and not any(
+                test in line_lower for test in requested_tests
+            ):
                 continue
 
             parsed = self._extract_trend_value(line)
@@ -3552,7 +3948,9 @@ Questions/Unclear:
                 f"between {first_date} and {last_date}."
             )
 
-        return "From your records, there are not enough dated values to determine a trend."
+        return (
+            "From your records, there are not enough dated values to determine a trend."
+        )
 
     def _extract_trend_value(
         self, line: str
@@ -3632,16 +4030,134 @@ Questions/Unclear:
                 pass
         return str(value)
 
+    def _extract_structured_lines(self, content: str) -> list[str]:
+        """Split structured snippets into concise, de-noised lines."""
+        if not content:
+            return []
+
+        lines: list[str] = []
+        for raw_line in re.split(r"[\r\n]+", content):
+            line = re.sub(r"\s+", " ", (raw_line or "")).strip(" \t-•")
+            if not line:
+                continue
+
+            lower_line = line.lower()
+            if lower_line.startswith(
+                (
+                    "eval fixture -",
+                    "[eval_fixture]",
+                    "notes:",
+                    "context:",
+                    "instruction:",
+                    "quality check note:",
+                    "summary date:",
+                    "claim period:",
+                )
+            ):
+                continue
+
+            line = re.sub(r"^\s*Lab:\s*", "", line, flags=re.IGNORECASE)
+            line = re.sub(r"^\s*Medication:\s*", "", line, flags=re.IGNORECASE)
+            line = line.replace(" = ", ": ")
+            line = re.sub(r"\s+", " ", line).strip()
+            if line:
+                lines.append(line)
+
+        return lines
+
+    def _extract_medication_lines(self, content: str) -> list[str]:
+        """Extract medication statement lines from structured snippets."""
+        lines = self._extract_structured_lines(content)
+        if not lines:
+            return []
+
+        selected: list[str] = []
+        for line in lines:
+            lower_line = line.lower()
+            if lower_line.startswith(
+                (
+                    "medication list update",
+                    "no adverse",
+                    "plan:",
+                    "assessment:",
+                )
+            ):
+                continue
+            if any(
+                token in lower_line
+                for token in [
+                    "active",
+                    "discontinued",
+                    "stopped",
+                    "inactive",
+                    " mg ",
+                    " daily",
+                    " twice",
+                    "tablet",
+                    "capsule",
+                ]
+            ):
+                selected.append(line)
+
+        if not selected and lines:
+            selected.append(lines[0])
+        return list(dict.fromkeys(selected))
+
+    def _extract_fact_lines(self, content: str) -> list[str]:
+        """Extract concise fact lines from structured snippets."""
+        lines = self._extract_structured_lines(content)
+        if not lines:
+            return []
+
+        selected: list[str] = []
+        for line in lines:
+            lower_line = line.lower()
+            if lower_line.startswith(
+                (
+                    "date:",
+                    "encounter date:",
+                    "visit type:",
+                    "assessment:",
+                    "plan:",
+                    "follow-up:",
+                    "medication list update",
+                )
+            ):
+                continue
+
+            has_fact_signal = (
+                ":" in line
+                and (
+                    bool(re.search(r"\d", line))
+                    or any(
+                        token in lower_line
+                        for token in [
+                            "positive",
+                            "negative",
+                            "reactive",
+                            "non-reactive",
+                            "detected",
+                            "not detected",
+                            "active",
+                            "discontinued",
+                        ]
+                    )
+                )
+            )
+            if has_fact_signal:
+                selected.append(line)
+
+        if not selected and lines:
+            selected.append(lines[0])
+        return list(dict.fromkeys(selected))
+
     def _normalize_structured_content(self, content: str) -> str:
         """Normalize structured retrieval snippets for direct user answers."""
-        text = (content or "").strip()
-        if not text:
-            return ""
-        text = re.sub(r"^\s*Lab:\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"^\s*Medication:\s*", "", text, flags=re.IGNORECASE)
-        text = text.replace(" = ", ": ")
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
+        lines = self._extract_fact_lines(content)
+        if lines:
+            return lines[0]
+        fallback_lines = self._extract_structured_lines(content)
+        return fallback_lines[0] if fallback_lines else ""
 
     def _validate_structured_response(
         self,
@@ -3685,6 +4201,135 @@ Questions/Unclear:
 
         return errors
 
+    def _enrich_structured_context_cards(
+        self,
+        structured: StructuredSummaryResponse,
+    ) -> StructuredSummaryResponse:
+        """Populate context-card sections when the model omits them."""
+        if not structured.what_changed:
+            for result in structured.key_results[:4]:
+                value_str = result.value or "N/A"
+                unit_suffix = f" {result.unit}" if result.unit else ""
+                date_suffix = f" ({result.date})" if result.date else ""
+                structured.what_changed.append(
+                    f"{result.name}: {value_str}{unit_suffix}{date_suffix}".strip()
+                )
+
+        if not structured.why_it_matters:
+            if structured.concerns:
+                structured.why_it_matters.extend(structured.concerns[:3])
+            else:
+                abnormal = [r for r in structured.key_results if r.is_normal is False][
+                    :3
+                ]
+                if abnormal:
+                    for result in abnormal:
+                        structured.why_it_matters.append(
+                            f"{result.name} is outside the reference range in your records."
+                        )
+                else:
+                    structured.why_it_matters.append(
+                        "These values are grounded in your records and are useful for tracking trends over time."
+                    )
+
+        if not structured.suggested_next_discussion_points:
+            if structured.follow_ups:
+                structured.suggested_next_discussion_points.extend(
+                    structured.follow_ups[:4]
+                )
+            else:
+                for result in structured.key_results[:3]:
+                    structured.suggested_next_discussion_points.append(
+                        f"Ask about target range and follow-up plan for {result.name}."
+                    )
+        return structured
+
+    def _source_chip(self, source: dict) -> str | None:
+        """Convert source summary entry into compact source chip label."""
+        citation = self._format_source_citation(source)
+        if not citation:
+            return None
+        return citation.replace("source: ", "", 1).strip()
+
+    @staticmethod
+    def _snippet_overlaps(snippet: str, excerpt: str) -> bool:
+        """Best-effort snippet overlap check for source attribution."""
+        snippet_text = (snippet or "").strip().lower()
+        excerpt_text = (excerpt or "").strip().lower()
+        if not snippet_text or not excerpt_text:
+            return False
+        if snippet_text in excerpt_text or excerpt_text in snippet_text:
+            return True
+        snippet_core = re.sub(r"\s+", " ", snippet_text)[:80]
+        excerpt_core = re.sub(r"\s+", " ", excerpt_text)
+        return bool(snippet_core and snippet_core in excerpt_core)
+
+    def _attach_structured_section_sources(
+        self,
+        *,
+        structured: StructuredSummaryResponse,
+        sources_summary: list[dict],
+    ) -> StructuredSummaryResponse:
+        """Attach section-level source chips for frontend context cards."""
+        chips: list[str] = []
+        for source in sources_summary:
+            chip = self._source_chip(source)
+            if chip and chip not in chips:
+                chips.append(chip)
+        chips = chips[:6]
+        if not chips:
+            structured.section_sources = {}
+            return structured
+
+        section_sources: dict[str, list[str]] = {}
+        if structured.overview:
+            section_sources["overview"] = chips[:3]
+        if structured.vital_signs:
+            section_sources["vital_signs"] = chips[:3]
+        if structured.follow_ups:
+            section_sources["follow_ups"] = chips[:3]
+        if structured.concerns:
+            section_sources["concerns"] = chips[:3]
+        if structured.what_changed:
+            section_sources["what_changed"] = chips[:3]
+        if structured.why_it_matters:
+            section_sources["why_it_matters"] = chips[:3]
+        if structured.suggested_next_discussion_points:
+            section_sources["suggested_next_discussion_points"] = chips[:3]
+
+        if structured.key_results:
+            key_result_sources: list[str] = []
+            for result in structured.key_results:
+                snippet = result.source_snippet or ""
+                for source in sources_summary:
+                    excerpt = str(source.get("snippet_excerpt") or "")
+                    if not self._snippet_overlaps(snippet, excerpt):
+                        continue
+                    chip = self._source_chip(source)
+                    if chip and chip not in key_result_sources:
+                        key_result_sources.append(chip)
+                if len(key_result_sources) >= 6:
+                    break
+            section_sources["key_results"] = (key_result_sources or chips)[:6]
+
+        if structured.medications:
+            medication_sources: list[str] = []
+            for med in structured.medications:
+                snippet = med.source_snippet or ""
+                for source in sources_summary:
+                    excerpt = str(source.get("snippet_excerpt") or "")
+                    if not self._snippet_overlaps(snippet, excerpt):
+                        continue
+                    chip = self._source_chip(source)
+                    if chip and chip not in medication_sources:
+                        medication_sources.append(chip)
+                if len(medication_sources) >= 6:
+                    break
+            section_sources["medications"] = (medication_sources or chips)[:6]
+
+        structured.section_sources = section_sources
+        return structured
+
     def _structured_to_friendly(self, structured: StructuredSummaryResponse) -> str:
         """Convert structured response to friendly text for display."""
         lines = [f"**✅ Overview**\n{structured.overview}\n"]
@@ -3710,5 +4355,20 @@ Questions/Unclear:
             lines.append("**Next Steps**")
             for followup in structured.follow_ups:
                 lines.append(f"- {followup}")
+
+        if structured.what_changed:
+            lines.append("**What changed**")
+            for item in structured.what_changed[:5]:
+                lines.append(f"- {item}")
+
+        if structured.why_it_matters:
+            lines.append("**Why it matters**")
+            for item in structured.why_it_matters[:5]:
+                lines.append(f"- {item}")
+
+        if structured.suggested_next_discussion_points:
+            lines.append("**Suggested next discussion points**")
+            for item in structured.suggested_next_discussion_points[:5]:
+                lines.append(f"- {item}")
 
         return "\n".join(lines)
