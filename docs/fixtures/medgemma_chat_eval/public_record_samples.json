@@ -1,0 +1,71 @@
+{
+  "fixture_name": "medgemma_chat_tone_eval_records",
+  "version": "2026-02-18",
+  "policy": "Public de-identified/synthetic examples only. No direct personal identifiers.",
+  "sources": [
+    {
+      "id": "mimic_iv_demo",
+      "label": "PhysioNet MIMIC-IV Demo",
+      "url": "https://physionet.org/content/mimic-iv-demo/2.2/"
+    },
+    {
+      "id": "mimic_fhir",
+      "label": "MIMIC FHIR demo resources",
+      "url": "https://mimic.mit.edu/fhir/"
+    },
+    {
+      "id": "hl7_fhir_examples",
+      "label": "HL7 FHIR example resources",
+      "url": "https://build.fhir.org/"
+    },
+    {
+      "id": "cms_synthetic",
+      "label": "CMS Blue Button sandbox synthetic data",
+      "url": "https://sandbox.bluebutton.cms.gov/docs/"
+    }
+  ],
+  "records": [
+    {
+      "key": "mimic_demo_labs",
+      "title": "Eval fixture - de-identified lab panel",
+      "record_type": "lab_result",
+      "provenance_source_id": "mimic_iv_demo",
+      "content": "Date: 2026-01-12\nHemoglobin: 10.1 g/dL (low)\nWhite Blood Cell Count: 7.2 x10^3/uL\nPlatelets: 252 x10^3/uL\nTB Screening: Positive\nScreening outcome: Negative\nHIV: R Non-Reactive\nUrineysis: NR Not tested\nNotes: De-identified demo values normalized for product QA."
+    },
+    {
+      "key": "fhir_synthetic_encounter",
+      "title": "Eval fixture - synthetic encounter summary",
+      "record_type": "encounter",
+      "provenance_source_id": "hl7_fhir_examples",
+      "content": "Encounter date: 2026-01-14\nVisit type: Outpatient follow-up\nBlood pressure: 118/74 mmHg\nPulse: 72 bpm\nTemperature: 36.8 C\nAssessment: Stable follow-up visit documented.\nPlan: Continue current medications and routine monitoring."
+    },
+    {
+      "key": "fhir_medication_statement",
+      "title": "Eval fixture - synthetic medication statement",
+      "record_type": "medication",
+      "provenance_source_id": "mimic_fhir",
+      "content": "Medication list update (2026-01-15)\nMetformin 500 mg by mouth twice daily - Active\nLisinopril 10 mg daily - Active\nIsoniazid 300 mg daily - Discontinued on 2026-01-15\nNo adverse drug reaction documented in this note."
+    },
+    {
+      "key": "cms_synthetic_claim_note",
+      "title": "Eval fixture - synthetic claim/coverage note",
+      "record_type": "claim_summary",
+      "provenance_source_id": "cms_synthetic",
+      "content": "Claim period: 2026-01\nService category: outpatient follow-up\nDiagnosis coding text: essential hypertension follow-up\nBilling note: routine follow-up service, no emergency indicators.\nThis summary is synthetic and used for QA only."
+    },
+    {
+      "key": "qa_note_missing_values",
+      "title": "Eval fixture - missing value control note",
+      "record_type": "note",
+      "provenance_source_id": "hl7_fhir_examples",
+      "content": "Quality check note: LDL cholesterol value not listed in available records for this period.\nA1c value not listed in this note.\nInstruction: if asked for missing values, return a records-grounded refusal."
+    },
+    {
+      "key": "qa_document_style_summary",
+      "title": "Eval fixture - synthetic document-style summary",
+      "record_type": "document_summary",
+      "provenance_source_id": "mimic_iv_demo",
+      "content": "Summary date: 2026-01-16\nMain findings: hemoglobin 10.1 g/dL, blood pressure 118/74 mmHg, pulse 72 bpm.\nFollow-up: continue active medications and discuss conflicting TB screening lines with clinic.\nContext: normalized de-identified fixture for conversational QA."
+    }
+  ]
+}
