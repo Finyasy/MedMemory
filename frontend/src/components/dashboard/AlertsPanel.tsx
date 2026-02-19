@@ -57,6 +57,20 @@ function AlertsPanel({
                   {formatMetricReading(alert.value_text, alert.numeric_value, alert.unit)}
                   {alert.observed_at ? ` · ${formatDate(alert.observed_at)}` : ''}
                 </span>
+                {alert.previous_value_text || alert.previous_numeric_value != null ? (
+                  <span className="alert-change">
+                    Prior {formatMetricReading(alert.previous_value_text, alert.previous_numeric_value, alert.unit)}
+                    {alert.previous_observed_at ? ` · ${formatDate(alert.previous_observed_at)}` : ''}
+                    {' '}→ Current {formatMetricReading(alert.value_text, alert.numeric_value, alert.unit)}
+                    {typeof alert.trend_delta === 'number'
+                      ? ` (Δ ${alert.trend_delta > 0 ? '+' : ''}${alert.trend_delta.toFixed(2).replace(/\.?0+$/, '')}${alert.unit ? ` ${alert.unit}` : ''})`
+                      : ''}
+                  </span>
+                ) : null}
+                <span className="alert-source">
+                  {alert.source_type.replace(/_/g, ' ')}
+                  {alert.source_id != null ? ` #${alert.source_id}` : ''}
+                </span>
               </div>
               <button
                 type="button"
