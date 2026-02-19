@@ -8,11 +8,15 @@ it('renders loading skeletons when loading', () => {
       documents={[]}
       isLoading={true}
       processingIds={[]}
+      deletingIds={[]}
       selectedFile={null}
       status=""
       onFileChange={vi.fn()}
       onUpload={vi.fn()}
       onProcess={vi.fn()}
+      onView={vi.fn()}
+      onDelete={vi.fn()}
+      onClosePreview={vi.fn()}
     />
   );
 
@@ -35,11 +39,15 @@ it('renders document rows', () => {
       ]}
       isLoading={false}
       processingIds={[]}
+      deletingIds={[]}
       selectedFile={null}
       status=""
       onFileChange={vi.fn()}
       onUpload={vi.fn()}
       onProcess={vi.fn()}
+      onView={vi.fn()}
+      onDelete={vi.fn()}
+      onClosePreview={vi.fn()}
     />
   );
 
