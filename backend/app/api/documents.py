@@ -4,17 +4,16 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import Integer, cast, func, select
-from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.api.deps import get_authenticated_user, get_patient_for_user
-from app.database import get_db
 from app.config import settings
+from app.database import get_db
 from app.models import Document, MemoryChunk, Patient, User
 from app.schemas.document import (
     BatchProcessResponse,
@@ -45,6 +44,19 @@ def _document_sort_date(document: Document) -> datetime:
     return document.document_date or document.received_date
 
 
+def _format_doc_date(document: Document) -> str:
+    return _document_sort_date(document).date().isoformat()
+
+
+def _append_document_note(document: Document, note: str) -> None:
+    if not note:
+        return
+    if document.description:
+        document.description = f"{document.description}\n{note}"
+    else:
+        document.description = note
+
+
 async def _get_document_for_user(
     document_id: int,
     db: AsyncSession,
@@ -65,17 +77,17 @@ async def _get_document_for_user(
 async def upload_document(
     file: UploadFile = File(...),
     patient_id: int = Form(...),
-    document_type: Optional[str] = Form(None),
-    title: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    category: Optional[str] = Form(None),
+    document_type: str | None = Form(None),
+    title: str | None = Form(None),
+    description: str | None = Form(None),
+    category: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Upload a new document for a patient."""
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
     service = DocumentUploadService(db)
-    
+
     try:
         document = await service.upload_document(
             file=file,
@@ -86,6 +98,7 @@ async def upload_document(
             category=category,
         )
         if _is_cxr_document(document):
+            cxr_note = ""
             try:
                 result = await db.execute(
                     select(Document).where(
@@ -95,40 +108,63 @@ async def upload_document(
                     )
                 )
                 candidates = [
-                    doc
-                    for doc in result.scalars().all()
-                    if _is_cxr_document(doc)
+                    doc for doc in result.scalars().all() if _is_cxr_document(doc)
                 ]
-                if candidates:
+                if not candidates:
+                    cxr_note = "Auto CXR comparison: no prior baseline image found."
+                else:
                     current_date = _document_sort_date(document)
                     prior = max(
-                        (doc for doc in candidates if _document_sort_date(doc) <= current_date),
+                        (
+                            doc
+                            for doc in candidates
+                            if _document_sort_date(doc) <= current_date
+                        ),
                         key=_document_sort_date,
                         default=None,
                     ) or max(candidates, key=_document_sort_date)
-                    current_bytes = Path(document.file_path).read_bytes()
-                    prior_bytes = Path(prior.file_path).read_bytes()
+                    follow_up_date = _format_doc_date(document)
+                    baseline_date = _format_doc_date(prior)
+                    follow_up_bytes = Path(document.file_path).read_bytes()
+                    baseline_bytes = Path(prior.file_path).read_bytes()
                     llm_service = LLMService.get_instance()
                     system_prompt = (
-                        "You are a medical imaging assistant. Compare the two chest X-rays: current and prior. "
-                        "Summarize interval changes in 3-5 short sentences using plain language. "
-                        "Do not include disclaimers. "
-                        "If changes are unclear, say \"Limited information available for comparison.\""
+                        "You are a medical imaging assistant writing concise interval chest X-ray comparisons. "
+                        "Use plain language, avoid speculation, and explicitly state if no clear interval change is seen."
+                    )
+                    prompt_text = (
+                        "I am providing two Chest X-rays for the same patient.\n"
+                        f"- The first image is the baseline scan from {baseline_date}.\n"
+                        f"- The second image is the follow-up scan from {follow_up_date}.\n"
+                        "Compare the second image to the first and summarize interval changes."
                     )
                     llm_response = await llm_service.generate_with_images(
-                        prompt="Compare the current chest X-ray to the prior study.",
-                        images_bytes=[current_bytes, prior_bytes],
+                        prompt=prompt_text,
+                        images_bytes=[baseline_bytes, follow_up_bytes],
                         system_prompt=system_prompt,
-                        max_new_tokens=220,
+                        max_new_tokens=260,
+                        min_new_tokens=80,
+                        do_sample=False,
+                        repetition_penalty=1.1,
                     )
-                    prior_date = _document_sort_date(prior).date().isoformat()
-                    comparison = f"Auto CXR comparison vs {prior_date}: {llm_response.text}"
-                    if document.description:
-                        document.description = f"{document.description}\n{comparison}"
-                    else:
-                        document.description = comparison
-            except Exception:
-                pass
+                    cxr_note = (
+                        "Auto CXR comparison "
+                        f"(baseline {baseline_date} -> follow-up {follow_up_date}): "
+                        f"{llm_response.text}"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Auto CXR comparison failed for document %s: %s",
+                    document.id,
+                    exc,
+                    exc_info=True,
+                )
+                cxr_note = (
+                    f"Auto CXR comparison unavailable: {type(exc).__name__}: {str(exc)}"
+                )
+
+            _append_document_note(document, cxr_note)
+            await db.flush()
 
         try:
             processor = DocumentProcessor(db)
@@ -159,9 +195,11 @@ async def process_document(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Process a document: extract text and create memory chunks."""
-    await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
+    await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
+    )
     processor = DocumentProcessor(db)
-    
+
     try:
         document = await processor.process_document(
             document_id=document_id,
@@ -171,13 +209,15 @@ async def process_document(
             select(MemoryChunk).where(MemoryChunk.document_id == document_id)
         )
         chunks = result.scalars().all()
-        
+
         return DocumentProcessResponse(
             document_id=document.id,
             status=document.processing_status,
             page_count=document.page_count,
             chunks_created=len(chunks),
-            text_preview=document.extracted_text[:500] if document.extracted_text else None,
+            text_preview=document.extracted_text[:500]
+            if document.extracted_text
+            else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -197,7 +237,9 @@ async def process_pending_documents(
     result = await db.execute(
         select(Document)
         .join(Patient, Document.patient_id == Patient.id)
-        .where(Document.processing_status == "pending", Patient.user_id == current_user.id)
+        .where(
+            Document.processing_status == "pending", Patient.user_id == current_user.id
+        )
     )
     documents = result.scalars().all()
 
@@ -247,23 +289,27 @@ async def reprocess_document(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Reprocess a document (delete existing chunks and extract again)."""
-    await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
+    await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
+    )
     processor = DocumentProcessor(db)
-    
+
     try:
         document = await processor.reprocess_document(document_id)
-        
+
         result = await db.execute(
             select(MemoryChunk).where(MemoryChunk.document_id == document_id)
         )
         chunks = result.scalars().all()
-        
+
         return DocumentProcessResponse(
             document_id=document.id,
             status=document.processing_status,
             page_count=document.page_count,
             chunks_created=len(chunks),
-            text_preview=document.extracted_text[:500] if document.extracted_text else None,
+            text_preview=document.extracted_text[:500]
+            if document.extracted_text
+            else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -273,8 +319,8 @@ async def reprocess_document(
 
 @router.get("/", response_model=list[DocumentResponse])
 async def list_documents(
-    patient_id: Optional[int] = None,
-    document_type: Optional[str] = None,
+    patient_id: int | None = None,
+    document_type: str | None = None,
     processed_only: bool = False,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
@@ -282,7 +328,9 @@ async def list_documents(
     current_user: User = Depends(get_authenticated_user),
 ):
     """List documents with optional filtering."""
-    cache_key = CacheKeys.documents(current_user.id, patient_id, document_type, processed_only, skip, limit)
+    cache_key = CacheKeys.documents(
+        current_user.id, patient_id, document_type, processed_only, skip, limit
+    )
     cached = await get_cached(cache_key)
     if cached is not None:
         return cached
@@ -312,24 +360,28 @@ async def list_documents(
         .join(Patient, Document.patient_id == Patient.id)
         .where(Patient.user_id == current_user.id)
     )
-    
+
     if patient_id:
-        await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+        await get_patient_for_user(
+            patient_id=patient_id, db=db, current_user=current_user
+        )
         query = query.where(Document.patient_id == patient_id)
-    
+
     if document_type:
         query = query.where(Document.document_type == document_type)
-    
+
     if processed_only:
-        query = query.where(Document.is_processed == True)
-    
+        query = query.where(Document.is_processed)
+
     query = query.order_by(Document.received_date.desc()).offset(skip).limit(limit)
-    
+
     result = await db.execute(query)
     documents = result.scalars().all()
 
     response = [DocumentResponse.model_validate(doc) for doc in documents]
-    await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
+    await set_cached(
+        cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds
+    )
     return response
 
 
@@ -387,8 +439,10 @@ async def get_document(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get document details including extracted text."""
-    document = await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
-    
+    document = await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
+    )
+
     return DocumentDetail.model_validate(document)
 
 
@@ -399,8 +453,10 @@ async def download_document(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Download the original document file."""
-    document = await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
-    
+    document = await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
+    )
+
     return FileResponse(
         path=document.file_path,
         filename=document.original_filename,
@@ -415,14 +471,16 @@ async def get_document_text(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get just the extracted text from a document."""
-    document = await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
-    
+    document = await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
+    )
+
     if not document.is_processed:
         raise HTTPException(
             status_code=400,
-            detail="Document has not been processed. Call /process endpoint first."
+            detail="Document has not been processed. Call /process endpoint first.",
         )
-    
+
     return {
         "document_id": document.id,
         "extracted_text": document.extracted_text,
@@ -437,7 +495,9 @@ async def get_document_ocr(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get OCR refinement output for a document."""
-    document = await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
+    document = await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
+    )
 
     ocr_entities: dict = {}
     if document.ocr_entities:
@@ -465,12 +525,14 @@ async def delete_document(
 ):
     """Delete a document and its associated file and memory chunks."""
     service = DocumentUploadService(db)
-    await db.execute(
-        MemoryChunk.__table__.delete().where(MemoryChunk.document_id == document_id)
+    document = await _get_document_for_user(
+        document_id=document_id, db=db, current_user=current_user
     )
-    await _get_document_for_user(document_id=document_id, db=db, current_user=current_user)
+    await db.execute(
+        MemoryChunk.__table__.delete().where(MemoryChunk.document_id == document.id)
+    )
     deleted = await service.delete_document(document_id)
-    
+
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
     await clear_cache(f"documents:{current_user.id}:")
@@ -479,7 +541,7 @@ async def delete_document(
 @router.get("/patient/{patient_id}", response_model=list[DocumentResponse])
 async def get_patient_documents(
     patient_id: int,
-    document_type: Optional[str] = None,
+    document_type: str | None = None,
     processed_only: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
@@ -487,11 +549,11 @@ async def get_patient_documents(
     """Get all documents for a specific patient."""
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
     service = DocumentUploadService(db)
-    
+
     documents = await service.get_patient_documents(
         patient_id=patient_id,
         document_type=document_type,
         processed_only=processed_only,
     )
-    
+
     return [DocumentResponse.model_validate(doc) for doc in documents]
