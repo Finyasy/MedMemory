@@ -126,9 +126,7 @@ class LLMService:
         # Sampling is configurable but defaults to deterministic for clinical QA.
         self.do_sample = settings.llm_do_sample
         # Prefer MLX text generation on Apple Silicon when configured and available.
-        self.use_mlx_text_backend = bool(
-            settings.llm_use_mlx and self.device == "mps"
-        )
+        self.use_mlx_text_backend = bool(settings.llm_use_mlx and self.device == "mps")
         self._mlx_disabled_reason: str | None = None
         # Serialize generations on MPS to avoid hangs under concurrent load.
         self._gen_lock = asyncio.Lock()
@@ -167,9 +165,13 @@ class LLMService:
             if not candidate.is_absolute():
                 backend_dir = Path(__file__).resolve().parents[3]
                 candidate = (backend_dir / candidate).resolve()
-            if candidate.exists() and candidate.is_dir() and any(
-                (candidate / name).exists()
-                for name in ["config.json", "model.safetensors", "weights.npz"]
+            if (
+                candidate.exists()
+                and candidate.is_dir()
+                and any(
+                    (candidate / name).exists()
+                    for name in ["config.json", "model.safetensors", "weights.npz"]
+                )
             ):
                 return str(candidate)
 
@@ -1003,7 +1005,9 @@ class LLMService:
             inferred_image_count = pixel_shape[0]
 
         image_token_count: int | None = None
-        tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
+        tokenizer = (
+            self.processor.tokenizer if hasattr(self.processor, "tokenizer") else None
+        )
         if tokenizer is not None and "input_ids" in inputs:
             image_token_id = getattr(tokenizer, "image_token_id", None)
             if image_token_id is None:
@@ -1156,7 +1160,9 @@ class LLMService:
         if effective_do_sample:
             gen_kwargs.update(
                 {
-                    "temperature": self.temperature if temperature is None else temperature,
+                    "temperature": self.temperature
+                    if temperature is None
+                    else temperature,
                     "top_p": self.top_p if top_p is None else top_p,
                     "top_k": self.top_k if top_k is None else top_k,
                 }
