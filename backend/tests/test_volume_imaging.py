@@ -3,8 +3,8 @@ from __future__ import annotations
 import io
 import tempfile
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 import pydicom
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian
