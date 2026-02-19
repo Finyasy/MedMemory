@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { app__schemas__memory__ContextRequest } from '../models/app__schemas__memory__ContextRequest';
-import type { app__schemas__memory__ContextResponse } from '../models/app__schemas__memory__ContextResponse';
+import type { ContextRequest } from '../models/ContextRequest';
+import type { ContextResponse } from '../models/ContextResponse';
 import type { IndexingStatsResponse } from '../models/IndexingStatsResponse';
 import type { IndexTextRequest } from '../models/IndexTextRequest';
 import type { MemoryChunkResponse } from '../models/MemoryChunkResponse';
@@ -85,12 +85,12 @@ export class MemorySearchService {
      * Returns concatenated relevant chunks optimized for feeding into an LLM.
      * Useful for RAG (Retrieval-Augmented Generation) workflows.
      * @param requestBody
-     * @returns app__schemas__memory__ContextResponse Successful Response
+     * @returns ContextResponse Successful Response
      * @throws ApiError
      */
     public static getContextForQuestionApiV1MemoryContextPost(
-        requestBody: app__schemas__memory__ContextRequest,
-    ): CancelablePromise<app__schemas__memory__ContextResponse> {
+        requestBody: ContextRequest,
+    ): CancelablePromise<ContextResponse> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/memory/context',
