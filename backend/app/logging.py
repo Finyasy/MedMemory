@@ -7,7 +7,6 @@ import logging
 
 from app.config import settings
 
-
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id",
     default=None,
