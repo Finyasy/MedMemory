@@ -1,9 +1,9 @@
 """Helpers for basic 3D volume interpretation using 2D slice montages."""
 
-from dataclasses import dataclass
 import io
 import math
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -58,7 +58,9 @@ def build_volume_montage(
         raise ValueError("Unable to sample slices.")
 
     processed = [
-        _prepare_slice_image(Image.open(io.BytesIO(slice_images[idx])).convert("L"), tile_size)
+        _prepare_slice_image(
+            Image.open(io.BytesIO(slice_images[idx])).convert("L"), tile_size
+        )
         for idx in sampled_indices
     ]
     count = len(processed)
@@ -138,6 +140,7 @@ def build_volume_montage_from_array(
 def load_nifti_volume(nifti_bytes: bytes) -> np.ndarray:
     """Load a NIfTI volume into a 3D numpy array."""
     import tempfile
+
     import nibabel as nib
 
     with tempfile.NamedTemporaryFile(suffix=".nii.gz") as tmp:
