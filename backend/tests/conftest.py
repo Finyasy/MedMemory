@@ -1,9 +1,9 @@
-from contextlib import asynccontextmanager
 import importlib.metadata
 import importlib.util
 import os
 import sys
 import types
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -24,10 +24,10 @@ os.environ.setdefault(
 os.environ.setdefault("DEBUG", "true")
 
 
-
 def _install_pgvector_stub():
     try:
         import pgvector.sqlalchemy  # noqa: F401
+
         return
     except Exception:
         pass
@@ -50,6 +50,7 @@ def _install_pgvector_stub():
 def _install_email_validator_stub():
     try:
         import email_validator  # noqa: F401
+
         return
     except Exception:
         pass
@@ -81,6 +82,7 @@ def _install_email_validator_stub():
 def _disable_pydantic_email_validator():
     try:
         import pydantic.networks as networks
+
         networks.import_email_validator = lambda: None
     except Exception:
         pass
@@ -89,6 +91,7 @@ def _disable_pydantic_email_validator():
 def _install_asyncpg_stub():
     try:
         import asyncpg  # noqa: F401
+
         return
     except Exception:
         pass
@@ -110,6 +113,7 @@ def _install_asyncpg_stub():
 def _install_fitz_stub():
     try:
         import fitz  # noqa: F401
+
         return
     except Exception:
         pass
@@ -134,6 +138,7 @@ def _install_fitz_stub():
 def _install_multipart_stub():
     try:
         import python_multipart  # noqa: F401
+
         return
     except Exception:
         pass
@@ -176,6 +181,7 @@ collect_ignore = ["test_model.py"]
 def anyio_backend():
     return "asyncio"
 
+
 HEALTH_MODULE = _load_module("medmemory_health_api", API_DIR / "health.py")
 RECORDS_MODULE = _load_module("medmemory_records_api", API_DIR / "records.py")
 
@@ -190,10 +196,10 @@ def client(record_repository):
     app = FastAPI(lifespan=_no_lifespan)
     app.include_router(HEALTH_MODULE.router)
     app.include_router(RECORDS_MODULE.router, prefix="/api/v1")
-    
+
     app.dependency_overrides[RECORDS_MODULE.get_record_repo] = lambda: record_repository
-    from app.database import get_db
     from app.api.deps import get_authenticated_user
+    from app.database import get_db
 
     async def _override_get_db():
         yield None
