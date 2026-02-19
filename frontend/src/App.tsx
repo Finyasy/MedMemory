@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import { ApiError, api, buildBackendUrl } from './api';
+import { ApiError, api } from './api';
 import useToast from './hooks/useToast';
 import useAppStore from './store/useAppStore';
 import usePatients from './hooks/usePatients';
@@ -30,6 +30,7 @@ import TrendsPanel from './components/dashboard/TrendsPanel';
 import WatchlistPanel from './components/dashboard/WatchlistPanel';
 import ClinicianApp from './pages/ClinicianApp';
 import type { PatientSummary } from './types';
+import { buildDeterministicRecordSummary } from './utils/recordSummary';
 
 const defaultHighlights = [
   { title: 'LDL Cholesterol', value: '167 mg/dL', trend: 'down', note: 'Jun 2025' },
@@ -41,18 +42,45 @@ const defaultHighlights = [
 const a1cSeries = [6.1, 5.9, 5.8, 5.6, 5.5, 5.4];
 
 const suggestedProviders: Array<{ provider_name: string; provider_slug: string }> = [
-  { provider_name: 'Sutter Health', provider_slug: 'sutter_health' },
-  { provider_name: 'Kaiser Permanente', provider_slug: 'kaiser_permanente' },
-  { provider_name: 'Quest Diagnostics', provider_slug: 'quest_diagnostics' },
-  { provider_name: 'UCSF Medical', provider_slug: 'ucsf_medical' },
-  { provider_name: 'Function Health', provider_slug: 'function_health' },
-  { provider_name: 'Stanford Medical', provider_slug: 'stanford_medical' },
-  { provider_name: 'Cedars-Sinai', provider_slug: 'cedars_sinai' },
-  { provider_name: 'One Medical', provider_slug: 'one_medical' },
-  { provider_name: 'GoodRx', provider_slug: 'goodrx' },
+  { provider_name: 'Digital Health Agency (DHA)', provider_slug: 'digital_health_agency_dha' },
+  {
+    provider_name: 'National Shared Health Record (SHR) / AfyaYangu',
+    provider_slug: 'national_shr_afyayangu',
+  },
+  {
+    provider_name: 'Kenya Health Information System (KHIS)',
+    provider_slug: 'kenya_health_information_system_khis',
+  },
+  {
+    provider_name: 'Integrated Health Information System (IHIS/HIE)',
+    provider_slug: 'integrated_health_information_system_ihis_hie',
+  },
+  {
+    provider_name: 'MoH Data Warehouse (DWH / DWAPI)',
+    provider_slug: 'moh_data_warehouse_dwh_dwapi',
+  },
+  { provider_name: 'AfyaRekod', provider_slug: 'afyarekod' },
+  { provider_name: 'Medbook (AphiaOne HMIS)', provider_slug: 'medbook_aphiaone_hmis' },
+  { provider_name: 'RUPHAsoft', provider_slug: 'ruphasoft' },
+  { provider_name: 'Ksatria Hospital Information System', provider_slug: 'ksatria_his' },
+  { provider_name: 'Dawascope', provider_slug: 'dawascope' },
+  {
+    provider_name: 'KeHMIS Interoperability Layer',
+    provider_slug: 'kehmis_interoperability_layer',
+  },
+  {
+    provider_name: 'SHIELD Surveillance Linkage',
+    provider_slug: 'shield_surveillance_linkage',
+  },
+  { provider_name: 'KEMSA LMIS', provider_slug: 'kemsa_lmis' },
+  {
+    provider_name: 'Kenya Master Health Facility List (KMHFL)',
+    provider_slug: 'kenya_master_health_facility_list_kmhfl',
+  },
 ];
 
 type BackendStatus = 'checking' | 'online' | 'offline';
+type DashboardSection = 'overview' | 'monitoring' | 'workspace';
 
 const buildPath = (values: number[]) => {
   if (!values.length) return '';
@@ -137,6 +165,7 @@ function PatientApp() {
   } | null>(null);
   const [primaryPatientId, setPrimaryPatientId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<'chat' | 'dashboard'>('chat');
+  const [dashboardSection, setDashboardSection] = useState<DashboardSection>('overview');
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
   const { toasts, pushToast } = useToast();
   const previousBackendStatusRef = useRef<BackendStatus>('checking');
@@ -441,15 +470,11 @@ function PatientApp() {
       return;
     }
     let cancelled = false;
-    api
-      .getAuthHeaders()
-      .then((headers) => fetch(buildBackendUrl('/api/v1/profile'), { headers }))
-      .then(async (res) => {
-        if (!res.ok) throw new Error('Failed to load primary profile');
-        const data = await res.json();
+    api.getPrimaryProfile()
+      .then((profile) => {
         if (cancelled) return;
-        if (typeof data.id === 'number') {
-          setPrimaryPatientId(data.id);
+        if (typeof profile.id === 'number') {
+          setPrimaryPatientId(profile.id);
         }
       })
       .catch(() => {});
@@ -464,19 +489,13 @@ function PatientApp() {
       return;
     }
     let cancelled = false;
-    api
-      .getAuthHeaders()
-      .then((headers) =>
-        fetch(buildBackendUrl(`/api/v1/profile?patient_id=${patientId}`), { headers })
-      )
-      .then(async (res) => {
-        if (!res.ok) throw new Error('Failed to load profile summary');
-        const data = await res.json();
+    api.getProfile(patientId)
+      .then((profile) => {
         if (cancelled) return;
         setProfileSummary({
-          id: data.id,
-          is_dependent: !!data.is_dependent,
-          profile_completion: data.profile_completion,
+          id: profile.id,
+          is_dependent: !!profile.is_dependent,
+          profile_completion: profile.profile_completion,
         });
       })
       .catch(() => {
@@ -520,6 +539,7 @@ function PatientApp() {
     activeAlertId,
     dashboardConnectionLoading,
     dataConnections,
+    connectionSyncEvents,
     activeConnectionSlug,
     activeSyncConnectionId,
     ocrAvailable,
@@ -630,10 +650,23 @@ function PatientApp() {
     if (!latestRecord) return;
     setViewMode('chat');
     const recordName = latestRecord.title || 'my latest record';
-    send(
-      `Please review the record "${recordName}" and summarize only what is explicitly stated. Do not add recommendations unless they are listed in the record.`,
-    );
-  }, [latestRecord, send]);
+    pushMessage({
+      role: 'user',
+      content: `Please review the record "${recordName}" and summarize only what is explicitly stated.`,
+    });
+    pushMessage({
+      role: 'assistant',
+      content: buildDeterministicRecordSummary(latestRecord, formatDate),
+      num_sources: 1,
+      sources: [
+        {
+          source_type: 'record',
+          source_id: latestRecord.id,
+          relevance: 1,
+        },
+      ],
+    });
+  }, [latestRecord, formatDate, pushMessage]);
   // highlightItems can be used for a summary strip in the future
   const _highlightItems = useMemo(() => {
     if (!insights?.recent_labs?.length) return defaultHighlights;
@@ -696,6 +729,7 @@ function PatientApp() {
   const metricTrendValues = useMemo(
     () =>
       metricDetail?.trend
+        .filter((point) => !point.excluded_from_insights)
         .map((point) => point.value)
         .filter((value): value is number => typeof value === 'number') ?? [],
     [metricDetail],
@@ -703,6 +737,14 @@ function PatientApp() {
   const metricTrendPath = useMemo(
     () => (metricTrendValues.length > 1 ? buildScaledPath(metricTrendValues) : ''),
     [metricTrendValues],
+  );
+  const dashboardSectionSummary = useMemo<Record<DashboardSection, string>>(
+    () => ({
+      overview: 'Connections, highlights, and trends',
+      monitoring: 'Alerts, watchlist, and clinician access',
+      workspace: 'Documents and clinical notes',
+    }),
+    [],
   );
 
   // Only show viewing banner when viewing a dependent's profile
@@ -908,138 +950,182 @@ function PatientApp() {
               </button>
             </div>
           ) : null}
-          <div className="insight-strip">
-            {insightCards.map((card) => (
-              <div className="insight-card" key={card.title}>
-                <div className="insight-card-header">
-                  <span className="insight-icon">{card.icon}</span>
-                  <h4>{card.title}</h4>
-                </div>
-                <p className="insight-value">{card.value}</p>
-                <span className="insight-note">{card.note}</span>
-              </div>
-            ))}
+          <div className="dashboard-section-tabs" role="tablist" aria-label="Dashboard sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dashboardSection === 'overview'}
+              className={dashboardSection === 'overview' ? 'active' : ''}
+              onClick={() => setDashboardSection('overview')}
+            >
+              Overview
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dashboardSection === 'monitoring'}
+              className={dashboardSection === 'monitoring' ? 'active' : ''}
+              onClick={() => setDashboardSection('monitoring')}
+            >
+              Monitoring
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dashboardSection === 'workspace'}
+              className={dashboardSection === 'workspace' ? 'active' : ''}
+              onClick={() => setDashboardSection('workspace')}
+            >
+              Workspace
+            </button>
           </div>
-          <section className="dashboard-main dashboard-main-data">
-            <ConnectionsPanel
-              loading={dashboardConnectionLoading}
-              connections={dataConnections}
-              availableProviders={availableProviders}
-              activeConnectionSlug={activeConnectionSlug}
-              activeSyncConnectionId={activeSyncConnectionId}
-              onConnectProvider={handleConnectProvider}
-              onToggleConnection={handleConnectionState}
-              onSyncConnection={handleSyncConnection}
-              formatDate={formatDate}
-            />
-            <HighlightsPanel
-              loading={dashboardHighlightsLoading}
-              summary={dashboardSummary}
-              items={dashboardHighlightItems}
-              selectedMetricKey={selectedMetricKey}
-              onSelectMetric={setSelectedMetricKey}
-              formatDate={formatDate}
-              formatMetricReading={formatMetricReading}
-              formatNumber={formatNumber}
-            />
-          </section>
-          <ClinicianAccessPanel
-            patientId={patientId}
-            accessRequestsLoading={accessRequestsLoading}
-            accessRequests={accessRequests}
-            actingGrantId={actingGrantId}
-            onApproveAccess={handleApproveAccess}
-            onDenyAccess={handleDenyAccess}
-          />
-          <section className="dashboard-main dashboard-main-metrics">
-            <MetricDetailPanel
-              metricDetail={metricDetail}
-              metricDetailLoading={metricDetailLoading}
-              selectedMetricKey={selectedMetricKey}
-              selectedWatchMetric={selectedWatchMetric}
-              activeWatchMetricId={activeWatchMetricId}
-              metricTrendPath={metricTrendPath}
-              onToggleWatchMetric={handleToggleSelectedWatchMetric}
-              onAskInChat={handleAskSelectedMetricInChat}
-              formatDate={formatDate}
-              formatMetricReading={formatMetricReading}
-            />
-            <div className="metric-side-stack">
-              <WatchlistPanel
-                watchMetricsLoading={watchMetricsLoading}
-                watchMetrics={watchMetrics}
-                activeWatchMetricId={activeWatchMetricId}
-                onRemoveWatchMetric={handleRemoveWatchMetric}
+          <p className="dashboard-section-caption">{dashboardSectionSummary[dashboardSection]}</p>
+          {dashboardSection === 'overview' ? (
+            <>
+              <div className="insight-strip">
+                {insightCards.map((card) => (
+                  <div className="insight-card" key={card.title}>
+                    <div className="insight-card-header">
+                      <span className="insight-icon">{card.icon}</span>
+                      <h4>{card.title}</h4>
+                    </div>
+                    <p className="insight-value">{card.value}</p>
+                    <span className="insight-note">{card.note}</span>
+                  </div>
+                ))}
+              </div>
+              <section className="dashboard-main dashboard-main-data">
+                <ConnectionsPanel
+                  loading={dashboardConnectionLoading}
+                  connections={dataConnections}
+                  syncEvents={connectionSyncEvents}
+                  availableProviders={availableProviders}
+                  activeConnectionSlug={activeConnectionSlug}
+                  activeSyncConnectionId={activeSyncConnectionId}
+                  onConnectProvider={handleConnectProvider}
+                  onToggleConnection={handleConnectionState}
+                  onSyncConnection={handleSyncConnection}
+                  formatDate={formatDate}
+                />
+                <HighlightsPanel
+                  loading={dashboardHighlightsLoading}
+                  summary={dashboardSummary}
+                  items={dashboardHighlightItems}
+                  selectedMetricKey={selectedMetricKey}
+                  onSelectMetric={(metricKey) => {
+                    setSelectedMetricKey(metricKey);
+                    setDashboardSection('monitoring');
+                  }}
+                  formatDate={formatDate}
+                  formatMetricReading={formatMetricReading}
+                  formatNumber={formatNumber}
+                />
+              </section>
+              <section className="dashboard-main">
+                <TrendsPanel
+                  hasDocuments={documents.length > 0}
+                  insightsLoading={insightsLoading}
+                  insightSummary={insightSummary}
+                  recentLabs={recentLabs}
+                  a1cPath={a1cSeriesPath}
+                  onAskQuestion={handleAskQuestionFromDashboard}
+                  formatDate={formatDate}
+                />
+                <FocusAreasPanel
+                  latestDocument={latestDocument}
+                  latestDocumentStatus={latestDocumentStatus}
+                  latestRecord={latestRecord}
+                  ocrAvailable={ocrAvailable}
+                  activeMedications={activeMedications}
+                  recentMedicationSummary={recentMedicationSummary}
+                  onSummarizeLatestDocument={handleSummarizeLatestDocumentInChat}
+                  onReviewLatestRecord={handleReviewLatestRecordInChat}
+                  formatDate={formatDate}
+                />
+              </section>
+            </>
+          ) : null}
+          {dashboardSection === 'monitoring' ? (
+            <>
+              <ClinicianAccessPanel
+                patientId={patientId}
+                accessRequestsLoading={accessRequestsLoading}
+                accessRequests={accessRequests}
+                actingGrantId={actingGrantId}
+                onApproveAccess={handleApproveAccess}
+                onDenyAccess={handleDenyAccess}
               />
-              <AlertsPanel
-                metricAlertsLoading={metricAlertsLoading}
-                metricAlerts={metricAlerts}
-                activeAlertsCount={activeAlertsCount}
-                alertsEvaluating={alertsEvaluating}
-                activeAlertId={activeAlertId}
-                onEvaluateAlerts={handleEvaluateAlerts}
-                onAcknowledgeAlert={handleAcknowledgeAlert}
+              <section className="dashboard-main dashboard-main-metrics">
+                <MetricDetailPanel
+                  metricDetail={metricDetail}
+                  metricDetailLoading={metricDetailLoading}
+                  selectedMetricKey={selectedMetricKey}
+                  selectedWatchMetric={selectedWatchMetric}
+                  activeWatchMetricId={activeWatchMetricId}
+                  metricTrendPath={metricTrendPath}
+                  onToggleWatchMetric={handleToggleSelectedWatchMetric}
+                  onAskInChat={handleAskSelectedMetricInChat}
+                  formatDate={formatDate}
+                  formatMetricReading={formatMetricReading}
+                />
+                <div className="metric-side-stack">
+                  <WatchlistPanel
+                    watchMetricsLoading={watchMetricsLoading}
+                    watchMetrics={watchMetrics}
+                    activeWatchMetricId={activeWatchMetricId}
+                    onRemoveWatchMetric={handleRemoveWatchMetric}
+                  />
+                  <AlertsPanel
+                    metricAlertsLoading={metricAlertsLoading}
+                    metricAlerts={metricAlerts}
+                    activeAlertsCount={activeAlertsCount}
+                    alertsEvaluating={alertsEvaluating}
+                    activeAlertId={activeAlertId}
+                    onEvaluateAlerts={handleEvaluateAlerts}
+                    onAcknowledgeAlert={handleAcknowledgeAlert}
+                    formatDate={formatDate}
+                    formatMetricReading={formatMetricReading}
+                  />
+                </div>
+              </section>
+            </>
+          ) : null}
+          {dashboardSection === 'workspace' ? (
+            <section className="dashboard-workspace">
+              <DocumentsPanel
+                documents={documents}
+                isLoading={documentsLoading}
+                processingIds={documentWorkspace.processingIds}
+                deletingIds={documentWorkspace.deletingIds}
+                selectedFile={documentWorkspace.selectedFile}
+                status={documentWorkspace.status}
+                preview={documentWorkspace.preview}
+                downloadUrl={documentWorkspace.downloadUrl}
+                isDisabled={!selectedPatient}
+                selectedPatient={selectedPatient ? {
+                  full_name: selectedPatient.full_name,
+                  is_dependent: profileSummary?.is_dependent,
+                } : null}
+                onFileChange={documentWorkspace.setSelectedFile}
+                onUpload={handleUploadDocument}
+                onProcess={documentWorkspace.handleProcess}
+                onView={documentWorkspace.handleView}
+                onDelete={documentWorkspace.handleDelete}
+                onClosePreview={documentWorkspace.handleClosePreview}
+              />
+              <RecordsPanel
+                records={records}
+                isLoading={recordsLoading}
+                recordCount={recordCount}
+                formData={formData}
+                isSubmitting={isSubmitting}
+                isDisabled={!selectedPatient}
+                onFormChange={(field, value) => setFormData((prev) => ({ ...prev, [field]: value }))}
+                onSubmit={handleSubmit}
                 formatDate={formatDate}
-                formatMetricReading={formatMetricReading}
               />
-            </div>
-          </section>
-          <section className="dashboard-main">
-            <TrendsPanel
-              hasDocuments={documents.length > 0}
-              insightsLoading={insightsLoading}
-              insightSummary={insightSummary}
-              recentLabs={recentLabs}
-              a1cPath={a1cSeriesPath}
-              onAskQuestion={handleAskQuestionFromDashboard}
-              formatDate={formatDate}
-            />
-            <FocusAreasPanel
-              latestDocument={latestDocument}
-              latestDocumentStatus={latestDocumentStatus}
-              latestRecord={latestRecord}
-              ocrAvailable={ocrAvailable}
-              activeMedications={activeMedications}
-              recentMedicationSummary={recentMedicationSummary}
-              onSummarizeLatestDocument={handleSummarizeLatestDocumentInChat}
-              onReviewLatestRecord={handleReviewLatestRecordInChat}
-              formatDate={formatDate}
-            />
-          </section>
-          <section className="dashboard-workspace">
-            <DocumentsPanel
-              documents={documents}
-              isLoading={documentsLoading}
-              processingIds={documentWorkspace.processingIds}
-              deletingIds={documentWorkspace.deletingIds}
-              selectedFile={documentWorkspace.selectedFile}
-              status={documentWorkspace.status}
-              preview={documentWorkspace.preview}
-              downloadUrl={documentWorkspace.downloadUrl}
-              isDisabled={!selectedPatient}
-              selectedPatient={selectedPatient ? {
-                full_name: selectedPatient.full_name,
-                is_dependent: profileSummary?.is_dependent,
-              } : null}
-              onFileChange={documentWorkspace.setSelectedFile}
-              onUpload={handleUploadDocument}
-              onProcess={documentWorkspace.handleProcess}
-              onView={documentWorkspace.handleView}
-              onDelete={documentWorkspace.handleDelete}
-              onClosePreview={documentWorkspace.handleClosePreview}
-            />
-            <RecordsPanel
-              records={records}
-              isLoading={recordsLoading}
-              recordCount={recordCount}
-              formData={formData}
-              isSubmitting={isSubmitting}
-              isDisabled={!selectedPatient}
-              onFormChange={(field, value) => setFormData((prev) => ({ ...prev, [field]: value }))}
-              onSubmit={handleSubmit}
-              formatDate={formatDate}
-            />
-          </section>
+            </section>
+          ) : null}
         </main>
         <ToastStack toasts={toasts} />
         {localizationModal}
