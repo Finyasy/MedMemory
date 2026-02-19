@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -123,6 +124,18 @@ class Settings(BaseSettings):
         le=2.0,
         description="Repetition penalty applied during decoding to reduce loops/repetition.",
     )
+    llm_prompt_profile: Literal[
+        "baseline_current",
+        "warm_concise_v1",
+        "warm_concise_v2",
+        "clinician_terse_humanized",
+    ] = Field(
+        default="warm_concise_v1",
+        description=(
+            "Prompt style profile selector for MedGemma chat tone experiments. "
+            "Profiles tune tone only; grounding/citation/refusal guardrails remain active."
+        ),
+    )
     llm_max_new_tokens: int = 512
     llm_strict_grounding: bool = Field(
         default=True,
@@ -213,6 +226,122 @@ class Settings(BaseSettings):
 
     max_context_chunks: int = 10
     similarity_threshold: float = 0.5
+    dashboard_low_confidence_threshold: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence threshold below which values are excluded from automated "
+            "dashboard highlights and alert evaluation."
+        ),
+    )
+    dashboard_auto_evaluate_alerts_on_ingest: bool = Field(
+        default=True,
+        description=(
+            "Automatically run watchlist alert evaluation after successful lab ingestion."
+        ),
+    )
+    dashboard_auto_refresh_metric_summary_on_ingest: bool = Field(
+        default=True,
+        description=(
+            "Automatically refresh daily metric highlights summary after lab ingestion."
+        ),
+    )
+    dashboard_background_sync_enabled: bool = Field(
+        default=True,
+        description="Enable background incremental sync scheduler for data connections.",
+    )
+    dashboard_sync_poll_interval_seconds: int = Field(
+        default=300,
+        ge=15,
+        le=3600,
+        description="Polling interval for background dashboard sync scheduler.",
+    )
+    dashboard_sync_due_hours: int = Field(
+        default=6,
+        ge=1,
+        le=168,
+        description="Connections older than this are considered due for background sync.",
+    )
+    dashboard_sync_batch_size: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description="Maximum number of due connections processed per sync cycle.",
+    )
+    provider_sync_live_enabled: bool = Field(
+        default=False,
+        description="Enable live external provider API sync for data connections.",
+    )
+    provider_sync_live_base_urls: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Map of provider slug/alias to FHIR base URL for live sync "
+            "(JSON object in env var)."
+        ),
+    )
+    provider_sync_live_bearer_tokens: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Map of provider slug/alias to bearer token for live provider APIs "
+            "(JSON object in env var)."
+        ),
+    )
+    provider_sync_live_api_keys: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Map of provider slug/alias to API key used as X-API-Key "
+            "(JSON object in env var)."
+        ),
+    )
+    provider_sync_live_timeout_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=180,
+        description="HTTP timeout (seconds) for live provider sync requests.",
+    )
+    provider_sync_live_verify_ssl: bool = Field(
+        default=True,
+        description="Verify TLS certificates for live provider API requests.",
+    )
+    provider_sync_live_patient_identifier_system: str | None = Field(
+        default=None,
+        description=(
+            "Optional FHIR identifier system for patient search, prepended as "
+            "'system|value' when provided."
+        ),
+    )
+    provider_sync_live_page_size: int = Field(
+        default=200,
+        ge=1,
+        le=1000,
+        description="FHIR page size used for live provider resource pulls.",
+    )
+    provider_sync_live_max_pages_per_resource: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description="Maximum paginated FHIR bundle pages fetched per resource type.",
+    )
+    provider_sync_live_fallback_to_local_scan: bool = Field(
+        default=True,
+        description=(
+            "When true, provider sync falls back to local delta scan if live sync "
+            "is disabled or missing provider endpoint config."
+        ),
+    )
+    dashboard_metric_about_rag_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable RAG-grounded generation for metric detail 'About' explanations."
+        ),
+    )
+    dashboard_metric_about_context_chars: int = Field(
+        default=2200,
+        ge=500,
+        le=10000,
+        description="Maximum context characters sent to LLM for metric explanations.",
+    )
 
     hf_token: str | None = Field(
         default=None,
