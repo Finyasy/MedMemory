@@ -25,6 +25,13 @@ function HighlightsPanel({
   formatMetricReading,
   formatNumber,
 }: HighlightsPanelProps) {
+  const freshnessLabel = (days: number | null | undefined) => {
+    if (typeof days !== 'number') return null;
+    if (days <= 0) return 'Fresh today';
+    if (days === 1) return '1 day old';
+    return `${days} days old`;
+  };
+
   return (
     <div className="insight-panel highlights-panel">
       <div className="insight-panel-header">
@@ -64,6 +71,20 @@ function HighlightsPanel({
                     ? `${item.trend_delta > 0 ? '↑' : item.trend_delta < 0 ? '↓' : '→'} ${formatNumber(Math.abs(item.trend_delta))}${item.unit ? ` ${item.unit}` : ''} vs prior`
                     : 'No prior value for trend comparison'}
                 </p>
+                {(item.provider_name || item.confidence_label || typeof item.freshness_days === 'number') ? (
+                  <div className="highlight-item-meta">
+                    {item.provider_name ? <span>{item.provider_name}</span> : null}
+                    {item.confidence_label ? (
+                      <span className={`metric-confidence-pill ${item.confidence_label}`}>
+                        {item.confidence_label} confidence
+                      </span>
+                    ) : null}
+                    {freshnessLabel(item.freshness_days) ? <span>{freshnessLabel(item.freshness_days)}</span> : null}
+                  </div>
+                ) : null}
+                {item.risk_priority_reason ? (
+                  <p className="highlight-item-priority-reason">{item.risk_priority_reason}</p>
+                ) : null}
               </button>
             </li>
           ))}
