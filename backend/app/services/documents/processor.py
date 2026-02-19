@@ -1,14 +1,7 @@
-"""Document processing pipeline.
-
-Orchestrates the full document processing workflow:
-1. Extract text from document
-2. Chunk the text
-3. Create memory chunks for embedding (Phase 4)
-"""
+"""Document processing: extract text, chunk, create memory chunks."""
 
 import json
 import logging
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,30 +14,18 @@ from app.services.documents.extraction import (
 )
 from app.services.documents.ocr_refinement import OcrRefinementService
 from app.services.documents.upload import DocumentUploadService
+from app.services.embeddings.indexing import MemoryIndexingService
 
 
 class DocumentProcessor:
-    """Processes documents through the full extraction and chunking pipeline.
-    
-    This processor:
-    1. Extracts text from documents (PDF, images, etc.)
-    2. Chunks the text into semantic units
-    3. Prepares chunks for embedding storage
-    """
-    
+    """Extract text from documents, chunk, and prepare for embedding storage."""
+
     def __init__(
         self,
         db: AsyncSession,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
     ):
-        """Initialize the processor.
-        
-        Args:
-            db: Database session
-            chunk_size: Target size for text chunks
-            chunk_overlap: Overlap between chunks
-        """
         self.db = db
         self.upload_service = DocumentUploadService(db)
         self.chunker = TextChunker(
@@ -53,21 +34,21 @@ class DocumentProcessor:
         )
         self.ocr_refiner = OcrRefinementService()
         self.logger = logging.getLogger("medmemory")
-    
+
     async def process_document(
         self,
         document_id: int,
         create_memory_chunks: bool = True,
     ) -> Document:
         """Process a document: extract text and create chunks.
-        
+
         Args:
             document_id: ID of the document to process
             create_memory_chunks: Whether to create memory chunks for embedding
-            
+
         Returns:
             Updated Document with extracted text
-            
+
         Raises:
             ValueError: If document not found or processing fails
         """
@@ -75,29 +56,56 @@ class DocumentProcessor:
         document = await self.upload_service.get_document(document_id)
         if not document:
             raise ValueError(f"Document {document_id} not found")
-        
+
         # Update status to processing
         await self.upload_service.update_processing_status(
             document_id=document_id,
             status="processing",
         )
-        
+
         try:
             # Extract text
             result = await self._extract_text(document)
 
+            # Skip OCR refinement for vision extraction (already high quality)
             ocr_text_raw = result.ocr_text
             ocr_text_cleaned = None
             ocr_entities_json = None
-            if result.ocr_text and settings.ocr_refinement_enabled:
+
+            # Only refine OCR text (not vision-extracted text)
+            if (
+                result.ocr_text
+                and not result.used_ocr
+                and settings.ocr_refinement_enabled
+            ):
+                # This handles OCR fallback from PDFs
                 try:
                     refinement = await self.ocr_refiner.refine(result.ocr_text)
                     ocr_text_cleaned = refinement.cleaned_text or None
                     if refinement.entities:
-                        ocr_entities_json = json.dumps(refinement.entities, ensure_ascii=True)
+                        ocr_entities_json = json.dumps(
+                            refinement.entities, ensure_ascii=True
+                        )
                 except Exception:
-                    self.logger.exception("OCR refinement failed for document %s", document_id)
-            
+                    self.logger.exception(
+                        "OCR refinement failed for document %s", document_id
+                    )
+            elif (
+                result.used_ocr and result.ocr_text and settings.ocr_refinement_enabled
+            ):
+                # Refine OCR text from image extraction fallback
+                try:
+                    refinement = await self.ocr_refiner.refine(result.ocr_text)
+                    ocr_text_cleaned = refinement.cleaned_text or None
+                    if refinement.entities:
+                        ocr_entities_json = json.dumps(
+                            refinement.entities, ensure_ascii=True
+                        )
+                except Exception:
+                    self.logger.exception(
+                        "OCR refinement failed for document %s", document_id
+                    )
+
             if result.is_empty:
                 await self.upload_service.update_processing_status(
                     document_id=document_id,
@@ -112,20 +120,31 @@ class DocumentProcessor:
                 )
                 return await self.upload_service.get_document(document_id)
 
-            direct_text = result.direct_text or (result.text if not result.ocr_text else None)
-            ocr_text_for_context = ocr_text_cleaned or result.ocr_text
-            extracted_parts = []
-            if direct_text:
-                extracted_parts.append(direct_text.strip())
-            if ocr_text_for_context:
-                if direct_text:
-                    extracted_parts.append(f"=== OCR Extracted Text ===\n{ocr_text_for_context.strip()}")
-                else:
-                    extracted_parts.append(ocr_text_for_context.strip())
-
-            final_text = "\n\n".join(part for part in extracted_parts if part)
-            if not final_text:
+            # For vision extraction, use the text directly (already structured)
+            # For OCR, combine direct text and refined OCR text
+            if not result.used_ocr and result.direct_text:
+                # Vision extraction or direct PDF text
                 final_text = result.text
+            else:
+                # OCR-based extraction - combine direct and OCR text
+                direct_text = result.direct_text or (
+                    result.text if not result.ocr_text else None
+                )
+                ocr_text_for_context = ocr_text_cleaned or result.ocr_text
+                extracted_parts = []
+                if direct_text:
+                    extracted_parts.append(direct_text.strip())
+                if ocr_text_for_context:
+                    if direct_text:
+                        extracted_parts.append(
+                            f"=== OCR Extracted Text ===\n{ocr_text_for_context.strip()}"
+                        )
+                    else:
+                        extracted_parts.append(ocr_text_for_context.strip())
+
+                final_text = "\n\n".join(part for part in extracted_parts if part)
+                if not final_text:
+                    final_text = result.text
 
             result.text = final_text
 
@@ -141,13 +160,41 @@ class DocumentProcessor:
                 ocr_text_cleaned=ocr_text_cleaned,
                 ocr_entities=ocr_entities_json,
             )
-            
+
             # Create memory chunks if requested
             if create_memory_chunks:
                 await self._create_memory_chunks(document, result)
-            
+                # Index the chunks (generate embeddings) for semantic search
+                try:
+                    indexing_service = MemoryIndexingService(self.db)
+                    indexed_chunks = await indexing_service.index_document_chunks(
+                        document
+                    )
+                    self.logger.info(
+                        "Indexed %d chunks for document %s",
+                        len(indexed_chunks),
+                        document_id,
+                    )
+                except Exception as idx_err:
+                    # Store error in document record for visibility
+                    error_msg = f"Indexing failed: {str(idx_err)}"
+                    self.logger.error(
+                        "Failed to index document %s chunks: %s",
+                        document_id,
+                        idx_err,
+                        exc_info=True,
+                    )
+                    # Update document with indexing error
+                    document.processing_error = error_msg
+                    await self.db.flush()
+                    self.logger.warning(
+                        "Document %s processed but indexing failed. "
+                        "Chunks exist but are not searchable (is_indexed=False).",
+                        document_id,
+                    )
+
             return document
-        
+
         except Exception as e:
             await self.upload_service.update_processing_status(
                 document_id=document_id,
@@ -155,36 +202,36 @@ class DocumentProcessor:
                 error=str(e),
             )
             raise
-    
+
     async def _extract_text(self, document: Document) -> ExtractionResult:
         """Extract text from a document.
-        
+
         Args:
             document: Document to extract text from
-            
+
         Returns:
             ExtractionResult with text and metadata
         """
         extractor = get_extractor(document.mime_type or "application/octet-stream")
-        
+
         if not extractor:
             raise ValueError(
                 f"No extractor available for MIME type: {document.mime_type}"
             )
-        
+
         return await extractor.extract(document.file_path)
-    
+
     async def _create_memory_chunks(
         self,
         document: Document,
         extraction_result: ExtractionResult,
     ) -> list[MemoryChunk]:
         """Create memory chunks from extracted text.
-        
+
         Args:
             document: Source document
             extraction_result: Extraction result with text
-            
+
         Returns:
             List of created MemoryChunk objects
         """
@@ -193,9 +240,9 @@ class DocumentProcessor:
             chunks = self.chunker.chunk_by_pages(extraction_result.text)
         else:
             chunks = self.chunker.chunk_text(extraction_result.text)
-        
+
         memory_chunks = []
-        
+
         for chunk in chunks:
             memory_chunk = MemoryChunk(
                 patient_id=document.patient_id,
@@ -213,26 +260,26 @@ class DocumentProcessor:
             )
             self.db.add(memory_chunk)
             memory_chunks.append(memory_chunk)
-        
+
         await self.db.flush()
         return memory_chunks
-    
+
     async def reprocess_document(self, document_id: int) -> Document:
         """Reprocess a document (e.g., after fixing issues).
-        
+
         Args:
             document_id: ID of the document to reprocess
-            
+
         Returns:
             Updated Document
         """
         # Delete existing memory chunks for this document
         from sqlalchemy import delete
-        
+
         await self.db.execute(
             delete(MemoryChunk).where(MemoryChunk.document_id == document_id)
         )
-        
+
         # Reset processing status
         document = await self.upload_service.get_document(document_id)
         if document:
@@ -246,31 +293,31 @@ class DocumentProcessor:
             document.ocr_text_cleaned = None
             document.ocr_entities = None
             await self.db.flush()
-        
+
         # Process again
         return await self.process_document(document_id)
-    
+
     async def process_all_pending(self) -> dict:
         """Process all pending documents.
-        
+
         Returns:
             Dictionary with processing statistics
         """
         from sqlalchemy import select
-        
+
         # Get all pending documents
         result = await self.db.execute(
             select(Document).where(Document.processing_status == "pending")
         )
         documents = result.scalars().all()
-        
+
         stats = {
             "total": len(documents),
             "processed": 0,
             "failed": 0,
             "errors": [],
         }
-        
+
         for doc in documents:
             try:
                 await self.process_document(doc.id)
@@ -278,5 +325,5 @@ class DocumentProcessor:
             except Exception as e:
                 stats["failed"] += 1
                 stats["errors"].append(f"Document {doc.id}: {str(e)}")
-        
+
         return stats
