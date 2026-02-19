@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import importlib.util
 import sys
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
+from app.models import User
+from app.schemas.chat import ChatRequest
 from app.schemas.ingestion import LabResultIngest
 from app.schemas.memory import IndexTextRequest
-from app.schemas.chat import ChatRequest
-from app.models import User
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 API_DIR = PROJECT_ROOT / "app" / "api"
@@ -111,14 +110,16 @@ async def test_ingestion_lab_success(monkeypatch):
                 is_abnormal=False,
                 collected_at=None,
                 resulted_at=None,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
 
     monkeypatch.setattr(ingestion_api, "LabIngestionService", FakeLabService)
 
     payload = LabResultIngest(patient_id=1, test_name="CBC")
     db = FakeDB(results=[FakeResult(scalar=SimpleNamespace(id=1, user_id=1))])
-    result = await ingestion_api.ingest_lab_result(payload, db=db, current_user=_fake_user())
+    result = await ingestion_api.ingest_lab_result(
+        payload, db=db, current_user=_fake_user()
+    )
 
     assert result.test_name == "CBC"
 
@@ -156,7 +157,9 @@ async def test_memory_index_text(monkeypatch):
 
     request = IndexTextRequest(patient_id=1, content="hello")
     db = FakeDB(results=[FakeResult(scalar=SimpleNamespace(id=1, user_id=1))])
-    response = await memory_api.index_custom_text(request, db=db, current_user=_fake_user())
+    response = await memory_api.index_custom_text(
+        request, db=db, current_user=_fake_user()
+    )
 
     assert response.total_chunks == 2
 
@@ -184,7 +187,9 @@ async def test_memory_embedding_info(monkeypatch):
         dimension = 3
         device = "cpu"
 
-    monkeypatch.setattr(memory_api.EmbeddingService, "get_instance", lambda: FakeEmbedding())
+    monkeypatch.setattr(
+        memory_api.EmbeddingService, "get_instance", lambda: FakeEmbedding()
+    )
 
     info = await memory_api.get_embedding_info()
 
@@ -224,7 +229,9 @@ async def test_context_analyze_query(monkeypatch):
 
     monkeypatch.setattr(context_api, "ContextEngine", FakeEngine)
 
-    response = await context_api.analyze_query(query="Hello", db=FakeDB(), current_user=_fake_user())
+    response = await context_api.analyze_query(
+        query="Hello", db=FakeDB(), current_user=_fake_user()
+    )
 
     assert response.intent == "general"
 
@@ -249,6 +256,10 @@ async def test_chat_llm_info(monkeypatch):
                 "device": "cpu",
                 "max_new_tokens": 10,
                 "temperature": 0.1,
+                "do_sample": False,
+                "top_p": 0.8,
+                "top_k": 40,
+                "repetition_penalty": 1.1,
                 "vocab_size": 100,
                 "is_loaded": False,
             }
@@ -261,11 +272,28 @@ async def test_chat_llm_info(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_chat_guardrail_counters(monkeypatch):
+    class FakeRAG:
+        @classmethod
+        def get_global_guardrail_counters(cls):
+            return {"structured_direct": 2, "citation_refusal": 1}
+
+    monkeypatch.setattr(chat_api, "RAGService", FakeRAG)
+
+    response = await chat_api.get_guardrail_counters(current_user=_fake_user())
+
+    assert response.counters["structured_direct"] == 2
+    assert response.counters["citation_refusal"] == 1
+    assert response.total == 3
+
+
+@pytest.mark.anyio
 async def test_chat_volume_nifti(monkeypatch, tmp_path):
     import io
-    import numpy as np
+
     import nibabel as nib
-    from starlette.datastructures import Headers, UploadFile
+    import numpy as np
+    from starlette.datastructures import UploadFile
 
     async def fake_patient(*_args, **_kwargs):
         return SimpleNamespace(id=1, user_id=1)
@@ -308,8 +336,9 @@ async def test_chat_volume_nifti(monkeypatch, tmp_path):
 async def test_chat_wsi_patches(monkeypatch):
     import io
     from types import SimpleNamespace
+
     from PIL import Image
-    from starlette.datastructures import Headers, UploadFile
+    from starlette.datastructures import UploadFile
 
     async def fake_patient(*_args, **_kwargs):
         return SimpleNamespace(id=1, user_id=1)
@@ -354,6 +383,7 @@ async def test_chat_wsi_patches(monkeypatch):
 async def test_chat_cxr_compare(monkeypatch):
     import io
     from types import SimpleNamespace
+
     from PIL import Image
     from starlette.datastructures import Headers, UploadFile
 
@@ -378,8 +408,12 @@ async def test_chat_cxr_compare(monkeypatch):
     img_bytes.seek(0)
 
     headers = Headers({"content-type": "image/png"})
-    current = UploadFile(filename="current.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers)
-    prior = UploadFile(filename="prior.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers)
+    current = UploadFile(
+        filename="current.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers
+    )
+    prior = UploadFile(
+        filename="prior.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers
+    )
 
     response = await chat_api.compare_cxr(
         prompt="Compare",
@@ -397,6 +431,7 @@ async def test_chat_cxr_compare(monkeypatch):
 async def test_localize_findings(monkeypatch):
     import io
     from types import SimpleNamespace
+
     from PIL import Image
     from starlette.datastructures import Headers, UploadFile
 
@@ -420,7 +455,9 @@ async def test_localize_findings(monkeypatch):
     Image.new("RGB", (100, 200), color=(20, 20, 20)).save(img_bytes, format="PNG")
     img_bytes.seek(0)
     headers = Headers({"content-type": "image/png"})
-    upload = UploadFile(filename="cxr.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers)
+    upload = UploadFile(
+        filename="cxr.png", file=io.BytesIO(img_bytes.getvalue()), headers=headers
+    )
 
     response = await chat_api.localize_findings(
         prompt="Localize",
@@ -455,16 +492,18 @@ async def test_documents_list_and_text_error():
         title=None,
         description=None,
         document_date=None,
-        received_date=datetime.now(timezone.utc),
+        received_date=datetime.now(UTC),
         processing_status="pending",
         is_processed=False,
         processed_at=None,
         page_count=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     db = FakeDB(results=[FakeResult(scalars=[document])])
-    listed = await documents_api.list_documents(db=db, skip=0, limit=100, current_user=_fake_user())
+    listed = await documents_api.list_documents(
+        db=db, skip=0, limit=100, current_user=_fake_user()
+    )
 
     assert len(listed) == 1
 
