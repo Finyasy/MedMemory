@@ -6,9 +6,7 @@ Create Date: 2025-01-01 00:00:00.000000
 """
 
 from alembic import op
-
 from app.models import Base
-
 
 revision = "20250101_00"
 down_revision = None
