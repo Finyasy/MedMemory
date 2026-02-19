@@ -14,16 +14,15 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 from huggingface_hub import HfApi, HfFolder, snapshot_download
 from huggingface_hub.errors import HfHubHTTPError
-from transformers import AutoProcessor, AutoModelForImageTextToText, BitsAndBytesConfig
+from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
 
 
 def pick_device(requested: str) -> str:
@@ -71,7 +70,7 @@ def torch_version_at_least(required: str) -> bool:
     return parse(torch.__version__) >= parse(required)
 
 
-def parse_model_size_b(model_id: str) -> Optional[float]:
+def parse_model_size_b(model_id: str) -> float | None:
     lower = model_id.lower()
     parts = lower.replace("-", " ").replace("_", " ").split()
     for part in parts:
@@ -100,11 +99,11 @@ class Tee:
             stream.flush()
 
 
-def resolve_hf_token(provided_token: Optional[str]) -> Optional[str]:
+def resolve_hf_token(provided_token: str | None) -> str | None:
     return provided_token or HfFolder.get_token()
 
 
-def require_hf_auth(model_id: str, token: Optional[str]) -> str:
+def require_hf_auth(model_id: str, token: str | None) -> str:
     if not token:
         print(
             "\n❌ HF_TOKEN not found. This model is gated.\n"
@@ -134,8 +133,8 @@ def require_hf_auth(model_id: str, token: Optional[str]) -> str:
 def download_model(
     model_id: str,
     output_dir: Path,
-    hf_token: Optional[str],
-    revision: Optional[str] = None,
+    hf_token: str | None,
+    revision: str | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
@@ -164,7 +163,9 @@ def smoke_test_load(
     quant_cfg = None
     if quantize_4bit:
         if device != "cuda":
-            print("⚠️  4-bit quantization requested but CUDA is not available. Skipping 4-bit.")
+            print(
+                "⚠️  4-bit quantization requested but CUDA is not available. Skipping 4-bit."
+            )
         else:
             quant_cfg = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -203,13 +204,13 @@ def smoke_test_load(
     print("✅ Smoke test passed: model can load and generate.")
 
 
-def _load_hf_token_from_env() -> Optional[str]:
+def _load_hf_token_from_env() -> str | None:
     """Load HF_TOKEN from .env file or environment."""
     # First check environment
     token = os.getenv("HF_TOKEN")
     if token:
         return token
-    
+
     # Try to load from .env file
     env_file = Path(__file__).parent.parent / ".env"
     if env_file.exists():
@@ -222,27 +223,41 @@ def _load_hf_token_from_env() -> Optional[str]:
                         return token
         except Exception:
             pass
-    
+
     return None
 
 
 def main():
     # Load HF_TOKEN from .env or environment
     hf_token_default = _load_hf_token_from_env()
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-id", default="google/medgemma-1.5-4b-it")
-    parser.add_argument("--output-dir", type=Path, default=Path("models/medgemma-1.5-4b-it"))
-    parser.add_argument("--hf-token", default=hf_token_default, help="Hugging Face token (or set HF_TOKEN env var)")
-    parser.add_argument("--revision", default=None, help="Optional HF revision/commit hash for reproducibility")
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("models/medgemma-1.5-4b-it")
+    )
+    parser.add_argument(
+        "--hf-token",
+        default=hf_token_default,
+        help="Hugging Face token (or set HF_TOKEN env var)",
+    )
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Optional HF revision/commit hash for reproducibility",
+    )
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--skip-smoke-test", action="store_true")
     parser.add_argument("--quantize-4bit", action="store_true")
-    parser.add_argument("--device", choices=["auto", "cuda", "mps", "cpu"], default="auto")
+    parser.add_argument(
+        "--device", choices=["auto", "cuda", "mps", "cpu"], default="auto"
+    )
     args = parser.parse_args()
 
     if os.getenv("CI") and not args.revision:
-        print("❌ CI mode detected. Please set --revision explicitly for reproducible downloads.")
+        print(
+            "❌ CI mode detected. Please set --revision explicitly for reproducible downloads."
+        )
         sys.exit(1)
 
     hf_token = resolve_hf_token(args.hf_token)
@@ -281,7 +296,7 @@ def main():
         "model_id": args.model_id,
         "revision": args.revision,
         "resolved_revision": resolved_revision,
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "downloaded_at": datetime.now(UTC).isoformat(),
     }
     metadata_path = args.output_dir / "model_metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -313,7 +328,11 @@ def main():
         print("Skipping model load smoke test (CI / headless mode).")
 
     quant_active = args.quantize_4bit and device == "cuda"
-    quant_note = "active" if quant_active else ("skipped (CUDA required)" if args.quantize_4bit else "disabled")
+    quant_note = (
+        "active"
+        if quant_active
+        else ("skipped (CUDA required)" if args.quantize_4bit else "disabled")
+    )
     summary = (
         "\n==== Model Download Summary ====\n"
         f"Model ID: {args.model_id}\n"
