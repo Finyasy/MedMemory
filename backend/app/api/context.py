@@ -1,14 +1,11 @@
 """Context Engine API endpoints."""
 
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_authenticated_user, get_patient_for_user
 from app.database import get_db
-from app.models import Patient, User
+from app.models import User
 from app.schemas.context import (
     ContextRequest,
     ContextResponse,
@@ -51,7 +48,7 @@ async def get_context(
         system_prompt=request.system_prompt,
     )
     qa = engine_result.query_analysis
-    
+
     return ContextResponse(
         query_analysis=QueryAnalysisResponse(
             original_query=qa.original_query,
@@ -84,7 +81,9 @@ async def get_context(
         ranked_results=[
             RankedResultItem(
                 id=r.result.id,
-                content=r.result.content[:500] + "..." if len(r.result.content) > 500 else r.result.content,
+                content=r.result.content[:500] + "..."
+                if len(r.result.content) > 500
+                else r.result.content,
                 source_type=r.result.source_type,
                 source_id=r.result.source_id,
                 context_date=r.result.context_date,
@@ -100,7 +99,9 @@ async def get_context(
             sections=[
                 ContextSectionSchema(
                     title=s.title,
-                    content=s.content[:1000] + "..." if len(s.content) > 1000 else s.content,
+                    content=s.content[:1000] + "..."
+                    if len(s.content) > 1000
+                    else s.content,
                     source_type=s.source_type,
                     relevance=s.relevance,
                     date=s.date,
@@ -136,14 +137,14 @@ async def get_simple_context(
         db=db,
         current_user=current_user,
     )
-    
+
     engine = ContextEngine(db)
     engine_result = await engine.get_context(
         query=request.query,
         patient_id=request.patient_id,
         max_tokens=request.max_tokens,
     )
-    
+
     return SimpleContextResponse(
         query=request.query,
         patient_id=request.patient_id,
@@ -164,7 +165,7 @@ async def analyze_query(
     """Analyze a query without retrieval."""
     engine = ContextEngine(db)
     qa = await engine.analyze_query(query)
-    
+
     return QueryAnalysisResponse(
         original_query=qa.original_query,
         normalized_query=qa.normalized_query,
@@ -193,16 +194,18 @@ async def analyze_query(
 async def quick_search(
     request: QuickSearchRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Quick hybrid search without full context synthesis."""
     import time
+
     start = time.time()
-    result = await db.execute(
-        select(Patient).where(Patient.id == request.patient_id)
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
+
     engine = ContextEngine(db)
     results = await engine.search(
         query=request.query,
@@ -210,15 +213,17 @@ async def quick_search(
         limit=request.limit,
         source_types=request.source_types,
     )
-    
+
     search_time = (time.time() - start) * 1000
-    
+
     return QuickSearchResponse(
         query=request.query,
         results=[
             QuickSearchResult(
                 id=r["id"],
-                content=r["content"][:500] + "..." if len(r["content"]) > 500 else r["content"],
+                content=r["content"][:500] + "..."
+                if len(r["content"]) > 500
+                else r["content"],
                 source_type=r["source_type"],
                 source_id=r["source_id"],
                 score=r["score"],
@@ -236,23 +241,24 @@ async def generate_prompt(
     patient_id: int,
     question: str = Query(..., min_length=1, max_length=2000),
     max_tokens: int = Query(4000, ge=500, le=8000),
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """Generate an LLM-ready prompt for a patient question."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id)
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
     )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
+
     engine = ContextEngine(db, max_tokens=max_tokens)
     engine_result = await engine.get_context(
         query=question,
         patient_id=patient_id,
         system_prompt=system_prompt,
     )
-    
+
     return {
         "prompt": engine_result.prompt,
         "estimated_tokens": engine_result.synthesized_context.estimated_tokens,
