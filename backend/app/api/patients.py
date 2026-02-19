@@ -1,14 +1,11 @@
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.api.deps import get_authenticated_user, get_patient_for_user
-from app.database import get_db
 from app.config import settings
-from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
+from app.database import get_db
 from app.models import Patient, User
 from app.schemas.patient import (
     PatientCreate,
@@ -16,6 +13,7 @@ from app.schemas.patient import (
     PatientSummary,
     PatientUpdate,
 )
+from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 
@@ -24,7 +22,7 @@ router = APIRouter(prefix="/patients", tags=["Patients"])
 async def list_patients(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    search: Optional[str] = None,
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
@@ -48,19 +46,19 @@ async def list_patients(
         .offset(skip)
         .limit(limit)
     )
-    
+
     if search:
         search_filter = f"%{search.lower()}%"
         query = query.where(
-            (Patient.first_name.ilike(search_filter)) |
-            (Patient.last_name.ilike(search_filter)) |
-            (Patient.external_id.ilike(search_filter))
+            (Patient.first_name.ilike(search_filter))
+            | (Patient.last_name.ilike(search_filter))
+            | (Patient.external_id.ilike(search_filter))
         )
-    
+
     query = query.order_by(Patient.last_name, Patient.first_name)
     result = await db.execute(query)
     patients = result.scalars().all()
-    
+
     response = [
         PatientSummary(
             id=p.id,
@@ -71,7 +69,9 @@ async def list_patients(
         )
         for p in patients
     ]
-    await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
+    await set_cached(
+        cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds
+    )
     return response
 
 
@@ -90,15 +90,15 @@ async def create_patient(
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=400,
-                detail=f"Patient with external_id '{patient_data.external_id}' already exists"
+                detail=f"Patient with external_id '{patient_data.external_id}' already exists",
             )
-    
+
     patient = Patient(**patient_data.model_dump(), user_id=current_user.id)
     db.add(patient)
     await db.flush()
     await db.refresh(patient)
     await clear_cache(CacheKeys.patients_prefix(current_user.id))
-    
+
     return PatientResponse.model_validate(patient, from_attributes=True)
 
 
@@ -122,11 +122,11 @@ async def update_patient(
     update_data = patient_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(patient, field, value)
-    
+
     await db.flush()
     await db.refresh(patient)
     await clear_cache(CacheKeys.patients_prefix(current_user.id))
-    
+
     return PatientResponse.model_validate(patient, from_attributes=True)
 
 
