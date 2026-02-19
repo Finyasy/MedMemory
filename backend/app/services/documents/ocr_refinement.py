@@ -1,9 +1,9 @@
 """OCR refinement using the LLM to clean text and extract entities."""
 
-from dataclasses import dataclass
 import json
 import logging
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from app.config import settings
 from app.services.llm import LLMService
@@ -33,7 +33,7 @@ class OcrRefinementService:
         "Return JSON only.\n\nOCR TEXT:\n{raw_text}"
     )
 
-    def __init__(self, llm_service: Optional[LLMService] = None) -> None:
+    def __init__(self, llm_service: LLMService | None = None) -> None:
         self.llm_service = llm_service or LLMService.get_instance()
         self.logger = logging.getLogger("medmemory")
 
@@ -61,7 +61,9 @@ class OcrRefinementService:
             )
 
         cleaned_text = parsed.get("cleaned_text") or text
-        entities = parsed.get("entities") if isinstance(parsed.get("entities"), dict) else {}
+        entities = (
+            parsed.get("entities") if isinstance(parsed.get("entities"), dict) else {}
+        )
 
         return OcrRefinementResult(
             cleaned_text=cleaned_text,
@@ -69,7 +71,7 @@ class OcrRefinementService:
             raw_response=response_text,
         )
 
-    def _parse_json(self, payload: str) -> Optional[dict[str, Any]]:
+    def _parse_json(self, payload: str) -> dict[str, Any] | None:
         """Parse JSON output from the model, with a fallback scan."""
         if not payload:
             return None
