@@ -1,11 +1,9 @@
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_authenticated_user, get_patient_for_user
-from app.database import get_db
 from app.config import settings
+from app.database import get_db
 from app.models import User
 from app.schemas.records import RecordCreate, RecordResponse
 from app.services.records import RecordRepository, SQLRecordRepository
@@ -22,8 +20,8 @@ def get_record_repo(
 
 @router.get("/", response_model=list[RecordResponse])
 async def list_records(
-    patient_id: Optional[int] = Query(None, description="Filter by patient ID"),
-    record_type: Optional[str] = Query(None, description="Filter by record type"),
+    patient_id: int | None = Query(None, description="Filter by patient ID"),
+    record_type: str | None = Query(None, description="Filter by record type"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     repo: RecordRepository = Depends(get_record_repo),
@@ -32,7 +30,9 @@ async def list_records(
 ):
     """List all medical records with optional filtering."""
     if patient_id is not None:
-        await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+        await get_patient_for_user(
+            patient_id=patient_id, db=db, current_user=current_user
+        )
     cache_key = CacheKeys.records(current_user.id, patient_id, record_type, skip, limit)
     cached = await get_cached(cache_key)
     if cached is not None:
@@ -44,9 +44,11 @@ async def list_records(
         skip=skip,
         limit=limit,
     )
-    
+
     response = [RecordResponse.model_validate(r) for r in records]
-    await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
+    await set_cached(
+        cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds
+    )
     return response
 
 
@@ -65,7 +67,7 @@ async def create_record(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     await clear_cache(f"records:{current_user.id}:")
-    
+
     return RecordResponse.model_validate(new_record)
 
 
@@ -78,11 +80,13 @@ async def get_record(
 ):
     """Get a specific medical record by ID."""
     record = await repo.get_record(record_id)
-    
+
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
-    await get_patient_for_user(patient_id=record.patient_id, db=db, current_user=current_user)
-    
+    await get_patient_for_user(
+        patient_id=record.patient_id, db=db, current_user=current_user
+    )
+
     return RecordResponse.model_validate(record)
 
 
@@ -97,7 +101,9 @@ async def delete_record(
     record = await repo.get_record(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
-    await get_patient_for_user(patient_id=record.patient_id, db=db, current_user=current_user)
+    await get_patient_for_user(
+        patient_id=record.patient_id, db=db, current_user=current_user
+    )
     deleted = await repo.delete_record(record_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Record not found")
