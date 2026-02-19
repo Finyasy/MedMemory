@@ -17,3 +17,10 @@ def test_root_endpoint(client):
         "docs": "/docs",
         "health": "/health",
     }
+
+
+def test_metrics_endpoint(client):
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "medmemory_guardrail_events_total" in response.text
