@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { login } from './fixtures';
 
+// Run visual tests serially to avoid rate limiting on login
+test.describe.configure({ mode: 'serial' });
+
 test('landing login modal matches baseline', async ({ page }) => {
   await page.goto('/');
   await page.addStyleTag({
