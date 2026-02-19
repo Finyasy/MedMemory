@@ -140,8 +140,14 @@ export interface HighlightItem {
   direction?: string | null;
   trend_delta?: number | null;
   reference_range?: string | null;
+  risk_priority_score?: number;
+  risk_priority_reason?: string | null;
   source_type: string;
   source_id?: number | null;
+  provider_name?: string | null;
+  confidence_score?: number | null;
+  confidence_label?: 'high' | 'medium' | 'low' | string | null;
+  freshness_days?: number | null;
 }
 
 export interface DashboardHighlightsResponse {
@@ -153,8 +159,21 @@ export interface DashboardHighlightsResponse {
 export interface MetricTrendPoint {
   value?: number | null;
   value_text?: string | null;
+  raw_value?: number | null;
+  raw_value_text?: string | null;
+  raw_unit?: string | null;
+  normalized_value?: number | null;
+  normalized_value_text?: string | null;
+  normalized_unit?: string | null;
   observed_at?: string | null;
+  source_type?: string | null;
   source_id?: number | null;
+  provider_name?: string | null;
+  confidence_score?: number | null;
+  confidence_label?: 'high' | 'medium' | 'low' | string | null;
+  freshness_days?: number | null;
+  excluded_from_insights?: boolean;
+  exclusion_reason?: string | null;
 }
 
 export interface MetricDetail {
@@ -170,6 +189,16 @@ export interface MetricDetail {
   range_max?: number | null;
   in_range?: boolean | null;
   about: string;
+  latest_source_type?: string | null;
+  latest_source_id?: number | null;
+  normalized_unit?: string | null;
+  latest_normalized_value?: number | null;
+  latest_normalized_value_text?: string | null;
+  normalization_applied?: boolean;
+  latest_confidence_score?: number | null;
+  latest_confidence_label?: 'high' | 'medium' | 'low' | string | null;
+  latest_freshness_days?: number | null;
+  excluded_points_count?: number;
   trend: MetricTrendPoint[];
 }
 
@@ -203,14 +232,34 @@ export interface MetricAlert {
   metric_name: string;
   numeric_value?: number | null;
   value_text?: string | null;
+  previous_numeric_value?: number | null;
+  previous_value_text?: string | null;
   unit?: string | null;
+  trend_delta?: number | null;
+  alert_kind: 'threshold' | 'abnormal' | 'trend_change';
   severity: 'info' | 'warning' | 'critical';
   reason: string;
   source_type: string;
   source_id?: number | null;
   observed_at?: string | null;
+  previous_observed_at?: string | null;
   acknowledged: boolean;
   acknowledged_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectionSyncEvent {
+  id: number;
+  patient_id: number;
+  connection_id?: number | null;
+  provider_slug: string;
+  event_type: string;
+  status_before?: string | null;
+  status_after?: string | null;
+  details?: string | null;
+  last_error?: string | null;
+  triggered_by_user_id?: number | null;
   created_at: string;
   updated_at: string;
 }
