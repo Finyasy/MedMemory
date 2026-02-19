@@ -7,49 +7,48 @@ Implements multiple retrieval strategies:
 - Temporal-aware retrieval for time-based queries
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
 import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import (
-    Document,
-    Encounter,
     LabResult,
     Medication,
-    MemoryChunk,
 )
-from app.services.context.analyzer import DataSource, QueryAnalysis
+from app.services.context.analyzer import DataSource, QueryAnalysis, QueryIntent
+from app.services.context.cross_encoder_reranker import CrossEncoderReranker
 from app.services.embeddings import EmbeddingService
 
 
 @dataclass
 class RetrievalResult:
     """A single retrieved result."""
-    
+
     id: int
     content: str
     source_type: str
-    source_id: Optional[int]
+    source_id: int | None
     patient_id: int
-    
+
     # Scores
     semantic_score: float = 0.0
     keyword_score: float = 0.0
     recency_score: float = 0.0
+    rerank_score: float = 0.0
     combined_score: float = 0.0
-    
+
     # Metadata
-    context_date: Optional[datetime] = None
+    context_date: datetime | None = None
     chunk_index: int = 0
-    page_number: Optional[int] = None
-    
+    page_number: int | None = None
+
     def __hash__(self):
         return hash((self.id, self.source_type))
-    
+
     def __eq__(self, other):
         if not isinstance(other, RetrievalResult):
             return False
@@ -59,7 +58,7 @@ class RetrievalResult:
 @dataclass
 class RetrievalResponse:
     """Response from hybrid retrieval."""
-    
+
     results: list[RetrievalResult]
     total_semantic: int = 0
     total_keyword: int = 0
@@ -69,24 +68,31 @@ class RetrievalResponse:
 
 class HybridRetriever:
     """Combines multiple retrieval strategies for optimal results.
-    
+
     Retrieval strategies:
     1. Semantic search: Find conceptually similar content
     2. Keyword search: Find exact term matches
     3. Filter search: Query structured data directly
     4. Temporal boost: Prioritize recent content when relevant
+    5. Cross-encoder rerank: Re-score top candidates for precision
     """
-    
+
+    STRICT_FACTUAL_INTENTS = {
+        QueryIntent.LIST,
+        QueryIntent.VALUE,
+        QueryIntent.STATUS,
+    }
+
     def __init__(
         self,
         db: AsyncSession,
-        embedding_service: Optional[EmbeddingService] = None,
+        embedding_service: EmbeddingService | None = None,
         semantic_weight: float = 0.6,
         keyword_weight: float = 0.3,
         recency_weight: float = 0.1,
     ):
         """Initialize the hybrid retriever.
-        
+
         Args:
             db: Database session
             embedding_service: Service for generating query embeddings
@@ -100,7 +106,10 @@ class HybridRetriever:
         self.keyword_weight = keyword_weight
         self.recency_weight = recency_weight
         self.logger = logging.getLogger("medmemory")
-    
+        self.cross_encoder_reranker = (
+            CrossEncoderReranker.get_instance() if settings.llm_rerank_enabled else None
+        )
+
     async def retrieve(
         self,
         query_analysis: QueryAnalysis,
@@ -109,37 +118,54 @@ class HybridRetriever:
         min_score: float = 0.3,
     ) -> RetrievalResponse:
         """Retrieve relevant content using hybrid search.
-        
+
         Args:
             query_analysis: Analyzed query with intent and entities
             patient_id: Patient to search
             limit: Maximum results
             min_score: Minimum combined score threshold
-            
+
         Returns:
             RetrievalResponse with ranked results
         """
         import time
+
         start_time = time.time()
-        
+
         results: dict[tuple[int, str], RetrievalResult] = {}
         fallback_used = False
-        
+        strict_factual_intent = query_analysis.intent in self.STRICT_FACTUAL_INTENTS
+        retrieval_limit = max(
+            limit,
+            settings.llm_rerank_candidates if settings.llm_rerank_enabled else limit,
+        )
+
         # Semantic search
         if query_analysis.use_semantic_search:
             try:
+                # Use original query to preserve medical terminology and context
+                # Normalized query might lose important medical terms
+                search_query = query_analysis.original_query
                 semantic_results = await self._semantic_search(
-                    query=query_analysis.normalized_query,
+                    query=search_query,
                     patient_id=patient_id,
                     source_types=[s.value for s in query_analysis.data_sources],
                     date_from=query_analysis.temporal.date_from,
                     date_to=query_analysis.temporal.date_to,
-                    limit=limit * 2,  # Get more for fusion
+                    limit=retrieval_limit,
+                )
+                self.logger.debug(
+                    "Semantic search returned %d results (max similarity: %.3f) for query: %s",
+                    len(semantic_results),
+                    max((r.semantic_score for r in semantic_results), default=0.0),
+                    search_query[:100],
                 )
             except Exception:
-                self.logger.exception("Semantic search failed; continuing with keyword-only search.")
+                self.logger.exception(
+                    "Semantic search failed; continuing with keyword-only search."
+                )
                 semantic_results = []
-            
+
             for result in semantic_results:
                 key = (result.id, result.source_type)
                 if key not in results:
@@ -149,7 +175,7 @@ class HybridRetriever:
                         results[key].semantic_score,
                         result.semantic_score,
                     )
-        
+
         # Keyword search
         if query_analysis.use_keyword_search and query_analysis.keywords:
             try:
@@ -159,12 +185,12 @@ class HybridRetriever:
                     source_types=[s.value for s in query_analysis.data_sources],
                     date_from=query_analysis.temporal.date_from,
                     date_to=query_analysis.temporal.date_to,
-                    limit=limit * 2,
+                    limit=retrieval_limit,
                 )
             except Exception:
                 self.logger.exception("Keyword search failed; returning empty results.")
                 keyword_results = []
-            
+
             for result in keyword_results:
                 key = (result.id, result.source_type)
                 if key not in results:
@@ -174,15 +200,31 @@ class HybridRetriever:
                         results[key].keyword_score,
                         result.keyword_score,
                     )
-        
-        # Direct structured queries for specific intents
-        if query_analysis.intent.value in ["list", "value", "status"]:
+
+        # Direct structured queries for fact/list queries.
+        # Keep this path broad so lab/medication data remains available even when
+        # intent classification falls back to GENERAL.
+        should_use_structured = query_analysis.intent in {
+            QueryIntent.LIST,
+            QueryIntent.VALUE,
+            QueryIntent.STATUS,
+        }
+        if not should_use_structured:
+            source_hints = set(query_analysis.data_sources)
+            should_use_structured = (
+                bool(query_analysis.test_names)
+                or bool(query_analysis.medication_names)
+                or DataSource.LAB_RESULT in source_hints
+                or DataSource.MEDICATION in source_hints
+            )
+
+        if should_use_structured:
             structured_results = await self._structured_search(
                 query_analysis=query_analysis,
                 patient_id=patient_id,
-                limit=limit,
+                limit=retrieval_limit,
             )
-            
+
             for result in structured_results:
                 key = (result.id, result.source_type)
                 if key not in results:
@@ -191,51 +233,88 @@ class HybridRetriever:
                     # Boost existing results
                     results[key].keyword_score += 0.2
 
-        # Fallback: use recent chunks when retrieval returns nothing
-        if not results:
+        # Fallback: use recent chunks when retrieval returns nothing.
+        # For strict factual intents, avoid weak fallback unless explicitly enabled.
+        should_allow_weak_fallback = settings.llm_allow_weak_fallback or (
+            query_analysis.intent
+            not in {QueryIntent.LIST, QueryIntent.VALUE, QueryIntent.STATUS}
+        )
+        if not results and should_allow_weak_fallback:
             fallback_results = await self._fallback_recent_chunks(
                 patient_id=patient_id,
                 source_types=[s.value for s in query_analysis.data_sources],
                 date_from=query_analysis.temporal.date_from,
                 date_to=query_analysis.temporal.date_to,
-                limit=limit,
+                limit=retrieval_limit,
             )
             if fallback_results:
                 fallback_used = True
                 for result in fallback_results:
                     results[(result.id, result.source_type)] = result
-        
+
         # Calculate combined scores
         all_results = list(results.values())
-        
+
         for result in all_results:
             # Calculate recency score
             if query_analysis.boost_recent and result.context_date:
-                days_ago = (datetime.now(timezone.utc) - result.context_date).days
+                days_ago = (datetime.now(UTC) - result.context_date).days
                 result.recency_score = max(0, 1 - (days_ago / 365))
-            
+
             # Calculate combined score
             result.combined_score = (
-                self.semantic_weight * result.semantic_score +
-                self.keyword_weight * result.keyword_score +
-                self.recency_weight * result.recency_score
+                self.semantic_weight * result.semantic_score
+                + self.keyword_weight * result.keyword_score
+                + self.recency_weight * result.recency_score
             )
-        
+
         # Filter and sort
         has_semantic_hits = any(r.semantic_score > 0 for r in all_results)
+        has_structured_hits = any(
+            r.source_type in {"lab_result", "medication"} for r in all_results
+        )
+
         if fallback_used:
             effective_min_score = 0.0
         else:
-            effective_min_score = min_score if has_semantic_hits else min(min_score, 0.05)
-        filtered_results = [r for r in all_results if r.combined_score >= effective_min_score]
+            # Lower threshold if we have semantic hits but they're below min_score
+            # This helps with vision-extracted documents where semantic similarity might be lower
+            if has_semantic_hits:
+                # If we have semantic results but they're filtered out, lower threshold slightly
+                max_semantic = max((r.semantic_score for r in all_results), default=0.0)
+                if max_semantic > 0 and max_semantic < min_score:
+                    # Lower threshold to 80% of max semantic score, but not below 0.15
+                    effective_min_score = max(0.15, max_semantic * 0.8)
+                else:
+                    effective_min_score = min_score
+            else:
+                effective_min_score = min(min_score, 0.05)
+
+        # Structured hits are direct DB matches and should not be dropped by
+        # vector-weighted thresholds.
+        if has_structured_hits:
+            effective_min_score = min(effective_min_score, 0.2)
+        filtered_results = [
+            r for r in all_results if r.combined_score >= effective_min_score
+        ]
         sorted_results = sorted(
             filtered_results,
             key=lambda r: r.combined_score,
             reverse=True,
-        )[:limit]
-        
+        )
+        sorted_results = self._apply_cross_encoder_rerank(
+            query=query_analysis.original_query,
+            results=sorted_results,
+            strict_factual_intent=strict_factual_intent,
+        )
+
+        final_limit = limit
+        if settings.llm_rerank_enabled and strict_factual_intent:
+            final_limit = min(limit, settings.llm_rerank_top_k)
+        sorted_results = sorted_results[:final_limit]
+
         retrieval_time = (time.time() - start_time) * 1000
-        
+
         return RetrievalResponse(
             results=sorted_results,
             total_semantic=len([r for r in all_results if r.semantic_score > 0]),
@@ -243,20 +322,79 @@ class HybridRetriever:
             total_combined=len(sorted_results),
             retrieval_time_ms=retrieval_time,
         )
-    
+
+    def _apply_cross_encoder_rerank(
+        self,
+        *,
+        query: str,
+        results: list[RetrievalResult],
+        strict_factual_intent: bool,
+    ) -> list[RetrievalResult]:
+        """Apply second-stage cross-encoder reranking when enabled."""
+        if (
+            not settings.llm_rerank_enabled
+            or self.cross_encoder_reranker is None
+            or not results
+        ):
+            return results
+
+        candidate_count = min(len(results), settings.llm_rerank_candidates)
+        candidates = results[:candidate_count]
+        reranked_pairs = self.cross_encoder_reranker.rerank(
+            query=query,
+            results=candidates,
+        )
+        if not reranked_pairs:
+            return results
+
+        if strict_factual_intent:
+            high_confidence: list[RetrievalResult] = []
+            for result, score in reranked_pairs:
+                result.rerank_score = score
+                result.combined_score = max(result.combined_score, score)
+                if score >= settings.llm_rerank_min_score:
+                    high_confidence.append(result)
+
+            if not high_confidence:
+                high_confidence = [
+                    result
+                    for result, _score in reranked_pairs[: settings.llm_rerank_top_k]
+                ]
+            return high_confidence
+
+        ordered = []
+        seen_keys: set[tuple[int, str]] = set()
+        for result, score in reranked_pairs:
+            result.rerank_score = score
+            result.combined_score = max(result.combined_score, score)
+            key = (result.id, result.source_type)
+            if key in seen_keys:
+                continue
+            ordered.append(result)
+            seen_keys.add(key)
+
+        for result in results:
+            key = (result.id, result.source_type)
+            if key in seen_keys:
+                continue
+            ordered.append(result)
+            seen_keys.add(key)
+
+        return ordered
+
     async def _semantic_search(
         self,
         query: str,
         patient_id: int,
         source_types: list[str],
-        date_from: Optional[datetime],
-        date_to: Optional[datetime],
+        date_from: datetime | None,
+        date_to: datetime | None,
         limit: int,
     ) -> list[RetrievalResult]:
         """Perform semantic (vector) search."""
         # Generate query embedding
         query_embedding = await self.embedding_service.embed_query_async(query)
-        
+
         # Build SQL query
         # Use CAST() instead of :: syntax for asyncpg compatibility
         sql = """
@@ -274,30 +412,31 @@ class HybridRetriever:
             WHERE is_indexed = true
             AND patient_id = :patient_id
         """
-        
+
         params = {
             "query_embedding": str(query_embedding),
             "patient_id": patient_id,
         }
-        
+
         if source_types and "all" not in source_types:
             sql += " AND source_type = ANY(:source_types)"
             params["source_types"] = source_types
-        
+
         if date_from:
             sql += " AND (context_date IS NULL OR context_date >= :date_from)"
             params["date_from"] = date_from
-        
+
         if date_to:
             sql += " AND (context_date IS NULL OR context_date <= :date_to)"
             params["date_to"] = date_to
-        
+
+        # Don't filter by min_score in SQL - we'll filter after combining with keyword scores
         sql += " ORDER BY similarity DESC LIMIT :limit"
         params["limit"] = limit
-        
+
         result = await self.db.execute(text(sql), params)
         rows = result.fetchall()
-        
+
         return [
             RetrievalResult(
                 id=row.id,
@@ -312,21 +451,21 @@ class HybridRetriever:
             )
             for row in rows
         ]
-    
+
     async def _keyword_search(
         self,
         keywords: list[str],
         patient_id: int,
         source_types: list[str],
-        date_from: Optional[datetime],
-        date_to: Optional[datetime],
+        date_from: datetime | None,
+        date_to: datetime | None,
         limit: int,
     ) -> list[RetrievalResult]:
         """Perform keyword-based search using PostgreSQL full-text search."""
         # Build keyword pattern
         keyword_pattern = "%|%".join(keywords)
         keyword_pattern = f"%{keyword_pattern}%"
-        
+
         # Build SQL query
         sql = """
             SELECT 
@@ -347,41 +486,44 @@ class HybridRetriever:
             WHERE patient_id = :patient_id
             AND (
         """
-        
+
         # Add keyword conditions
         keyword_conditions = " OR ".join(
-            [f"LOWER(content) LIKE '%' || LOWER(:kw{i}) || '%'" for i in range(len(keywords))]
+            [
+                f"LOWER(content) LIKE '%' || LOWER(:kw{i}) || '%'"
+                for i in range(len(keywords))
+            ]
         )
         sql += keyword_conditions + ")"
-        
+
         params = {
             "patient_id": patient_id,
             "keywords": keywords,
             "keyword_count": len(keywords),
         }
-        
+
         # Add keyword params
         for i, kw in enumerate(keywords):
             params[f"kw{i}"] = kw
-        
+
         if source_types and "all" not in source_types:
             sql += " AND source_type = ANY(:source_types)"
             params["source_types"] = source_types
-        
+
         if date_from:
             sql += " AND (context_date IS NULL OR context_date >= :date_from)"
             params["date_from"] = date_from
-        
+
         if date_to:
             sql += " AND (context_date IS NULL OR context_date <= :date_to)"
             params["date_to"] = date_to
-        
+
         sql += " ORDER BY match_score DESC LIMIT :limit"
         params["limit"] = limit
-        
+
         result = await self.db.execute(text(sql), params)
         rows = result.fetchall()
-        
+
         return [
             RetrievalResult(
                 id=row.id,
@@ -401,8 +543,8 @@ class HybridRetriever:
         self,
         patient_id: int,
         source_types: list[str],
-        date_from: Optional[datetime],
-        date_to: Optional[datetime],
+        date_from: datetime | None,
+        date_to: datetime | None,
         limit: int,
     ) -> list[RetrievalResult]:
         """Fetch recent chunks when semantic/keyword retrieval returns nothing."""
@@ -453,7 +595,7 @@ class HybridRetriever:
             )
             for row in rows
         ]
-    
+
     async def _structured_search(
         self,
         query_analysis: QueryAnalysis,
@@ -462,55 +604,63 @@ class HybridRetriever:
     ) -> list[RetrievalResult]:
         """Query structured data directly for specific queries."""
         results = []
-        
+
         # Search for specific test names in lab results
         if query_analysis.test_names:
             for test_name in query_analysis.test_names:
-                query = select(LabResult).where(
-                    and_(
-                        LabResult.patient_id == patient_id,
-                        LabResult.test_name.ilike(f"%{test_name}%"),
+                query = (
+                    select(LabResult)
+                    .where(
+                        and_(
+                            LabResult.patient_id == patient_id,
+                            LabResult.test_name.ilike(f"%{test_name}%"),
+                        )
                     )
-                ).order_by(LabResult.collected_at.desc()).limit(limit)
-                
+                    .order_by(LabResult.collected_at.desc())
+                    .limit(limit)
+                )
+
                 result = await self.db.execute(query)
                 labs = result.scalars().all()
-                
+
                 for lab in labs:
                     content = f"Lab: {lab.test_name} = {lab.value}"
                     if lab.unit:
                         content += f" {lab.unit}"
                     if lab.is_abnormal:
                         content += " (ABNORMAL)"
-                    
-                    results.append(RetrievalResult(
-                        id=lab.id,
-                        content=content,
-                        source_type="lab_result",
-                        source_id=lab.id,
-                        patient_id=patient_id,
-                        keyword_score=0.9,  # High score for direct match
-                        context_date=lab.collected_at or lab.resulted_at,
-                    ))
-        
+
+                    results.append(
+                        RetrievalResult(
+                            id=lab.id,
+                            content=content,
+                            source_type="lab_result",
+                            source_id=lab.id,
+                            patient_id=patient_id,
+                            keyword_score=1.0,  # High score for direct DB match
+                            context_date=lab.collected_at or lab.resulted_at,
+                        )
+                    )
+
         # Search for medication names
-        if query_analysis.medication_names or DataSource.MEDICATION in query_analysis.data_sources:
-            query = select(Medication).where(
-                Medication.patient_id == patient_id
-            )
-            
+        if (
+            query_analysis.medication_names
+            or DataSource.MEDICATION in query_analysis.data_sources
+        ):
+            query = select(Medication).where(Medication.patient_id == patient_id)
+
             if query_analysis.medication_names:
                 conditions = [
                     Medication.name.ilike(f"%{name}%")
                     for name in query_analysis.medication_names
                 ]
                 query = query.where(or_(*conditions))
-            
+
             query = query.order_by(Medication.prescribed_at.desc()).limit(limit)
-            
+
             result = await self.db.execute(query)
             meds = result.scalars().all()
-            
+
             for med in meds:
                 content = f"Medication: {med.name}"
                 if med.dosage:
@@ -518,15 +668,17 @@ class HybridRetriever:
                 if med.frequency:
                     content += f" ({med.frequency})"
                 content += f" - {'Active' if med.is_active else 'Discontinued'}"
-                
-                results.append(RetrievalResult(
-                    id=med.id,
-                    content=content,
-                    source_type="medication",
-                    source_id=med.id,
-                    patient_id=patient_id,
-                    keyword_score=0.8,
-                    context_date=med.prescribed_at,
-                ))
-        
+
+                results.append(
+                    RetrievalResult(
+                        id=med.id,
+                        content=content,
+                        source_type="medication",
+                        source_id=med.id,
+                        patient_id=patient_id,
+                        keyword_score=1.0,  # High score for direct DB match
+                        context_date=med.prescribed_at,
+                    )
+                )
+
         return results[:limit]
