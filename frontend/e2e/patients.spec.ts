@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test } from '@playwright/test';
 import { login, selectFirstPatient } from './fixtures';
 
 test('patients list renders after login', async ({ page }) => {
