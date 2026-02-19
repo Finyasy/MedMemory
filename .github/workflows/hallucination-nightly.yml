@@ -1,0 +1,139 @@
+name: Hallucination Nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  hallucination-gate-nightly:
+    runs-on: ubuntu-latest
+    env:
+      HALLUCINATION_EVAL_FILE: data/hallucination_rag_eval/eval.jsonl
+      HALLUCINATION_EVAL_OUTPUT_DIR: artifacts/hallucination_eval/nightly
+      HALLUCINATION_CANDIDATE_METRICS: artifacts/hallucination_eval/nightly/metrics_summary.json
+      HALLUCINATION_CANDIDATE_SCOPE: baseline
+      HALLUCINATION_BASELINE_METRICS: data/hallucination_eval/baseline_metrics_summary.json
+      HALLUCINATION_BASELINE_SCOPE: baseline
+      HALLUCINATION_GATE_REPORT: artifacts/hallucination_eval/nightly/gate_report.json
+      HALLUCINATION_MAX_HALLUCINATION_RATE: "0.01"
+      HALLUCINATION_MIN_FACT_PRECISION: "0.99"
+      HALLUCINATION_MIN_FACT_RECALL: "0.99"
+      HALLUCINATION_MIN_TOKEN_F1: "0.99"
+      HALLUCINATION_MAX_HALLUCINATION_INCREASE: "0.01"
+      HALLUCINATION_MAX_FACT_PRECISION_DROP: "0.01"
+      HALLUCINATION_MAX_FACT_RECALL_DROP: "0.01"
+      HALLUCINATION_MAX_TOKEN_F1_DROP: "0.01"
+      HALLUCINATION_MIN_CANDIDATE_EXAMPLES: "22"
+      HALLUCINATION_MIN_BASELINE_EXAMPLES: "22"
+      HALLUCINATION_MIN_TASK_POLICY_PASS_RATE: "numeric_grounding=1.0,numeric_citation=1.0,question_mode=1.0,context_gate=1.0,trend_direct=1.0"
+      HALLUCINATION_MIN_TASK_EXAMPLES: "numeric_grounding=4,numeric_citation=4,question_mode=4,context_gate=5,trend_direct=5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+      - name: Build nightly RAG hallucination metrics
+        working-directory: backend
+        run: |
+          set -euo pipefail
+
+          uv run python scripts/evaluate_rag_hallucination.py \
+            --eval-file "${HALLUCINATION_EVAL_FILE}" \
+            --output-dir "${HALLUCINATION_EVAL_OUTPUT_DIR}" \
+            --scope "${HALLUCINATION_CANDIDATE_SCOPE}" \
+            --min-policy-pass-rate 1.0
+      - name: Run nightly hallucination regression gate
+        working-directory: backend
+        run: |
+          set -euo pipefail
+
+          GATE_CMD=(
+            uv run python scripts/hallucination_regression_gate.py
+            --candidate-metrics "${HALLUCINATION_CANDIDATE_METRICS}"
+            --candidate-scope "${HALLUCINATION_CANDIDATE_SCOPE}"
+            --baseline-metrics "${HALLUCINATION_BASELINE_METRICS}"
+            --baseline-scope "${HALLUCINATION_BASELINE_SCOPE}"
+            --max-hallucination-rate "${HALLUCINATION_MAX_HALLUCINATION_RATE}"
+            --min-fact-precision "${HALLUCINATION_MIN_FACT_PRECISION}"
+            --min-fact-recall "${HALLUCINATION_MIN_FACT_RECALL}"
+            --min-token-f1 "${HALLUCINATION_MIN_TOKEN_F1}"
+            --max-hallucination-increase "${HALLUCINATION_MAX_HALLUCINATION_INCREASE}"
+            --max-fact-precision-drop "${HALLUCINATION_MAX_FACT_PRECISION_DROP}"
+            --max-fact-recall-drop "${HALLUCINATION_MAX_FACT_RECALL_DROP}"
+            --max-token-f1-drop "${HALLUCINATION_MAX_TOKEN_F1_DROP}"
+            --min-candidate-examples "${HALLUCINATION_MIN_CANDIDATE_EXAMPLES}"
+            --min-baseline-examples "${HALLUCINATION_MIN_BASELINE_EXAMPLES}"
+            --output-json "${HALLUCINATION_GATE_REPORT}"
+          )
+
+          TASK_POLICY_RULES="${HALLUCINATION_MIN_TASK_POLICY_PASS_RATE:-}"
+          if [ -n "${TASK_POLICY_RULES}" ]; then
+            IFS=',' read -r -a TASK_POLICY_ARRAY <<< "${TASK_POLICY_RULES}"
+            for rule in "${TASK_POLICY_ARRAY[@]}"; do
+              if [ -n "${rule}" ]; then
+                GATE_CMD+=(--min-task-policy-pass-rate "${rule}")
+              fi
+            done
+          fi
+
+          TASK_EXAMPLE_RULES="${HALLUCINATION_MIN_TASK_EXAMPLES:-}"
+          if [ -n "${TASK_EXAMPLE_RULES}" ]; then
+            IFS=',' read -r -a TASK_EXAMPLE_ARRAY <<< "${TASK_EXAMPLE_RULES}"
+            for rule in "${TASK_EXAMPLE_ARRAY[@]}"; do
+              if [ -n "${rule}" ]; then
+                GATE_CMD+=(--min-task-examples "${rule}")
+              fi
+            done
+          fi
+
+          "${GATE_CMD[@]}"
+      - name: Verify nightly hallucination artifacts
+        working-directory: backend
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "artifacts/hallucination_eval/nightly/metrics_summary.json"
+            "artifacts/hallucination_eval/nightly/report.md"
+            "artifacts/hallucination_eval/nightly/predictions.jsonl"
+            "artifacts/hallucination_eval/nightly/gate_report.json"
+          )
+
+          for path in "${required_files[@]}"; do
+            if [ ! -f "${path}" ]; then
+              echo "Missing required artifact: ${path}"
+              exit 1
+            fi
+          done
+      - name: Notify nightly failure
+        if: failure() && secrets.HALLUCINATION_ALERT_WEBHOOK != ''
+        env:
+          HALLUCINATION_ALERT_WEBHOOK: ${{ secrets.HALLUCINATION_ALERT_WEBHOOK }}
+        run: |
+          set -euo pipefail
+
+          payload=$(
+            cat <<'JSON'
+          {
+            "text": "Hallucination Nightly failed for MedMemory. Review run artifacts and gate report."
+          }
+          JSON
+          )
+          curl -sS -X POST "${HALLUCINATION_ALERT_WEBHOOK}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}"
+      - name: Upload nightly hallucination artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hallucination-nightly-${{ github.run_id }}
+          path: |
+            backend/artifacts/hallucination_eval/nightly/report.md
+            backend/artifacts/hallucination_eval/nightly/predictions.jsonl
+            backend/artifacts/hallucination_eval/nightly/metrics_summary.json
+            backend/artifacts/hallucination_eval/nightly/gate_report.json
+          if-no-files-found: ignore
