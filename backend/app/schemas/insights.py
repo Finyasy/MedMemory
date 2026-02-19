@@ -1,24 +1,23 @@
 from datetime import date, datetime
-from typing import Optional
 
 from pydantic import BaseModel
 
 
 class InsightsLabItem(BaseModel):
     test_name: str
-    value: Optional[str] = None
-    unit: Optional[str] = None
-    collected_at: Optional[datetime] = None
+    value: str | None = None
+    unit: str | None = None
+    collected_at: datetime | None = None
     is_abnormal: bool = False
 
 
 class InsightsMedicationItem(BaseModel):
     name: str
-    dosage: Optional[str] = None
-    frequency: Optional[str] = None
-    status: Optional[str] = None
-    prescribed_at: Optional[datetime] = None
-    start_date: Optional[date] = None
+    dosage: str | None = None
+    frequency: str | None = None
+    status: str | None = None
+    prescribed_at: datetime | None = None
+    start_date: date | None = None
 
 
 class PatientInsightsResponse(BaseModel):
