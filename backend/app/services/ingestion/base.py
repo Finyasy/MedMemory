@@ -1,8 +1,8 @@
 """Base ingestion service with common functionality."""
 
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Any, Generic, TypeVar, Optional
+from datetime import UTC, datetime
+from typing import Any, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +14,7 @@ T = TypeVar("T")
 
 class IngestionResult:
     """Result of an ingestion operation."""
-    
+
     def __init__(
         self,
         success: bool,
@@ -28,8 +28,8 @@ class IngestionResult:
         self.records_updated = records_updated
         self.records_skipped = records_skipped
         self.errors = errors or []
-        self.timestamp = datetime.now(timezone.utc)
-    
+        self.timestamp = datetime.now(UTC)
+
     def to_dict(self) -> dict:
         return {
             "success": self.success,
@@ -41,35 +41,35 @@ class IngestionResult:
         }
 
 
-class IngestionService(ABC, Generic[T]):
+class IngestionService[T](ABC):
     """Base class for data ingestion services.
-    
+
     Provides common functionality for ingesting medical data
     from various sources (JSON, CSV, FHIR, etc.).
     """
-    
+
     def __init__(self, db: AsyncSession, user_id: int | None = None):
         self.db = db
         self.user_id = user_id
-    
+
     async def get_or_create_patient(
         self,
-        patient_id: Optional[int] = None,
-        external_id: Optional[str] = None,
-        first_name: Optional[str] = None,
-        last_name: Optional[str] = None,
+        patient_id: int | None = None,
+        external_id: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
     ) -> Patient:
         """Get existing patient or create a new one.
-        
+
         Args:
             patient_id: Internal patient ID
             external_id: External system patient ID
             first_name: Patient's first name (for creation)
             last_name: Patient's last name (for creation)
-            
+
         Returns:
             Patient model instance
-            
+
         Raises:
             ValueError: If patient cannot be found or created
         """
@@ -82,7 +82,7 @@ class IngestionService(ABC, Generic[T]):
             patient = result.scalar_one_or_none()
             if patient:
                 return patient
-        
+
         # Try to find by external ID
         if external_id:
             query = select(Patient).where(Patient.external_id == external_id)
@@ -92,7 +92,7 @@ class IngestionService(ABC, Generic[T]):
             patient = result.scalar_one_or_none()
             if patient:
                 return patient
-            
+
             # Create new patient with external ID
             if first_name and last_name:
                 if self.user_id is None:
@@ -106,13 +106,13 @@ class IngestionService(ABC, Generic[T]):
                 self.db.add(patient)
                 await self.db.flush()
                 return patient
-        
+
         raise ValueError(
             "Cannot find or create patient. Provide patient_id, "
             "external_id, or external_id with first_name and last_name."
         )
-    
-    def parse_datetime(self, value: Any) -> Optional[datetime]:
+
+    def parse_datetime(self, value: Any) -> datetime | None:
         """Parse datetime from various formats."""
         if value is None:
             return None
@@ -136,8 +136,8 @@ class IngestionService(ABC, Generic[T]):
                 except ValueError:
                     continue
         return None
-    
-    def parse_float(self, value: Any) -> Optional[float]:
+
+    def parse_float(self, value: Any) -> float | None:
         """Parse float from various formats."""
         if value is None:
             return None
@@ -151,8 +151,10 @@ class IngestionService(ABC, Generic[T]):
             except ValueError:
                 return None
         return None
-    
-    def normalize_status(self, status: Optional[str], valid_values: list[str]) -> Optional[str]:
+
+    def normalize_status(
+        self, status: str | None, valid_values: list[str]
+    ) -> str | None:
         """Normalize status value to valid options."""
         if status is None:
             return None
@@ -161,32 +163,32 @@ class IngestionService(ABC, Generic[T]):
             if status_lower == valid.lower():
                 return valid
         return None
-    
+
     @abstractmethod
     async def ingest_single(self, data: dict) -> T:
         """Ingest a single record.
-        
+
         Args:
             data: Dictionary containing record data
-            
+
         Returns:
             Created model instance
         """
         pass
-    
+
     async def ingest_batch(self, records: list[dict]) -> IngestionResult:
         """Ingest multiple records in a batch.
-        
+
         Args:
             records: List of dictionaries containing record data
-            
+
         Returns:
             IngestionResult with statistics
         """
         created = 0
         skipped = 0
         errors = []
-        
+
         for i, record in enumerate(records):
             try:
                 await self.ingest_single(record)
@@ -194,7 +196,7 @@ class IngestionService(ABC, Generic[T]):
             except Exception as e:
                 errors.append(f"Record {i}: {str(e)}")
                 skipped += 1
-        
+
         return IngestionResult(
             success=len(errors) == 0,
             records_created=created,
