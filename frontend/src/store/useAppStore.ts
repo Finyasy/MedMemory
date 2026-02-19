@@ -15,6 +15,11 @@ const getInitialApiKey = () => {
   return window.localStorage.getItem('medmemory_api_key') || '';
 };
 
+const getInitialIsClinician = () => {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem('medmemory_clinician') === '1';
+};
+
 type User = {
   id: number;
   email: string;
@@ -31,6 +36,7 @@ type AppState = {
   tokenExpiresAt: number | null;
   user: User;
   isAuthenticated: boolean;
+  isClinician: boolean;
   theme: 'light' | 'dark' | 'system';
   setPatientId: (value: number) => void;
   setPatientSearch: (value: string) => void;
@@ -38,6 +44,7 @@ type AppState = {
   setTokens: (accessToken: string, refreshToken: string, expiresIn: number) => void;
   setAccessToken: (token: string | null) => void;
   setUser: (user: User) => void;
+  setClinician: (value: boolean) => void;
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   logout: () => void;
 };
@@ -51,6 +58,7 @@ const useAppStore = create<AppState>((set) => ({
   tokenExpiresAt: null,
   user: null,
   isAuthenticated: !!getInitialToken(),
+  isClinician: getInitialIsClinician(),
   theme: (typeof window !== 'undefined' && localStorage.getItem('medmemory_theme') as 'light' | 'dark' | 'system') || 'system',
   setPatientId: (value) => set({ patientId: value }),
   setPatientSearch: (value) => set({ patientSearch: value }),
@@ -103,6 +111,13 @@ const useAppStore = create<AppState>((set) => ({
     set({ accessToken: token, isAuthenticated: true });
   },
   setUser: (user) => set({ user }),
+  setClinician: (value) => {
+    if (typeof window !== 'undefined') {
+      if (value) window.localStorage.setItem('medmemory_clinician', '1');
+      else window.localStorage.removeItem('medmemory_clinician');
+    }
+    set({ isClinician: value });
+  },
   setTheme: (theme) => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem('medmemory_theme', theme);
@@ -121,6 +136,7 @@ const useAppStore = create<AppState>((set) => ({
       window.localStorage.removeItem('medmemory_access_token');
       window.localStorage.removeItem('medmemory_refresh_token');
       window.localStorage.removeItem('medmemory_token_expires_at');
+      window.localStorage.removeItem('medmemory_clinician');
     }
     set({
       accessToken: null,
@@ -128,6 +144,7 @@ const useAppStore = create<AppState>((set) => ({
       tokenExpiresAt: null,
       user: null,
       isAuthenticated: false,
+      isClinician: false,
       patientId: 0,
       patientSearch: '',
     });
