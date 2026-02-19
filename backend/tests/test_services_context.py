@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from app.services.context.analyzer import QueryAnalyzer, QueryIntent
 from app.services.context.engine import ContextEngine
 from app.services.context.ranker import ContextRanker
-from app.services.context.retriever import RetrievalResult, RetrievalResponse, HybridRetriever
+from app.services.context.retriever import (
+    HybridRetriever,
+    RetrievalResponse,
+    RetrievalResult,
+)
 from app.services.context.synthesizer import ContextSynthesizer
 
 
@@ -31,7 +35,7 @@ class DummyRetriever(HybridRetriever):
                 source_id=1,
                 patient_id=1,
                 semantic_score=0.8,
-                context_date=datetime.now(timezone.utc),
+                context_date=datetime.now(UTC),
             )
         ]
 
@@ -44,7 +48,7 @@ class DummyRetriever(HybridRetriever):
                 source_id=2,
                 patient_id=1,
                 keyword_score=0.6,
-                context_date=datetime.now(timezone.utc),
+                context_date=datetime.now(UTC),
             )
         ]
 
@@ -64,6 +68,118 @@ async def test_hybrid_retriever_combines_results():
 
     assert isinstance(response, RetrievalResponse)
     assert response.total_combined >= 1
+
+
+class DummyStructuredRetriever(HybridRetriever):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.structured_calls = 0
+
+    async def _semantic_search(self, *args, **kwargs):
+        return []
+
+    async def _keyword_search(self, *args, **kwargs):
+        return []
+
+    async def _structured_search(self, *args, **kwargs):
+        self.structured_calls += 1
+        return [
+            RetrievalResult(
+                id=10,
+                content="Lab: Hemoglobin = 10.1 g/dL",
+                source_type="lab_result",
+                source_id=10,
+                patient_id=1,
+                keyword_score=1.0,
+                context_date=datetime.now(UTC),
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_hybrid_retriever_uses_structured_for_generic_lab_query():
+    retriever = DummyStructuredRetriever(db=None, embedding_service=None)
+    analyzer = QueryAnalyzer()
+    analysis = analyzer.analyze("what is my hemoglobin")
+    analysis.use_semantic_search = False
+    analysis.use_keyword_search = False
+
+    response = await retriever.retrieve(analysis, patient_id=1, limit=5)
+
+    assert retriever.structured_calls == 1
+    assert response.total_combined >= 1
+    assert any(r.source_type == "lab_result" for r in response.results)
+
+
+class DummyFallbackRetriever(HybridRetriever):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fallback_calls = 0
+
+    async def _semantic_search(self, *args, **kwargs):
+        return []
+
+    async def _keyword_search(self, *args, **kwargs):
+        return []
+
+    async def _structured_search(self, *args, **kwargs):
+        return []
+
+    async def _fallback_recent_chunks(self, *args, **kwargs):
+        self.fallback_calls += 1
+        return [
+            RetrievalResult(
+                id=99,
+                content="Recent fallback content",
+                source_type="document",
+                source_id=99,
+                patient_id=1,
+                keyword_score=0.1,
+                context_date=datetime.now(UTC),
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_hybrid_retriever_blocks_weak_fallback_for_factual_intents(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_allow_weak_fallback", False)
+    retriever = DummyFallbackRetriever(db=None, embedding_service=None)
+    analyzer = QueryAnalyzer()
+    analysis = analyzer.analyze("what is my hemoglobin value")
+    analysis.use_semantic_search = False
+    analysis.use_keyword_search = False
+    analysis.test_names = []
+    analysis.medication_names = []
+    analysis.data_sources = []
+
+    response = await retriever.retrieve(analysis, patient_id=1, limit=5)
+
+    assert analysis.intent == QueryIntent.VALUE
+    assert retriever.fallback_calls == 0
+    assert response.total_combined == 0
+
+
+@pytest.mark.anyio
+async def test_hybrid_retriever_allows_weak_fallback_for_non_factual_intents(
+    monkeypatch,
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_allow_weak_fallback", False)
+    retriever = DummyFallbackRetriever(db=None, embedding_service=None)
+    analyzer = QueryAnalyzer()
+    analysis = analyzer.analyze("give me an overview")
+    analysis.use_semantic_search = False
+    analysis.use_keyword_search = False
+    analysis.data_sources = []
+
+    response = await retriever.retrieve(analysis, patient_id=1, limit=5)
+
+    assert analysis.intent == QueryIntent.OVERVIEW
+    assert retriever.fallback_calls == 1
+    assert response.total_combined == 1
 
 
 def test_context_ranker_filters_duplicates():
