@@ -1,19 +1,20 @@
-from datetime import datetime, timedelta, timezone
+import asyncio
 import hashlib
 import secrets
-import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import rate_limit_auth, get_authenticated_user
+from app.api.deps import get_authenticated_user, rate_limit_auth
 from app.config import settings
 from app.database import get_db
+from app.models import TokenBlacklist
 from app.models.user import User
 from app.schemas.auth import (
     ForgotPasswordRequest,
@@ -49,34 +50,88 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     """Create a JWT access token."""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    to_encode.update({"exp": expire, "type": "access"})
-    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        expire = datetime.now(UTC) + timedelta(
+            minutes=settings.jwt_access_token_expire_minutes
+        )
+    jti = secrets.token_urlsafe(16)
+    to_encode.update({"exp": expire, "type": "access", "jti": jti})
+    encoded_jwt = jwt.encode(
+        to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+    )
     return encoded_jwt
 
 
 def create_refresh_token(data: dict) -> str:
     """Create a JWT refresh token."""
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_token_expire_days)
+    expire = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_token_expire_days)
     jti = secrets.token_urlsafe(16)
     to_encode.update({"exp": expire, "type": "refresh", "jti": jti})
-    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    encoded_jwt = jwt.encode(
+        to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+    )
     return encoded_jwt
 
 
-async def is_token_blacklisted(jti: str) -> bool:
+def _coerce_exp_datetime(exp: int | float | datetime | None) -> datetime | None:
+    if exp is None:
+        return None
+    if isinstance(exp, datetime):
+        return exp.astimezone(UTC) if exp.tzinfo else exp.replace(tzinfo=UTC)
+    if isinstance(exp, (int, float)):
+        return datetime.fromtimestamp(exp, tz=UTC)
+    return None
+
+
+async def is_token_blacklisted(
+    jti: str,
+    db: AsyncSession | None = None,
+) -> bool:
     """Check if a token is blacklisted."""
     async with _blacklist_lock:
-        return jti in _token_blacklist
+        in_memory = jti in _token_blacklist
+    if in_memory:
+        return True
+    if db is None:
+        return False
+    result = await db.execute(
+        select(TokenBlacklist.id).where(TokenBlacklist.jti == jti)
+    )
+    blacklisted = result.scalar_one_or_none()
+    if blacklisted is None:
+        return False
+    return isinstance(blacklisted, int) or hasattr(blacklisted, "jti")
 
 
-async def blacklist_token(jti: str) -> None:
+async def blacklist_token(
+    jti: str,
+    *,
+    db: AsyncSession | None = None,
+    token_type: str = "access",
+    expires_at: datetime | None = None,
+) -> None:
     """Add a token to the blacklist."""
     async with _blacklist_lock:
         _token_blacklist.add(jti)
+    if db is None:
+        return
+    result = await db.execute(select(TokenBlacklist).where(TokenBlacklist.jti == jti))
+    existing = result.scalar_one_or_none()
+    if existing is not None and hasattr(existing, "jti"):
+        return
+    db.add(
+        TokenBlacklist(
+            jti=jti,
+            token_type=token_type,
+            expires_at=expires_at
+            or (
+                datetime.now(UTC)
+                + timedelta(days=settings.jwt_refresh_token_expire_days)
+            ),
+        )
+    )
 
 
 def _hash_reset_token(token: str) -> str:
@@ -88,7 +143,7 @@ async def get_current_user(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """Get the current authenticated user from JWT token.
-    
+
     DEPRECATED: Use get_authenticated_user from app.api.deps instead.
     This function is kept for backward compatibility.
     """
@@ -99,7 +154,9 @@ async def get_current_user(
     )
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+        )
         user_id_str: str | None = payload.get("sub")
         token_type: str | None = payload.get("type")
         jti: str | None = payload.get("jti")
@@ -107,20 +164,19 @@ async def get_current_user(
             raise credentials_exception
         if token_type != "access":
             raise credentials_exception
-        if jti and await is_token_blacklisted(jti):
+        if jti and await is_token_blacklisted(jti, db=db):
             raise credentials_exception
         user_id = int(user_id_str)
     except JWTError:
         raise credentials_exception
-    
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
         raise credentials_exception
     if not user.is_active:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive"
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
         )
     return user
 
@@ -137,10 +193,9 @@ async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_
     existing_user = result.scalar_one_or_none()
     if existing_user:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
-    
+
     hashed_password = get_password_hash(user_data.password)
     new_user = User(
         email=user_data.email,
@@ -151,15 +206,14 @@ async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
-    
+
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     role = getattr(new_user, "role", "patient")
     access_token = create_access_token(
-        data={"sub": str(new_user.id), "role": role},
-        expires_delta=access_token_expires
+        data={"sub": str(new_user.id), "role": role}, expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": str(new_user.id)})
-    
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -179,18 +233,17 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
     """Authenticate user and return access and refresh tokens."""
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
-    
+
     if not user or not verify_password(credentials.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     if not user.is_active:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive"
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
         )
 
     role = getattr(user, "role", "patient")
@@ -199,14 +252,13 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Use the Clinician portal to sign in. Go to /clinician",
         )
-    
+
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     access_token = create_access_token(
-        data={"sub": str(user.id), "role": role},
-        expires_delta=access_token_expires
+        data={"sub": str(user.id), "role": role}, expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": str(user.id)})
-    
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -218,7 +270,9 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
 
 
 @router.get("/auth/me", response_model=UserResponse)
-async def get_current_user_info(current_user: Annotated[User, Depends(get_authenticated_user)]):
+async def get_current_user_info(
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+):
     """Get current user information."""
     return UserResponse(
         id=current_user.id,
@@ -243,37 +297,41 @@ async def refresh_access_token(
         token_payload = jwt.decode(
             payload.refresh_token,
             settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm]
+            algorithms=[settings.jwt_algorithm],
         )
         user_id_str: str | None = token_payload.get("sub")
         token_type: str | None = token_payload.get("type")
         jti: str | None = token_payload.get("jti")
-        
+
         if user_id_str is None or token_type != "refresh":
             raise credentials_exception
-        if jti and await is_token_blacklisted(jti):
+        if jti and await is_token_blacklisted(jti, db=db):
             raise credentials_exception
-            
+
         user_id = int(user_id_str)
     except JWTError:
         raise credentials_exception
-    
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise credentials_exception
-    
+
     if jti:
-        await blacklist_token(jti)
-    
+        await blacklist_token(
+            jti,
+            db=db,
+            token_type="refresh",
+            expires_at=_coerce_exp_datetime(token_payload.get("exp")),
+        )
+
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     role = getattr(user, "role", "patient")
     access_token = create_access_token(
-        data={"sub": str(user.id), "role": role},
-        expires_delta=access_token_expires
+        data={"sub": str(user.id), "role": role}, expires_delta=access_token_expires
     )
     new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
-    
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=new_refresh_token,
@@ -287,18 +345,23 @@ async def refresh_access_token(
 @router.post("/auth/logout")
 async def logout(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Logout and invalidate tokens."""
     try:
         token = credentials.credentials
         payload = jwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm]
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
         )
         jti: str | None = payload.get("jti")
+        token_type: str = payload.get("type", "access")
         if jti:
-            await blacklist_token(jti)
+            await blacklist_token(
+                jti,
+                db=db,
+                token_type=token_type,
+                expires_at=_coerce_exp_datetime(payload.get("exp")),
+            )
     except JWTError:
         pass
     return {"message": "Logged out successfully"}
@@ -315,7 +378,7 @@ async def forgot_password(
     if user:
         token = secrets.token_urlsafe(32)
         user.reset_token_hash = _hash_reset_token(token)
-        user.reset_token_expires_at = datetime.now(timezone.utc) + timedelta(
+        user.reset_token_expires_at = datetime.now(UTC) + timedelta(
             minutes=settings.password_reset_token_expire_minutes
         )
         await db.commit()
@@ -340,9 +403,13 @@ async def reset_password(
     result = await db.execute(select(User).where(User.reset_token_hash == token_hash))
     user = result.scalar_one_or_none()
     if not user or not user.reset_token_expires_at:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
-    if user.reset_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token"
+        )
+    if user.reset_token_expires_at < datetime.now(UTC):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token"
+        )
 
     user.hashed_password = get_password_hash(payload.new_password)
     user.reset_token_hash = None
