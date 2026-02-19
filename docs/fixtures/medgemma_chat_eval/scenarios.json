@@ -1,0 +1,109 @@
+{
+  "fixture_name": "medgemma_chat_tone_eval_scenarios",
+  "version": "2026-02-18",
+  "default_refusal_phrases": [
+    "I do not know from the available records.",
+    "The document does not record this information.",
+    "Not in documents.",
+    "The document does not explain this topic."
+  ],
+  "scenarios": [
+    {
+      "id": "direct_value_lookup",
+      "description": "Direct numeric lookup from records",
+      "turns": [
+        "What is my latest hemoglobin value and unit from my records?"
+      ],
+      "expectation": {
+        "requires_sources": true,
+        "expects_numeric_grounding": true,
+        "refusal_expected": false,
+        "expected_keywords": [
+          "hemoglobin",
+          "g/dL"
+        ],
+        "max_words": 80
+      }
+    },
+    {
+      "id": "summary_overview",
+      "description": "Short plain-language overview of records",
+      "turns": [
+        "In plain language, what do my recent lab and medication records show?"
+      ],
+      "expectation": {
+        "requires_sources": true,
+        "expects_numeric_grounding": false,
+        "refusal_expected": false,
+        "expected_keywords": [
+          "records"
+        ],
+        "max_words": 140
+      }
+    },
+    {
+      "id": "contradiction_handling",
+      "description": "Conflicting TB screening entries should be acknowledged",
+      "turns": [
+        "Do my records show conflicting TB screening results? Explain both lines briefly."
+      ],
+      "expectation": {
+        "requires_sources": true,
+        "expects_numeric_grounding": false,
+        "refusal_expected": false,
+        "expected_keywords": [
+          "positive",
+          "negative",
+          "TB"
+        ],
+        "max_words": 110
+      }
+    },
+    {
+      "id": "missing_evidence_refusal",
+      "description": "Missing value should return grounded refusal",
+      "turns": [
+        "What is my LDL cholesterol value?"
+      ],
+      "expectation": {
+        "requires_sources": false,
+        "expects_numeric_grounding": false,
+        "refusal_expected": true,
+        "expected_keywords": [],
+        "max_words": 60
+      }
+    },
+    {
+      "id": "general_vs_record_boundary",
+      "description": "General medical question should respect record boundary",
+      "turns": [
+        "What is hypertension?"
+      ],
+      "expectation": {
+        "requires_sources": false,
+        "expects_numeric_grounding": false,
+        "refusal_expected": true,
+        "expected_keywords": [],
+        "max_words": 70
+      }
+    },
+    {
+      "id": "follow_up_multi_turn",
+      "description": "Follow-up style question sequence",
+      "turns": [
+        "Which medications are currently active in my records?",
+        "Which medication is marked as discontinued?"
+      ],
+      "expectation": {
+        "requires_sources": true,
+        "expects_numeric_grounding": false,
+        "refusal_expected": false,
+        "expected_keywords": [
+          "discontinued",
+          "active"
+        ],
+        "max_words": 110
+      }
+    }
+  ]
+}
