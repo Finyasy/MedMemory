@@ -3,10 +3,9 @@
 import hashlib
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
 
 import aiofiles
 from fastapi import UploadFile
@@ -20,11 +19,11 @@ from app.models import Document, Patient
 
 class DocumentUploadService:
     """Service for handling document uploads and storage.
-    
+
     Handles file validation, storage, deduplication, and
     database record creation for uploaded documents.
     """
-    
+
     # Document type mappings based on MIME types
     MIME_TYPE_MAPPING = {
         "application/pdf": "pdf",
@@ -35,7 +34,7 @@ class DocumentUploadService:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
         "text/plain": "text",
     }
-    
+
     # Suggested document types based on filename patterns
     DOCUMENT_TYPE_PATTERNS = {
         "lab": "lab_report",
@@ -59,26 +58,26 @@ class DocumentUploadService:
         "insurance": "insurance",
         "claim": "insurance",
     }
-    
+
     def __init__(self, db: AsyncSession):
         self.db = db
         self.upload_dir = Path(settings.upload_dir)
         self.max_size = settings.max_upload_size
         self.allowed_extensions = settings.allowed_extensions
-    
+
     async def upload_document(
         self,
         file: UploadFile,
         patient_id: int,
-        document_type: Optional[str] = None,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        document_date: Optional[datetime] = None,
-        category: Optional[str] = None,
-        tags: Optional[list[str]] = None,
+        document_type: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        document_date: datetime | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
     ) -> Document:
         """Upload and store a document.
-        
+
         Args:
             file: Uploaded file
             patient_id: ID of the patient this document belongs to
@@ -88,10 +87,10 @@ class DocumentUploadService:
             document_date: Date the document was created
             category: Document category
             tags: List of tags for the document
-            
+
         Returns:
             Created Document model instance
-            
+
         Raises:
             ValueError: If file validation fails
         """
@@ -99,14 +98,14 @@ class DocumentUploadService:
         patient = await self._get_patient(patient_id)
         if not patient:
             raise ValueError(f"Patient {patient_id} not found")
-        
+
         # Validate file
         await self._validate_file(file)
-        
+
         # Read file content and compute hash
         content = await file.read()
         file_hash = self._compute_hash(content)
-        
+
         # Check for duplicate
         existing = await self._check_duplicate(file_hash)
         if existing:
@@ -114,29 +113,29 @@ class DocumentUploadService:
                 f"Document already exists with ID {existing.id}. "
                 "Use the existing document or delete it first."
             )
-        
+
         # Generate storage path
         file_ext = self._get_extension(file.filename or "unknown")
         stored_filename = f"{uuid.uuid4()}{file_ext}"
-        
+
         # Create patient directory if needed
         patient_dir = self.upload_dir / str(patient_id)
         patient_dir.mkdir(parents=True, exist_ok=True)
-        
+
         file_path = patient_dir / stored_filename
-        
+
         # Save file
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(content)
-        
+
         # Auto-detect document type if not provided
         if not document_type:
             document_type = self._detect_document_type(
                 filename=file.filename or "",
                 mime_type=file.content_type,
             )
-        
-        received_date = datetime.now(timezone.utc)
+
+        received_date = datetime.now(UTC)
         if not document_date and (file.content_type or "").startswith("image/"):
             document_date = self._extract_image_date(content) or received_date
 
@@ -159,14 +158,14 @@ class DocumentUploadService:
             is_processed=False,
             tags=",".join(tags) if tags else None,
         )
-        
+
         self.db.add(document)
         await self.db.flush()
         await self.db.refresh(document)
-        
+
         return document
 
-    def _extract_image_date(self, content: bytes) -> Optional[datetime]:
+    def _extract_image_date(self, content: bytes) -> datetime | None:
         """Extract EXIF datetime from an image, if present."""
         try:
             image = Image.open(BytesIO(content))
@@ -176,44 +175,46 @@ class DocumentUploadService:
             for tag in (36867, 36868, 306):
                 value = exif.get(tag)
                 if value:
-                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").replace(
+                        tzinfo=UTC
+                    )
         except Exception:
             return None
         return None
-    
-    async def get_document(self, document_id: int) -> Optional[Document]:
+
+    async def get_document(self, document_id: int) -> Document | None:
         """Get a document by ID."""
         result = await self.db.execute(
             select(Document).where(Document.id == document_id)
         )
         return result.scalar_one_or_none()
-    
+
     async def get_patient_documents(
         self,
         patient_id: int,
-        document_type: Optional[str] = None,
+        document_type: str | None = None,
         processed_only: bool = False,
     ) -> list[Document]:
         """Get all documents for a patient."""
         query = select(Document).where(Document.patient_id == patient_id)
-        
+
         if document_type:
             query = query.where(Document.document_type == document_type)
-        
+
         if processed_only:
-            query = query.where(Document.is_processed == True)
-        
+            query = query.where(Document.is_processed)
+
         query = query.order_by(Document.received_date.desc())
-        
+
         result = await self.db.execute(query)
         return list(result.scalars().all())
-    
+
     async def delete_document(self, document_id: int) -> bool:
         """Delete a document and its file."""
         document = await self.get_document(document_id)
         if not document:
             return False
-        
+
         # Delete file
         try:
             file_path = Path(document.file_path)
@@ -221,34 +222,34 @@ class DocumentUploadService:
                 file_path.unlink()
         except Exception:
             pass  # Continue even if file deletion fails
-        
+
         # Delete database record
         await self.db.delete(document)
         return True
-    
+
     async def update_processing_status(
         self,
         document_id: int,
         status: str,
-        extracted_text: Optional[str] = None,
-        page_count: Optional[int] = None,
-        ocr_confidence: Optional[float] = None,
-        ocr_language: Optional[str] = None,
-        ocr_text_raw: Optional[str] = None,
-        ocr_text_cleaned: Optional[str] = None,
-        ocr_entities: Optional[str] = None,
-        error: Optional[str] = None,
+        extracted_text: str | None = None,
+        page_count: int | None = None,
+        ocr_confidence: float | None = None,
+        ocr_language: str | None = None,
+        ocr_text_raw: str | None = None,
+        ocr_text_cleaned: str | None = None,
+        ocr_entities: str | None = None,
+        error: str | None = None,
     ) -> Document:
         """Update document processing status."""
         document = await self.get_document(document_id)
         if not document:
             raise ValueError(f"Document {document_id} not found")
-        
+
         document.processing_status = status
-        
+
         if status == "completed":
             document.is_processed = True
-            document.processed_at = datetime.now(timezone.utc)
+            document.processed_at = datetime.now(UTC)
             document.extracted_text = extracted_text
             document.page_count = page_count
             document.ocr_confidence = ocr_confidence
@@ -258,23 +259,21 @@ class DocumentUploadService:
             document.ocr_entities = ocr_entities
         elif status == "failed":
             document.processing_error = error
-        
+
         await self.db.flush()
         return document
-    
-    async def _get_patient(self, patient_id: int) -> Optional[Patient]:
+
+    async def _get_patient(self, patient_id: int) -> Patient | None:
         """Get patient by ID."""
-        result = await self.db.execute(
-            select(Patient).where(Patient.id == patient_id)
-        )
+        result = await self.db.execute(select(Patient).where(Patient.id == patient_id))
         return result.scalar_one_or_none()
-    
+
     async def _validate_file(self, file: UploadFile) -> None:
         """Validate uploaded file."""
         # Check filename
         if not file.filename:
             raise ValueError("File must have a filename")
-        
+
         # Check extension
         ext = self._get_extension(file.filename)
         if ext.lower() not in self.allowed_extensions:
@@ -288,11 +287,11 @@ class DocumentUploadService:
                 f"MIME type '{file.content_type}' not allowed. "
                 f"Allowed types: {', '.join(settings.allowed_mime_types)}"
             )
-        
+
         # Check size (need to read to check, then seek back)
         content = await file.read()
         await file.seek(0)
-        
+
         if len(content) > self.max_size:
             raise ValueError(
                 f"File too large ({len(content)} bytes). "
@@ -306,41 +305,44 @@ class DocumentUploadService:
                 Image.open(BytesIO(content)).verify()
             except Exception:
                 raise ValueError("Invalid image file content")
-        if file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        if (
+            file.content_type
+            == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ):
             if not content.startswith(b"PK"):
                 raise ValueError("Invalid DOCX file header")
         if file.content_type == "text/plain":
             if b"\x00" in content:
                 raise ValueError("Invalid text file content")
-    
+
     def _get_extension(self, filename: str) -> str:
         """Get file extension from filename."""
         return os.path.splitext(filename)[1].lower()
-    
+
     def _compute_hash(self, content: bytes) -> str:
         """Compute SHA-256 hash of file content."""
         return hashlib.sha256(content).hexdigest()
-    
-    async def _check_duplicate(self, file_hash: str) -> Optional[Document]:
+
+    async def _check_duplicate(self, file_hash: str) -> Document | None:
         """Check if a document with the same hash exists."""
         result = await self.db.execute(
             select(Document).where(Document.file_hash == file_hash)
         )
         return result.scalar_one_or_none()
-    
+
     def _detect_document_type(
         self,
         filename: str,
-        mime_type: Optional[str],
+        mime_type: str | None,
     ) -> str:
         """Auto-detect document type from filename and MIME type."""
         filename_lower = filename.lower()
-        
+
         # Check filename patterns
         for pattern, doc_type in self.DOCUMENT_TYPE_PATTERNS.items():
             if pattern in filename_lower:
                 return doc_type
-        
+
         # Fall back to MIME type mapping
         if mime_type and mime_type in self.MIME_TYPE_MAPPING:
             base_type = self.MIME_TYPE_MAPPING[mime_type]
@@ -348,5 +350,5 @@ class DocumentUploadService:
                 return "medical_record"
             elif base_type == "image":
                 return "imaging"
-        
+
         return "other"
