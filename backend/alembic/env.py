@@ -1,25 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 import types
-from pathlib import Path
 from logging.config import fileConfig
+from pathlib import Path
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
+from app.config import settings
+from app.models import Base
 
 backend_root = Path(__file__).resolve().parents[1]
 if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
 
-from app.config import settings
-
 
 def _install_pgvector_stub() -> None:
     try:
-        import pgvector.sqlalchemy  # noqa: F401
+        importlib.import_module("pgvector.sqlalchemy")
+
         return
     except Exception:
         pass
@@ -45,8 +48,6 @@ def _install_pgvector_stub() -> None:
 
 
 _install_pgvector_stub()
-
-from app.models import Base
 
 config = context.config
 
