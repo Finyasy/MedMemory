@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ChatSource,
   ContextSimpleResponse,
+  ConnectionSyncEvent,
   CreateRecordPayload,
   DashboardHighlightsResponse,
   DataConnection,
@@ -312,6 +313,30 @@ export type ChatAskResponse = {
   structured_data?: Record<string, unknown> | null;
 } & Record<string, unknown>;
 
+export type PrimaryProfileSummary = {
+  id: number;
+  full_name: string;
+};
+
+export type ProfileSummary = PrimaryProfileSummary & {
+  is_dependent: boolean;
+  profile_completion?: { overall_percentage: number };
+};
+
+export type DependentSummary = {
+  id: number;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  date_of_birth: string | null;
+  age: number | null;
+  sex: string | null;
+  blood_type: string | null;
+  relationship_type: string;
+  is_primary_caretaker: boolean;
+  can_edit: boolean;
+};
+
 export const api = {
   async getHealth(): Promise<{ status: string; service: string }> {
     return HealthService.healthCheckHealthGet();
@@ -422,6 +447,44 @@ export const api = {
       age: response.age,
       gender: response.gender,
     };
+  },
+
+  async getProfile(patientId?: number): Promise<ProfileSummary> {
+    const suffix = typeof patientId === 'number' ? `?patient_id=${patientId}` : '';
+    return request<ProfileSummary>(`${API_BASE}/profile${suffix}`, {
+      method: 'GET',
+      headers: await withAuthHeaders(),
+    });
+  },
+
+  async getPrimaryProfile(): Promise<PrimaryProfileSummary> {
+    const profile = await api.getProfile();
+    return {
+      id: profile.id,
+      full_name: profile.full_name,
+    };
+  },
+
+  async listDependents(): Promise<DependentSummary[]> {
+    return request<DependentSummary[]>(`${API_BASE}/dependents`, {
+      method: 'GET',
+      headers: await withAuthHeaders(),
+    });
+  },
+
+  async createDependent(payload: {
+    first_name: string;
+    last_name: string;
+    date_of_birth: string;
+    relationship_type: string;
+    sex?: string;
+    blood_type?: string;
+  }): Promise<DependentSummary> {
+    return request<DependentSummary>(`${API_BASE}/dependents`, {
+      method: 'POST',
+      headers: await withAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
   },
 
   async getRecords(patientId?: number): Promise<MedicalRecord[]> {
@@ -636,6 +699,23 @@ export const api = {
     );
   },
 
+  async listConnectionSyncEvents(
+    patientId: number,
+    options?: { providerSlug?: string; limit?: number },
+  ): Promise<ConnectionSyncEvent[]> {
+    const params = new URLSearchParams();
+    if (options?.providerSlug) params.set('provider_slug', options.providerSlug);
+    if (typeof options?.limit === 'number') params.set('limit', String(options.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<ConnectionSyncEvent[]>(
+      `${API_BASE}/dashboard/patient/${patientId}/connections/events${suffix}`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
   async getDashboardHighlights(
     patientId: number,
     limit = 5,
@@ -759,11 +839,16 @@ export const api = {
   async chatAsk(
     patientId: number,
     question: string,
-    options?: Partial<ChatRequest> & { structured?: boolean; clinicianMode?: boolean },
+    options?: Partial<ChatRequest> & {
+      structured?: boolean;
+      coachingMode?: boolean;
+      clinicianMode?: boolean;
+    },
   ): Promise<ChatAskResponse> {
-    const { structured, clinicianMode, ...bodyOptions } = options || {};
+    const { structured, coachingMode, clinicianMode, ...bodyOptions } = options || {};
     const params = new URLSearchParams();
     if (structured) params.set('structured', 'true');
+    if (coachingMode) params.set('coaching_mode', 'true');
     if (clinicianMode) params.set('clinician_mode', 'true');
     const query = params.toString();
     const headers = await withAuthHeaders({
