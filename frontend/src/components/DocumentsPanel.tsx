@@ -1,9 +1,11 @@
 import type { DocumentItem } from '../types';
+import type { OcrRefinementResponse } from '../api/generated';
 
 type DocumentsPanelProps = {
   documents: DocumentItem[];
   isLoading: boolean;
   processingIds: number[];
+  deletingIds: number[];
   selectedFile: File | null;
   status: string;
   preview?: {
@@ -12,21 +14,16 @@ type DocumentsPanelProps = {
     text: string;
     description?: string | null;
     pageCount?: number | null;
-    ocr?: {
-      ocr_language?: string | null;
-      ocr_confidence?: number | null;
-      ocr_text_raw?: string | null;
-      ocr_text_cleaned?: string | null;
-      ocr_entities?: Record<string, unknown>;
-      used_ocr: boolean;
-    } | null;
+    ocr?: OcrRefinementResponse | null;
   } | null;
   downloadUrl?: string | null;
   isDisabled?: boolean;
+  selectedPatient?: { full_name: string; is_dependent?: boolean } | null;
   onFileChange: (file: File | null) => void;
   onUpload: () => void;
   onProcess: (id: number) => void;
   onView: (id: number) => void;
+  onDelete: (id: number, label: string) => void;
   onClosePreview: () => void;
 };
 
@@ -34,15 +31,18 @@ const DocumentsPanel = ({
   documents,
   isLoading,
   processingIds,
+  deletingIds,
   selectedFile,
   status,
   preview,
   downloadUrl,
   isDisabled = false,
+  selectedPatient,
   onFileChange,
   onUpload,
   onProcess,
   onView,
+  onDelete,
   onClosePreview,
 }: DocumentsPanelProps) => {
   const ocrEntities = preview?.ocr?.ocr_entities ?? {};
@@ -84,7 +84,20 @@ const DocumentsPanel = ({
           <div className="skeleton-row" />
         </>
       ) : documents.length === 0 ? (
-          <div className="empty-state">No documents yet. Upload a report to get started.</div>
+          <div className="empty-state dependent-onboarding">
+            {selectedPatient?.is_dependent ? (
+              <>
+                <span className="empty-state-icon">📄</span>
+                <p className="empty-state-title">No records for {selectedPatient.full_name} yet</p>
+                <p className="empty-state-subtitle">Upload their medical documents below to start tracking their health.</p>
+              </>
+            ) : (
+              <>
+                <span className="empty-state-icon">📄</span>
+                <p>No documents yet. Upload a report to get started.</p>
+              </>
+            )}
+          </div>
         ) : (
           documents.map((doc) => (
             <div key={doc.id} className="document-row">
@@ -115,6 +128,16 @@ const DocumentsPanel = ({
                 >
                   View
                 </button>
+                <button
+                  className="delete-btn"
+                  type="button"
+                  onClick={() => onDelete(doc.id, doc.title || doc.original_filename)}
+                  disabled={isDisabled || deletingIds.includes(doc.id)}
+                  aria-label={`Delete ${doc.title || doc.original_filename}`}
+                  title={`Delete ${doc.title || doc.original_filename}`}
+                >
+                  {deletingIds.includes(doc.id) ? '⏳' : '🗑️'}
+                </button>
               </div>
             </div>
           ))
@@ -132,6 +155,16 @@ const DocumentsPanel = ({
                 Open File
               </a>
             ) : null}
+            <button
+              className="delete-btn"
+              type="button"
+              onClick={() => onDelete(preview.id, preview.title)}
+              disabled={isDisabled || deletingIds.includes(preview.id)}
+              aria-label={`Delete ${preview.title}`}
+              title={`Delete ${preview.title}`}
+            >
+              {deletingIds.includes(preview.id) ? '⏳' : '🗑️'}
+            </button>
             <button className="ghost-button compact" type="button" onClick={onClosePreview}>
               Close
             </button>
