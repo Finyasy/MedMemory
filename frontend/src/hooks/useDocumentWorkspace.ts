@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../api';
+import { ApiError, api } from '../api';
 import type { DocumentItem } from '../types';
 import type { OcrRefinementResponse } from '../api/generated';
 
@@ -13,6 +13,15 @@ type UseDocumentWorkspaceArgs = {
   ) => Promise<{ kind: 'uploaded' | 'duplicate-same' | 'duplicate-other'; id: number }>;
   pushToast: (type: 'error' | 'info' | 'success', message: string) => void;
   handleError: (label: string, error: unknown) => void;
+};
+
+const getErrorStatus = (error: unknown): number | null => {
+  if (error instanceof ApiError) return error.status;
+  if (error && typeof error === 'object' && 'status' in error) {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === 'number') return status;
+  }
+  return null;
 };
 
 const useDocumentWorkspace = ({
@@ -83,6 +92,12 @@ const useDocumentWorkspace = ({
         pushToast('success', 'Document processed.');
         await reloadDocuments();
       } catch (error) {
+        if (getErrorStatus(error) === 404) {
+          pushToast('info', 'That document is no longer available. Refreshing your list.');
+          await reloadDocuments();
+          setStatus('Document list refreshed.');
+          return;
+        }
         handleError('Failed to process document', error);
         setStatus('Processing failed.');
       } finally {
@@ -107,6 +122,15 @@ const useDocumentWorkspace = ({
         pushToast('success', 'Document deleted.');
         await reloadDocuments();
       } catch (error) {
+        if (getErrorStatus(error) === 404) {
+          if (preview?.id === documentId) {
+            setPreview(null);
+            setDownloadUrl(null);
+          }
+          pushToast('info', 'That document was already removed. Refreshing your list.');
+          await reloadDocuments();
+          return;
+        }
         handleError('Failed to delete document', error);
       } finally {
         setDeletingIds((prev) => prev.filter((id) => id !== documentId));
@@ -139,10 +163,15 @@ const useDocumentWorkspace = ({
         setDownloadUrl(`${window.location.origin}/api/v1/documents/${documentId}/download`);
         pushToast('success', 'Document loaded.');
       } catch (error) {
+        if (getErrorStatus(error) === 404) {
+          pushToast('info', 'That document is no longer available. Refreshing your list.');
+          await reloadDocuments();
+          return;
+        }
         handleError('Failed to load document text', error);
       }
     },
-    [documents, handleError, pushToast],
+    [documents, handleError, pushToast, reloadDocuments],
   );
 
   const handleClosePreview = useCallback(() => {
