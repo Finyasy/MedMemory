@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
+import useApiList from './useApiList';
 import { api } from '../api';
 import type { DocumentItem } from '../types';
 
@@ -10,29 +11,18 @@ type UsePatientDocumentsOptions = {
 };
 
 const usePatientDocuments = ({ patientId, isAuthenticated, onError, onSuccess }: UsePatientDocumentsOptions) => {
-  const [documents, setDocuments] = useState<DocumentItem[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const fetchDocuments = useCallback(() => api.listDocuments(patientId), [patientId]);
 
-  const reloadDocuments = useCallback(async () => {
-    if (!isAuthenticated) return;
-    setIsLoading(true);
-    try {
-      const data = await api.listDocuments(patientId);
-      setDocuments(data);
-      onSuccess?.();
-    } catch (error) {
-      onError('Failed to load documents', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [patientId, isAuthenticated, onError, onSuccess]);
+  const { data, isLoading, reload } = useApiList<DocumentItem[]>({
+    enabled: Boolean(patientId) && isAuthenticated,
+    fetcher: fetchDocuments,
+    errorLabel: 'Failed to load documents',
+    onError,
+    onSuccess,
+    initialValue: [],
+  });
 
-  useEffect(() => {
-    if (!patientId || !isAuthenticated) return;
-    reloadDocuments();
-  }, [patientId, isAuthenticated, reloadDocuments]);
-
-  return { documents, isLoading, reloadDocuments };
+  return { documents: data, isLoading, reloadDocuments: reload };
 };
 
 export default usePatientDocuments;
