@@ -2,14 +2,17 @@
 
 import logging
 import re
-from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_authenticated_user, get_authorized_patient, get_patient_for_user
+from app.api.deps import (
+    get_authenticated_user,
+    get_authorized_patient,
+    get_patient_for_user,
+)
 from app.database import get_db
 from app.models import User
 from app.schemas.chat import (
@@ -18,15 +21,16 @@ from app.schemas.chat import (
     ConversationCreate,
     ConversationDetail,
     ConversationResponse,
+    CxrCompareResponse,
+    GuardrailCountersResponse,
     LLMInfoResponse,
+    LocalizationResponse,
     MessageSchema,
     SourceInfo,
     StreamChatChunk,
-    VolumeChatResponse,
-    CxrCompareResponse,
-    LocalizationResponse,
-    WsiChatResponse,
     VisionChatResponse,
+    VolumeChatResponse,
+    WsiChatResponse,
 )
 from app.services.imaging import (
     build_volume_montage,
@@ -48,6 +52,19 @@ async def get_llm_info():
     llm_service = LLMService.get_instance()
     info = llm_service.get_model_info()
     return LLMInfoResponse(**info)
+
+
+@router.get("/guardrails", response_model=GuardrailCountersResponse)
+async def get_guardrail_counters(
+    current_user: User = Depends(get_authenticated_user),
+):
+    """Return aggregated guardrail counters for monitoring."""
+    _ = current_user
+    counters = RAGService.get_global_guardrail_counters()
+    return GuardrailCountersResponse(
+        counters=counters,
+        total=sum(counters.values()),
+    )
 
 
 def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
@@ -110,8 +127,8 @@ def _parse_localization_payload(payload: str, width: int, height: int) -> list[d
 
 def _chat_system_prompt(
     clinician_mode: bool,
-    explicit_system_prompt: Optional[str] | None,
-) -> Optional[str]:
+    explicit_system_prompt: str | None | None,
+) -> str | None:
     """Resolve system prompt: explicit override, or clinician prompt when clinician_mode."""
     if explicit_system_prompt:
         return explicit_system_prompt
@@ -124,25 +141,31 @@ def _chat_system_prompt(
 async def ask_question(
     request: ChatRequest,
     structured: bool = Query(False, description="Return structured JSON response"),
-    clinician_mode: bool = Query(False, description="Use clinician-oriented prompt and citations"),
+    coaching_mode: bool = Query(
+        False,
+        description="Return context-card style structured output for metric coaching",
+    ),
+    clinician_mode: bool = Query(
+        False, description="Use clinician-oriented prompt and citations"
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Ask a question about a patient using RAG.
-    
+
     This endpoint:
     1. Retrieves relevant context from patient records
     2. Generates an answer using MedGemma-4B-IT
     3. Stores the conversation for history
-    
+
     Use clinician_mode=true for clinician-facing output (terse, citations, "Not in documents").
     Access: owner or clinician with active grant including "chat" scope.
-    
+
     Example questions:
     - "What medications is the patient currently taking?"
     - "Show me any abnormal lab results from the past year"
     - "What is the patient's diagnosis history?"
-    
+
     Args:
         structured: If True, returns structured JSON response with parsed data
         clinician_mode: If True, use clinician system prompt and allow clinician access via grant
@@ -153,11 +176,14 @@ async def ask_question(
         current_user=current_user,
         scope="chat",
     )
-    
+
     system_prompt = _chat_system_prompt(clinician_mode, request.system_prompt)
     rag_service = RAGService(db)
-    
-    if structured:
+
+    structured_enabled = bool(structured) if isinstance(structured, bool) else False
+    coaching_enabled = bool(coaching_mode) if isinstance(coaching_mode, bool) else False
+
+    if structured_enabled or coaching_enabled:
         rag_response, structured_data = await rag_service.ask_structured(
             question=request.question,
             patient_id=request.patient_id,
@@ -196,7 +222,7 @@ async def ask_question(
             max_context_tokens=request.max_context_tokens,
             use_conversation_history=request.use_conversation_history,
         )
-        
+
         return ChatResponse(
             answer=rag_response.answer,
             conversation_id=rag_response.conversation_id,
@@ -223,13 +249,15 @@ async def ask_question(
 async def stream_ask(
     question: str = Query(..., min_length=1, max_length=2000),
     patient_id: int = Query(...),
-    conversation_id: Optional[UUID] = Query(None),
-    clinician_mode: bool = Query(False, description="Use clinician-oriented prompt and citations"),
+    conversation_id: UUID | None = Query(None),
+    clinician_mode: bool = Query(
+        False, description="Use clinician-oriented prompt and citations"
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Stream answer generation token by token.
-    
+
     Useful for real-time chat interfaces where you want to show
     the answer as it's being generated. Use clinician_mode=true for clinician output.
     Access: owner or clinician with active grant including "chat" scope.
@@ -240,16 +268,16 @@ async def stream_ask(
         current_user=current_user,
         scope="chat",
     )
-    
+
     system_prompt = _chat_system_prompt(clinician_mode, None)
     manager = ConversationManager(db)
     conversation_uuid = conversation_id
     if conversation_uuid is None:
         conversation = await manager.create_conversation(patient_id=patient_id)
         conversation_uuid = conversation.conversation_id
-    
+
     rag_service = RAGService(db)
-    
+
     async def generate():
         import logging
 
@@ -264,13 +292,37 @@ async def stream_ask(
                 yield f"data: {StreamChatChunk(chunk=chunk, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
         except Exception:
             # Ensure we log the traceback server-side and still close the SSE stream cleanly.
-            logger.exception("Chat stream failed patient_id=%s conv=%s", patient_id, conversation_uuid)
+            logger.exception(
+                "Chat stream failed patient_id=%s conv=%s",
+                patient_id,
+                conversation_uuid,
+            )
             err_msg = "Chat failed due to a server error. Please try again."
             yield f"data: {StreamChatChunk(chunk=err_msg, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
         finally:
             # Send completion with conversation ID
-            yield f"data: {StreamChatChunk(chunk='', conversation_id=conversation_uuid, is_complete=True).model_dump_json()}\n\n"
-    
+            metadata = rag_service.get_last_stream_metadata()
+            final_sources = [
+                SourceInfo(
+                    source_type=s["source_type"],
+                    source_id=s["source_id"],
+                    relevance=s["relevance"],
+                )
+                for s in metadata.get("sources_summary", [])
+            ]
+            yield (
+                "data: "
+                + StreamChatChunk(
+                    chunk="",
+                    conversation_id=conversation_uuid,
+                    is_complete=True,
+                    num_sources=metadata.get("num_sources"),
+                    sources=final_sources,
+                    structured_data=metadata.get("structured_data"),
+                ).model_dump_json()
+                + "\n\n"
+            )
+
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
@@ -304,7 +356,7 @@ async def ask_with_image(
         raise HTTPException(status_code=400, detail="Empty image upload.")
 
     llm_service = LLMService.get_instance()
-    
+
     vision_system_prompt = """You are MedGemma, a medical AI assistant analyzing medical images and documents.
 
 CRITICAL SAFETY RULES (NON-NEGOTIABLE):
@@ -327,63 +379,69 @@ Your job:
         system_prompt=vision_system_prompt,
         max_new_tokens=1500,
     )
-    
+
     logger = logging.getLogger("medmemory")
-    
+
     response_text = llm_response.text
-    
+
     # Post-process to remove hallucinated measurements
-    lines = response_text.split('\n')
+    lines = response_text.split("\n")
     cleaned_lines = []
     in_findings = False
-    
+
     for line in lines:
         stripped = line.strip()
-        
-        if 'findings:' in stripped.lower() and not stripped.startswith('-'):
+
+        if "findings:" in stripped.lower() and not stripped.startswith("-"):
             in_findings = True
             cleaned_lines.append(line)
             continue
-        
-        if in_findings and stripped.startswith('-'):
+
+        if in_findings and stripped.startswith("-"):
             # Pattern: "- 1: 24 mm" or "- 2: 25 mm" - suspicious isolated measurements
-            if re.match(r'^-\s*\d+:\s*\d+\s*(mm|cm|m|in|inches)', stripped, re.IGNORECASE):
-                logger.warning(f"Removed potentially hallucinated measurement: {stripped}")
+            if re.match(
+                r"^-\s*\d+:\s*\d+\s*(mm|cm|m|in|inches)", stripped, re.IGNORECASE
+            ):
+                logger.warning(
+                    f"Removed potentially hallucinated measurement: {stripped}"
+                )
                 continue
             # Pattern: "- Label: number unit" without descriptive context
-            if re.match(r'^-\s*\w+:\s*\d+\s*(mm|cm|m|in|inches)', stripped, re.IGNORECASE) and len(stripped) < 30:
-                logger.warning(f"Removed potentially hallucinated measurement: {stripped}")
+            if (
+                re.match(
+                    r"^-\s*\w+:\s*\d+\s*(mm|cm|m|in|inches)", stripped, re.IGNORECASE
+                )
+                and len(stripped) < 30
+            ):
+                logger.warning(
+                    f"Removed potentially hallucinated measurement: {stripped}"
+                )
                 continue
-        
+
         cleaned_lines.append(line)
-    
-    response_text = '\n'.join(cleaned_lines)
-    
+
+    response_text = "\n".join(cleaned_lines)
+
     # Remove generic unhelpful statements
     response_text = re.sub(
-        r'(?i)(^|\n)\s*no overall impression stated\.?\s*',
-        '',
-        response_text
+        r"(?i)(^|\n)\s*no overall impression stated\.?\s*", "", response_text
     )
-    
+
     # Remove standalone "Summary" with no content
     response_text = re.sub(
-        r'(?i)^\s*summary\s*$',
-        '',
-        response_text,
-        flags=re.MULTILINE
+        r"(?i)^\s*summary\s*$", "", response_text, flags=re.MULTILINE
     )
-    
+
     # Remove overly verbose "partially visible" lists
     # Pattern: Multiple lines saying "X is partially visible"
-    lines = response_text.split('\n')
+    lines = response_text.split("\n")
     cleaned_lines = []
     skip_partial_visible = False
     partial_visible_count = 0
-    
+
     for line in lines:
         stripped = line.strip()
-        if 'partially visible' in stripped.lower():
+        if "partially visible" in stripped.lower():
             partial_visible_count += 1
             # Skip if we've seen more than 3 "partially visible" items in a row
             if partial_visible_count > 3:
@@ -395,26 +453,28 @@ Your job:
                 continue
             skip_partial_visible = False
             partial_visible_count = 0
-        
+
         cleaned_lines.append(line)
-    
-    response_text = '\n'.join(cleaned_lines)
-    
+
+    response_text = "\n".join(cleaned_lines)
+
     # Remove repetitive descriptions (e.g., "White stars are marked" repeated for each panel)
     # Keep only unique information
     response_text = re.sub(
-        r'(White stars are marked on the brain surface\.\s*)+',
-        'White stars are marked on the brain surface in multiple views.\n',
+        r"(White stars are marked on the brain surface\.\s*)+",
+        "White stars are marked on the brain surface in multiple views.\n",
         response_text,
-        flags=re.IGNORECASE | re.MULTILINE
+        flags=re.IGNORECASE | re.MULTILINE,
     )
-    
+
     # Clean up multiple empty lines
-    response_text = re.sub(r'\n{3,}', '\n\n', response_text)
+    response_text = re.sub(r"\n{3,}", "\n\n", response_text)
     response_text = response_text.strip()
-    
+
     # If response is too generic or empty, provide helpful guidance
-    if len(response_text.strip()) < 50 or ('no overall impression' in response_text.lower() and len(response_text) < 100):
+    if len(response_text.strip()) < 50 or (
+        "no overall impression" in response_text.lower() and len(response_text) < 100
+    ):
         response_text = (
             "I can see this is a medical image. To provide a more detailed analysis, please tell me:\n"
             "- What type of image this is (X-ray, lab report, etc.)\n"
@@ -422,9 +482,11 @@ Your job:
             "- Any particular findings or measurements you're looking for\n\n"
             "I can describe what I see in the image, but I will only report information that is clearly visible and will not invent measurements or values."
         )
-    
+
     logger.info(f"Vision response length: {len(response_text)} chars")
-    logger.info(f"Vision response preview: {response_text[:500] if response_text else 'EMPTY'}")
+    logger.info(
+        f"Vision response preview: {response_text[:500] if response_text else 'EMPTY'}"
+    )
 
     return VisionChatResponse(
         answer=response_text,
@@ -460,18 +522,23 @@ async def ask_with_volume(
         raise HTTPException(status_code=400, detail="No slices provided.")
 
     if sample_count < 3 or sample_count > 25:
-        raise HTTPException(status_code=400, detail="sample_count must be between 3 and 25.")
+        raise HTTPException(
+            status_code=400, detail="sample_count must be between 3 and 25."
+        )
 
     if tile_size < 128 or tile_size > 512:
-        raise HTTPException(status_code=400, detail="tile_size must be between 128 and 512.")
+        raise HTTPException(
+            status_code=400, detail="tile_size must be between 128 and 512."
+        )
 
     first = slices[0]
-    is_zip = (
-        len(slices) == 1
-        and (
-            (first.content_type and first.content_type in {"application/zip", "application/x-zip-compressed"})
-            or (first.filename and first.filename.lower().endswith(".zip"))
+    is_zip = len(slices) == 1 and (
+        (
+            first.content_type
+            and first.content_type
+            in {"application/zip", "application/x-zip-compressed"}
         )
+        or (first.filename and first.filename.lower().endswith(".zip"))
     )
 
     montage = None
@@ -501,7 +568,9 @@ async def ask_with_volume(
             all_names = sorted(zf.namelist())
             dicom_names = [name for name in all_names if name.lower().endswith(".dcm")]
             if dicom_names:
-                dicom_bytes = [zf.read(name) for name in dicom_names if not name.endswith("/")]
+                dicom_bytes = [
+                    zf.read(name) for name in dicom_names if not name.endswith("/")
+                ]
                 volume = load_dicom_volume(dicom_bytes)
                 montage = build_volume_montage_from_array(
                     volume=volume,
@@ -515,9 +584,13 @@ async def ask_with_volume(
                         status_code=400,
                         detail="Zip contains no supported image or DICOM slices.",
                     )
-                slice_bytes = [zf.read(name) for name in names if not name.endswith("/")]
+                slice_bytes = [
+                    zf.read(name) for name in names if not name.endswith("/")
+                ]
                 if len(slice_bytes) < 3:
-                    raise HTTPException(status_code=400, detail="At least 3 slices are required.")
+                    raise HTTPException(
+                        status_code=400, detail="At least 3 slices are required."
+                    )
                 montage = build_volume_montage(
                     slice_images=slice_bytes,
                     sample_count=sample_count,
@@ -538,14 +611,18 @@ async def ask_with_volume(
                     detail="DICOM series must be uploaded as a .zip of slices.",
                 )
             else:
-                raise HTTPException(status_code=400, detail="All slices must be image files.")
+                raise HTTPException(
+                    status_code=400, detail="All slices must be image files."
+                )
             payload = await upload.read()
             if not payload:
                 raise HTTPException(status_code=400, detail="Empty slice upload.")
             slice_bytes.append(payload)
 
         if len(slice_bytes) < 3:
-            raise HTTPException(status_code=400, detail="At least 3 slices are required.")
+            raise HTTPException(
+                status_code=400, detail="At least 3 slices are required."
+            )
 
         montage = build_volume_montage(
             slice_images=slice_bytes,
@@ -619,18 +696,23 @@ async def ask_with_wsi(
         raise HTTPException(status_code=400, detail="No patches provided.")
 
     if sample_count < 4 or sample_count > 36:
-        raise HTTPException(status_code=400, detail="sample_count must be between 4 and 36.")
+        raise HTTPException(
+            status_code=400, detail="sample_count must be between 4 and 36."
+        )
 
     if tile_size < 128 or tile_size > 512:
-        raise HTTPException(status_code=400, detail="tile_size must be between 128 and 512.")
+        raise HTTPException(
+            status_code=400, detail="tile_size must be between 128 and 512."
+        )
 
     first = patches[0]
-    is_zip = (
-        len(patches) == 1
-        and (
-            (first.content_type and first.content_type in {"application/zip", "application/x-zip-compressed"})
-            or (first.filename and first.filename.lower().endswith(".zip"))
+    is_zip = len(patches) == 1 and (
+        (
+            first.content_type
+            and first.content_type
+            in {"application/zip", "application/x-zip-compressed"}
         )
+        or (first.filename and first.filename.lower().endswith(".zip"))
     )
 
     patch_bytes: list[bytes] = []
@@ -641,7 +723,9 @@ async def ask_with_wsi(
         with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
             names = filter_image_filenames(sorted(zf.namelist()))
             if not names:
-                raise HTTPException(status_code=400, detail="Zip contains no supported patch images.")
+                raise HTTPException(
+                    status_code=400, detail="Zip contains no supported patch images."
+                )
             patch_bytes = [zf.read(name) for name in names if not name.endswith("/")]
     else:
         ordered = sorted(patches, key=lambda item: item.filename or "")
@@ -651,14 +735,18 @@ async def ask_with_wsi(
             elif upload.filename and filter_image_filenames([upload.filename]):
                 pass
             else:
-                raise HTTPException(status_code=400, detail="All patches must be image files.")
+                raise HTTPException(
+                    status_code=400, detail="All patches must be image files."
+                )
             payload = await upload.read()
             if not payload:
                 raise HTTPException(status_code=400, detail="Empty patch upload.")
             patch_bytes.append(payload)
 
     if len(patch_bytes) < 4:
-        raise HTTPException(status_code=400, detail="At least 4 patch images are required.")
+        raise HTTPException(
+            status_code=400, detail="At least 4 patch images are required."
+        )
 
     montage = build_wsi_montage(
         patch_images=patch_bytes,
@@ -731,10 +819,18 @@ async def compare_cxr(
         current_user=current_user,
     )
 
-    if not current_image.content_type or not current_image.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Current image must be an image file.")
-    if not prior_image.content_type or not prior_image.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Prior image must be an image file.")
+    if not current_image.content_type or not current_image.content_type.startswith(
+        "image/"
+    ):
+        raise HTTPException(
+            status_code=400, detail="Current image must be an image file."
+        )
+    if not prior_image.content_type or not prior_image.content_type.startswith(
+        "image/"
+    ):
+        raise HTTPException(
+            status_code=400, detail="Prior image must be an image file."
+        )
 
     current_bytes = await current_image.read()
     prior_bytes = await prior_image.read()
@@ -742,28 +838,32 @@ async def compare_cxr(
         raise HTTPException(status_code=400, detail="Both images must be provided.")
 
     llm_service = LLMService.get_instance()
-    cxr_prompt = f"""You are a radiologist AI assistant comparing chest X-rays over time.
+    cxr_prompt = f"""You are a radiologist AI assistant comparing longitudinal chest X-rays.
 
-Images provided:
-- Image 1: Current chest X-ray
-- Image 2: Prior chest X-ray
+I am providing two chest X-rays for the same patient:
+- Image 1 is the baseline prior study.
+- Image 2 is the follow-up current study.
+
+Compare Image 2 against Image 1 and describe interval changes.
+Focus on:
+- Technical quality differences that affect comparison.
+- New, resolved, or progressing pulmonary opacities.
+- Pleural, mediastinal, and cardiac silhouette interval changes.
+- Any acute findings that appear newly visible.
 
 Task: {prompt}
 
-Compare these chest X-rays and describe interval changes:
-- Technical comparison (positioning, exposure)
-- Cardiac silhouette changes
-- Lung field changes
-- Mediastinal and hilar changes
-- Any new, resolved, or progressing findings
-
-Interval Change Report:"""
+If there is no clear interval change, state that explicitly.
+Interval comparison report:"""
 
     llm_response = await llm_service.generate_with_images(
         prompt=cxr_prompt,
-        images_bytes=[current_bytes, prior_bytes],
+        images_bytes=[prior_bytes, current_bytes],
         system_prompt=None,
         max_new_tokens=400,
+        min_new_tokens=80,
+        do_sample=False,
+        repetition_penalty=1.1,
     )
 
     return CxrCompareResponse(
@@ -791,6 +891,7 @@ async def localize_findings(
     """Localize findings with bounding boxes for multiple modalities."""
     import io
     import zipfile
+
     from PIL import Image
 
     await get_patient_for_user(
@@ -800,7 +901,9 @@ async def localize_findings(
     )
 
     if image is None and not slices and not patches:
-        raise HTTPException(status_code=400, detail="Provide image, slices, or patches.")
+        raise HTTPException(
+            status_code=400, detail="Provide image, slices, or patches."
+        )
 
     montage_bytes: bytes | None = None
 
@@ -810,14 +913,19 @@ async def localize_findings(
         montage_bytes = await image.read()
     elif slices:
         first = slices[0]
-        is_zip = (
-            len(slices) == 1
-            and (
-                (first.content_type and first.content_type in {"application/zip", "application/x-zip-compressed"})
-                or (first.filename and first.filename.lower().endswith(".zip"))
+        is_zip = len(slices) == 1 and (
+            (
+                first.content_type
+                and first.content_type
+                in {"application/zip", "application/x-zip-compressed"}
             )
+            or (first.filename and first.filename.lower().endswith(".zip"))
         )
-        if len(slices) == 1 and first.filename and first.filename.lower().endswith((".nii", ".nii.gz")):
+        if (
+            len(slices) == 1
+            and first.filename
+            and first.filename.lower().endswith((".nii", ".nii.gz"))
+        ):
             nifti_bytes = await first.read()
             volume = load_nifti_volume(nifti_bytes)
             montage = build_volume_montage_from_array(
@@ -832,9 +940,13 @@ async def localize_findings(
                 raise HTTPException(status_code=400, detail="Empty zip upload.")
             with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
                 all_names = sorted(zf.namelist())
-                dicom_names = [name for name in all_names if name.lower().endswith(".dcm")]
+                dicom_names = [
+                    name for name in all_names if name.lower().endswith(".dcm")
+                ]
                 if dicom_names:
-                    dicom_bytes = [zf.read(name) for name in dicom_names if not name.endswith("/")]
+                    dicom_bytes = [
+                        zf.read(name) for name in dicom_names if not name.endswith("/")
+                    ]
                     volume = load_dicom_volume(dicom_bytes)
                     montage = build_volume_montage_from_array(
                         volume=volume,
@@ -845,8 +957,12 @@ async def localize_findings(
                 else:
                     names = filter_image_filenames(all_names)
                     if not names:
-                        raise HTTPException(status_code=400, detail="Zip contains no supported images.")
-                    slice_bytes = [zf.read(name) for name in names if not name.endswith("/")]
+                        raise HTTPException(
+                            status_code=400, detail="Zip contains no supported images."
+                        )
+                    slice_bytes = [
+                        zf.read(name) for name in names if not name.endswith("/")
+                    ]
                     montage = build_volume_montage(
                         slice_images=slice_bytes,
                         sample_count=sample_count,
@@ -864,12 +980,13 @@ async def localize_findings(
             montage_bytes = montage.montage_bytes
     elif patches:
         first = patches[0]
-        is_zip = (
-            len(patches) == 1
-            and (
-                (first.content_type and first.content_type in {"application/zip", "application/x-zip-compressed"})
-                or (first.filename and first.filename.lower().endswith(".zip"))
+        is_zip = len(patches) == 1 and (
+            (
+                first.content_type
+                and first.content_type
+                in {"application/zip", "application/x-zip-compressed"}
             )
+            or (first.filename and first.filename.lower().endswith(".zip"))
         )
         patch_bytes = []
         if is_zip:
@@ -879,8 +996,13 @@ async def localize_findings(
             with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
                 names = filter_image_filenames(sorted(zf.namelist()))
                 if not names:
-                    raise HTTPException(status_code=400, detail="Zip contains no supported patch images.")
-                patch_bytes = [zf.read(name) for name in names if not name.endswith("/")]
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Zip contains no supported patch images.",
+                    )
+                patch_bytes = [
+                    zf.read(name) for name in names if not name.endswith("/")
+                ]
         else:
             patch_bytes = [await upload.read() for upload in patches]
         montage = build_wsi_montage(
@@ -891,7 +1013,9 @@ async def localize_findings(
         montage_bytes = montage.montage_bytes
 
     if montage_bytes is None:
-        raise HTTPException(status_code=400, detail="Unable to build image for localization.")
+        raise HTTPException(
+            status_code=400, detail="Unable to build image for localization."
+        )
 
     image_obj = Image.open(io.BytesIO(montage_bytes))
     width, height = image_obj.size
@@ -961,13 +1085,13 @@ async def create_conversation(
         db=db,
         current_user=current_user,
     )
-    
+
     manager = ConversationManager(db)
     conversation = await manager.create_conversation(
         patient_id=request.patient_id,
         title=request.title,
     )
-    
+
     return ConversationResponse(
         conversation_id=conversation.conversation_id,
         patient_id=conversation.patient_id,
@@ -987,7 +1111,7 @@ async def get_conversation(
     """Get a conversation with all messages."""
     manager = ConversationManager(db)
     conversation = await manager.get_conversation(conversation_id)
-    
+
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     await get_patient_for_user(
@@ -995,7 +1119,7 @@ async def get_conversation(
         db=db,
         current_user=current_user,
     )
-    
+
     return ConversationDetail(
         conversation_id=conversation.conversation_id,
         patient_id=conversation.patient_id,
@@ -1030,7 +1154,7 @@ async def list_conversations(
     )
     manager = ConversationManager(db)
     conversations = await manager.list_conversations(patient_id, limit)
-    
+
     return [
         ConversationResponse(
             conversation_id=conv.conversation_id,
@@ -1052,7 +1176,7 @@ async def delete_conversation(
     """Delete a conversation and all its messages."""
     manager = ConversationManager(db)
     deleted = await manager.delete_conversation(conversation_id)
-    
+
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -1066,8 +1190,8 @@ async def update_conversation_title(
     """Update conversation title."""
     manager = ConversationManager(db)
     updated = await manager.update_title(conversation_id, title)
-    
+
     if not updated:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
+
     return {"title": title}
