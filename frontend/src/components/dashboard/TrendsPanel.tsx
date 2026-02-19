@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { InsightsLabItem } from '../../api/generated';
 
 type TrendsPanelProps = {
@@ -20,18 +21,21 @@ function TrendsPanel({
   formatDate,
 }: TrendsPanelProps) {
   const hasLabs = recentLabs.length > 0;
+  const [showSetupSteps, setShowSetupSteps] = useState(false);
 
   return (
     <div className={`insight-panel trends ${!hasLabs && !hasDocuments ? 'empty-guidance' : ''}`}>
       <div className="insight-panel-header">
         <div>
           <p className="eyebrow">Trends</p>
-          <h2>{hasLabs ? 'A1C over time' : 'Get started'}</h2>
+          <h2>{hasLabs ? 'A1C over time' : 'Trends setup'}</h2>
           <p className="subtitle">{insightsLoading ? 'Loading trends...' : insightSummary}</p>
         </div>
-        <button className="ghost-button compact" type="button" onClick={onAskQuestion}>
-          Ask a question
-        </button>
+        {hasLabs ? (
+          <button className="ghost-button compact" type="button" onClick={onAskQuestion}>
+            Ask a question
+          </button>
+        ) : null}
       </div>
       {hasLabs ? (
         <>
@@ -57,27 +61,50 @@ function TrendsPanel({
         </>
       ) : (
         <div className="empty-guidance-content">
-          <div className="guidance-step">
-            <span className="step-number">1</span>
-            <div>
-              <h4>Upload medical documents</h4>
-              <p>Lab reports, prescriptions, discharge summaries, or medical images</p>
+          <div className="empty-guidance-compact">
+            <p className="dashboard-empty">
+              No trendable lab values yet. Add a document or ask a quick question to begin.
+            </p>
+            <div className="empty-guidance-actions">
+              <button className="ghost-button compact" type="button" onClick={onAskQuestion}>
+                Ask in chat
+              </button>
+              <button
+                className="ghost-button compact"
+                type="button"
+                onClick={() => setShowSetupSteps((prev) => !prev)}
+              >
+                {showSetupSteps ? 'Hide setup steps' : 'Show setup steps'}
+              </button>
             </div>
           </div>
-          <div className="guidance-step">
-            <span className="step-number">2</span>
-            <div>
-              <h4>AI extracts the data <span className="ai-badge">MedGemma</span></h4>
-              <p>Values, dates, medications, and diagnoses are automatically extracted</p>
+          {showSetupSteps ? (
+            <div className="empty-guidance-steps">
+              <div className="guidance-step">
+                <span className="step-number">1</span>
+                <div>
+                  <h4>Upload medical documents</h4>
+                  <p>Lab reports, prescriptions, discharge summaries, or medical images</p>
+                </div>
+              </div>
+              <div className="guidance-step">
+                <span className="step-number">2</span>
+                <div>
+                  <h4>
+                    AI extracts the data <span className="ai-badge">MedGemma</span>
+                  </h4>
+                  <p>Values, dates, medications, and diagnoses are automatically extracted</p>
+                </div>
+              </div>
+              <div className="guidance-step">
+                <span className="step-number">3</span>
+                <div>
+                  <h4>Ask questions in plain English</h4>
+                  <p>"What's my A1C trend?" or "When was my last colonoscopy?"</p>
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="guidance-step">
-            <span className="step-number">3</span>
-            <div>
-              <h4>Ask questions in plain English</h4>
-              <p>"What's my A1C trend?" or "When was my last colonoscopy?"</p>
-            </div>
-          </div>
+          ) : null}
         </div>
       )}
     </div>
