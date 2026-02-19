@@ -1,8 +1,5 @@
 """Insights API for dashboards."""
 
-from datetime import datetime
-from typing import Optional
-
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,12 +26,16 @@ async def get_patient_insights(
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
 
     lab_total = await db.scalar(
-        select(func.count()).select_from(LabResult).where(LabResult.patient_id == patient_id)
+        select(func.count())
+        .select_from(LabResult)
+        .where(LabResult.patient_id == patient_id)
     )
     lab_abnormal = await db.scalar(
-        select(func.count()).select_from(LabResult).where(
+        select(func.count())
+        .select_from(LabResult)
+        .where(
             LabResult.patient_id == patient_id,
-            LabResult.is_abnormal == True,
+            LabResult.is_abnormal,
         )
     )
 
@@ -54,7 +55,8 @@ async def get_patient_insights(
         recent_labs.append(
             InsightsLabItem(
                 test_name=lab.test_name,
-                value=lab.value or (str(lab.numeric_value) if lab.numeric_value is not None else None),
+                value=lab.value
+                or (str(lab.numeric_value) if lab.numeric_value is not None else None),
                 unit=lab.unit,
                 collected_at=lab.collected_at,
                 is_abnormal=lab.is_abnormal,
@@ -65,7 +67,7 @@ async def get_patient_insights(
 
     meds_rows = await db.execute(
         select(Medication)
-        .where(Medication.patient_id == patient_id, Medication.is_active == True)
+        .where(Medication.patient_id == patient_id, Medication.is_active)
         .order_by(Medication.prescribed_at.desc().nullslast(), Medication.id.desc())
         .limit(5)
     )
