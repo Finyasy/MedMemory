@@ -1,65 +1,80 @@
 """Pydantic schemas for API request/response validation."""
 
-from app.schemas.patient import (
-    PatientBase,
-    PatientCreate,
-    PatientUpdate,
-    PatientResponse,
-    PatientSummary,
+from app.schemas.context import (
+    ContextRequest,
+    ContextResponse,
+    QueryAnalysisResponse,
+    QuickSearchRequest,
+    QuickSearchResponse,
+    SimpleContextRequest,
+    SimpleContextResponse,
 )
-from app.schemas.records import (
-    RecordBase,
-    RecordCreate,
-    RecordResponse,
-)
-from app.schemas.ingestion import (
-    LabResultIngest,
-    LabResultResponse,
-    LabPanelIngest,
-    MedicationIngest,
-    MedicationResponse,
-    EncounterIngest,
-    EncounterResponse,
-    VitalsIngest,
-    BatchIngestionRequest,
-    IngestionResultResponse,
+from app.schemas.dashboard import (
+    AlertsEvaluateResponse,
+    DashboardHighlightsResponse,
+    DataConnectionResponse,
+    DataConnectionUpsert,
+    MetricAlertResponse,
+    MetricDetailResponse,
+    WatchMetricCreate,
+    WatchMetricResponse,
+    WatchMetricUpdate,
 )
 from app.schemas.document import (
-    DocumentUpload,
-    DocumentResponse,
+    BatchProcessResponse,
     DocumentDetail,
     DocumentProcessRequest,
     DocumentProcessResponse,
-    BatchProcessResponse,
+    DocumentResponse,
+    DocumentUpload,
     OcrRefinementResponse,
 )
-from app.schemas.memory import (
-    SearchRequest,
-    SearchResultItem,
-    SearchResponse,
-    IndexTextRequest,
-    IndexPatientRequest,
-    IndexingStatsResponse,
-    MemoryChunkResponse,
-    MemoryStatsResponse,
-    ContextRequest as MemoryContextRequest,
-    ContextResponse as MemoryContextResponse,
-    SimilarChunksRequest,
-    SimilarChunksResponse,
-)
-from app.schemas.context import (
-    QueryAnalysisResponse,
-    ContextRequest,
-    ContextResponse,
-    SimpleContextRequest,
-    SimpleContextResponse,
-    QuickSearchRequest,
-    QuickSearchResponse,
+from app.schemas.ingestion import (
+    BatchIngestionRequest,
+    EncounterIngest,
+    EncounterResponse,
+    IngestionResultResponse,
+    LabPanelIngest,
+    LabResultIngest,
+    LabResultResponse,
+    MedicationIngest,
+    MedicationResponse,
+    VitalsIngest,
 )
 from app.schemas.insights import (
     InsightsLabItem,
     InsightsMedicationItem,
     PatientInsightsResponse,
+)
+from app.schemas.memory import (
+    ContextRequest as MemoryContextRequest,
+)
+from app.schemas.memory import (
+    ContextResponse as MemoryContextResponse,
+)
+from app.schemas.memory import (
+    IndexingStatsResponse,
+    IndexPatientRequest,
+    IndexTextRequest,
+    MemoryChunkResponse,
+    MemoryStatsResponse,
+    SearchRequest,
+    SearchResponse,
+    SearchResultItem,
+    SimilarChunksRequest,
+    SimilarChunksResponse,
+)
+from app.schemas.patient import (
+    PatientBase,
+    PatientCreate,
+    PatientResponse,
+    PatientSummary,
+    PatientUpdate,
+)
+from app.schemas.records import (
+    RecordBase,
+    RecordCreate,
+    RecordResponse,
 )
 
 __all__ = [
@@ -116,4 +131,18 @@ __all__ = [
     "SimpleContextResponse",
     "QuickSearchRequest",
     "QuickSearchResponse",
+    # Insights
+    "InsightsLabItem",
+    "InsightsMedicationItem",
+    "PatientInsightsResponse",
+    # Dashboard
+    "DataConnectionUpsert",
+    "DataConnectionResponse",
+    "DashboardHighlightsResponse",
+    "MetricDetailResponse",
+    "WatchMetricCreate",
+    "WatchMetricUpdate",
+    "WatchMetricResponse",
+    "MetricAlertResponse",
+    "AlertsEvaluateResponse",
 ]
