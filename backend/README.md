@@ -44,7 +44,14 @@ docker compose -f docker-compose.local-backend.dev.yml up -d
 
 **Local backend prerequisites:**
 - Ensure the MedGemma model is downloaded under `backend/models/medgemma-1.5-4b-it`.
-- `backend/.env` should include `HF_TOKEN`, `LLM_MODEL_PATH=models/medgemma-1.5-4b-it`, and `LLM_QUANTIZE_4BIT=false`.
+- Copy `backend/.env.example` to `backend/.env` and set secrets (`DATABASE_URL`, `JWT_SECRET_KEY`, `HF_TOKEN`).
+- Keep grounding-safe defaults enabled in `backend/.env`:
+  - `LLM_DO_SAMPLE=false`
+  - `LLM_STRICT_GROUNDING=true`
+  - `LLM_ALLOW_WEAK_FALLBACK=false`
+  - `LLM_MIN_RELEVANCE_SCORE=0.45`
+  - `LLM_REPETITION_PENALTY=1.1`
+  - `LLM_REQUIRE_NUMERIC_CITATIONS=false` (set `true` for stricter patient-mode numeric citation enforcement)
 - The dev container sets `VITE_API_BASE=http://localhost:8000` so the browser talks directly to the local backend.
  - For offline mode (after models are downloaded), set `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
 
@@ -86,6 +93,28 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
   -d '{"email": "you@example.com", "password": "your-password"}'
 ```
 
+**Apply live provider sync env config:**
+```bash
+cd backend
+python scripts/apply_provider_sync_env.py \
+  --env-file .env \
+  --base-urls '<JSON_OR_PATH>' \
+  --bearer-tokens '<JSON_OR_PATH>' \
+  --api-keys '<JSON_OR_PATH>'
+```
+
+**Dry-run live provider sync (no ingestion writes):**
+```bash
+cd backend
+python scripts/dry_run_provider_connections.py \
+  --base-url http://localhost:8000/api/v1 \
+  --patient-id 1 \
+  --token "<JWT>"
+```
+If a provider endpoint is configured but unavailable/non-FHIR and
+`PROVIDER_SYNC_LIVE_FALLBACK_TO_LOCAL_SCAN=true`, dry-run reports `local_fallback`
+instead of failing.
+
 ## OCR Refinement + Vision Chat
 
 ### OCR refinement (Tesseract -> Gemma)
@@ -121,6 +150,29 @@ curl -X POST http://localhost:8000/api/v1/chat/vision \
 Once running, visit:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+
+## Hallucination Regression Eval
+
+Run the fixed RAG guardrail regression set and generate gate-compatible metrics:
+
+```bash
+cd backend
+uv run python scripts/evaluate_rag_hallucination.py \
+  --eval-file data/hallucination_rag_eval/eval.jsonl \
+  --output-dir artifacts/hallucination_eval/current
+```
+
+Then run the gate on the generated metrics:
+
+```bash
+cd backend
+uv run python scripts/hallucination_regression_gate.py \
+  --candidate-metrics artifacts/hallucination_eval/current/metrics_summary.json \
+  --candidate-scope baseline \
+  --baseline-metrics data/hallucination_eval/baseline_metrics_summary.json \
+  --baseline-scope baseline \
+  --output-json artifacts/hallucination_eval/gate_report.json
+```
 
 ---
 
