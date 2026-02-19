@@ -8,7 +8,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(AsyncAttrs, DeclarativeBase):
     """Base class for all database models."""
-    
+
     type_annotation_map = {
         datetime: DateTime(timezone=True),
     }
@@ -16,7 +16,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 class TimestampMixin:
     """Mixin for created_at and updated_at timestamps."""
-    
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -33,6 +33,5 @@ class TimestampMixin:
 def model_to_dict(model: Any) -> dict:
     """Convert a SQLAlchemy model to a dictionary."""
     return {
-        column.name: getattr(model, column.name)
-        for column in model.__table__.columns
+        column.name: getattr(model, column.name) for column in model.__table__.columns
     }
