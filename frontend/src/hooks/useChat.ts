@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api';
 import useAppStore from '../store/useAppStore';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ChatSource } from '../types';
 
 type UseChatOptions = {
   patientId: number;
@@ -32,19 +32,47 @@ const useChat = ({ patientId, onError, clinicianMode }: UseChatOptions) => {
     const prompt = promptOverride?.trim() || question.trim();
     if (!prompt || isStreaming) return;
     const isSummaryPrompt = /most recent document|latest document|summarize|summary|overview|findings/i.test(prompt);
+    const isCoachingPrompt = /how(?:'s|\s+is)\s+my|what changed|trend|reviewed .* levels|explain .* level|is this improving/i.test(prompt);
+    const useStructuredPath = isSummaryPrompt || isCoachingPrompt;
     setQuestion('');
     setMessages((prev) => [...prev, { role: 'user', content: prompt }, { role: 'assistant', content: '' }]);
     setIsStreaming(true);
 
     let accumulator = '';
+    let streamMetadata: {
+      num_sources?: number;
+      sources?: ChatSource[];
+      structured_data?: Record<string, unknown> | null;
+    } = {};
     try {
-      if (isSummaryPrompt) {
+      if (useStructuredPath) {
         const response = await api.chatAsk(patientId, prompt, {
           use_conversation_history: false,
+          structured: true,
+          coachingMode: isCoachingPrompt,
+          clinicianMode: Boolean(clinicianMode),
         });
+        const sources = Array.isArray(response.sources)
+          ? (response.sources as ChatSource[])
+          : [];
+        const numSources = typeof response.num_sources === 'number'
+          ? response.num_sources
+          : sources.length;
+        const structuredData = (
+          response.structured_data &&
+          typeof response.structured_data === 'object'
+        )
+          ? (response.structured_data as Record<string, unknown>)
+          : null;
         setMessages((prev) => {
           const updated = [...prev];
-          updated[updated.length - 1] = { role: 'assistant', content: response.answer };
+          updated[updated.length - 1] = {
+            role: 'assistant',
+            content: response.answer,
+            sources,
+            num_sources: numSources,
+            structured_data: structuredData,
+          };
           return updated;
         });
         setIsStreaming(false);
@@ -58,14 +86,41 @@ const useChat = ({ patientId, onError, clinicianMode }: UseChatOptions) => {
           accumulator += chunk;
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: accumulator };
+            updated[updated.length - 1] = {
+              role: 'assistant',
+              content: accumulator,
+              sources: streamMetadata.sources,
+              num_sources: streamMetadata.num_sources,
+              structured_data: streamMetadata.structured_data ?? null,
+            };
             return updated;
           });
         },
         () => {
           setIsStreaming(false);
         },
-        { clinicianMode },
+        {
+          clinicianMode,
+          onMetadata: (metadata) => {
+            streamMetadata = {
+              num_sources: metadata.num_sources,
+              sources: metadata.sources,
+              structured_data: metadata.structured_data ?? null,
+            };
+            setMessages((prev) => {
+              const updated = [...prev];
+              const currentContent = accumulator || updated[updated.length - 1]?.content || '';
+              updated[updated.length - 1] = {
+                role: 'assistant',
+                content: currentContent,
+                sources: streamMetadata.sources,
+                num_sources: streamMetadata.num_sources,
+                structured_data: streamMetadata.structured_data,
+              };
+              return updated;
+            });
+          },
+        },
       );
     } catch (error) {
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
@@ -183,7 +238,10 @@ Be concise and focus on actual findings, not possibilities.`;
     setQuestion('');
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: `${prompt}\n[Current: ${currentFile.name}, Prior: ${priorFile.name}]` },
+      {
+        role: 'user',
+        content: `${prompt}\n[Baseline/Prior: ${priorFile.name}, Current/Follow-up: ${currentFile.name}]`,
+      },
       { role: 'assistant', content: '' },
     ]);
     setIsStreaming(true);
