@@ -28,7 +28,9 @@ async def test_real_medgemma_inference_smoke():
 
     model_path = _resolve_model_path()
     if model_path is None:
-        pytest.skip("LLM_MODEL_PATH is not configured for local real-inference smoke test.")
+        pytest.skip(
+            "LLM_MODEL_PATH is not configured for local real-inference smoke test."
+        )
     if not model_path.exists():
         pytest.skip(f"Model path not found for smoke test: {model_path}")
 
@@ -53,4 +55,3 @@ async def test_real_medgemma_inference_smoke():
         assert info["is_loaded"] is True
     finally:
         LLMService._instance = None
-
