@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { PatientSummary } from '../types';
 
 type PatientSelectorProps = {
@@ -21,27 +21,31 @@ const PatientSelector = ({
   const inputId = 'patient-search';
   const patientIds = useMemo(() => patients.map((patient) => patient.id), [patients]);
   const selectedIndex = useMemo(() => patientIds.indexOf(selectedPatientId), [patientIds, selectedPatientId]);
-  const [highlightedIndex, setHighlightedIndex] = useState(selectedIndex >= 0 ? selectedIndex : 0);
-
-  useEffect(() => {
-    if (selectedIndex >= 0) {
-      setHighlightedIndex(selectedIndex);
-    } else {
-      setHighlightedIndex(0);
-    }
-  }, [selectedIndex, patientIds.length]);
+  const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
+  const activeIndex = useMemo(() => {
+    if (!patients.length) return 0;
+    if (selectedIndex >= 0) return selectedIndex;
+    const fallback = highlightedIndex ?? 0;
+    return Math.min(Math.max(fallback, 0), patients.length - 1);
+  }, [patients.length, selectedIndex, highlightedIndex]);
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (!patients.length) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setHighlightedIndex((prev) => Math.min(prev + 1, patients.length - 1));
+      setHighlightedIndex((prev) => {
+        const current = selectedIndex >= 0 ? selectedIndex : (prev ?? 0);
+        return Math.min(current + 1, patients.length - 1);
+      });
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
-      setHighlightedIndex((prev) => Math.max(prev - 1, 0));
+      setHighlightedIndex((prev) => {
+        const current = selectedIndex >= 0 ? selectedIndex : (prev ?? 0);
+        return Math.max(current - 1, 0);
+      });
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      const target = patients[highlightedIndex];
+      const target = patients[activeIndex];
       if (target) onSelectPatient(target.id);
     }
   };
@@ -65,7 +69,7 @@ const PatientSelector = ({
         role="listbox"
         aria-label="Patient results"
         aria-activedescendant={
-          patients[highlightedIndex] ? `patient-option-${patients[highlightedIndex].id}` : undefined
+          patients[activeIndex] ? `patient-option-${patients[activeIndex].id}` : undefined
         }
         onKeyDown={handleKeyDown}
       >
@@ -85,7 +89,7 @@ const PatientSelector = ({
               id={`patient-option-${patient.id}`}
               type="button"
               className={`patient-row${patient.id === selectedPatientId ? ' active' : ''}${
-                patientIds[highlightedIndex] === patient.id ? ' focused' : ''
+                patientIds[activeIndex] === patient.id ? ' focused' : ''
               }`}
               onClick={() => onSelectPatient(patient.id)}
               onMouseEnter={() => setHighlightedIndex(patientIds.indexOf(patient.id))}
