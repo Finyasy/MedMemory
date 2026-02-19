@@ -7,7 +7,7 @@ import ProfileModal from './ProfileModal';
 import AddDependentModal from './AddDependentModal';
 import useAppStore from '../store/useAppStore';
 import useToast from '../hooks/useToast';
-import { api, buildBackendUrl } from '../api';
+import { api, type DependentSummary } from '../api';
 
 type BackendStatus = 'checking' | 'online' | 'offline';
 
@@ -21,14 +21,6 @@ type AccessRequestItem = {
   status: string;
   scopes: string;
   created_at: string;
-};
-
-type Dependent = {
-  id: number;
-  full_name: string;
-  age: number | null;
-  sex: string | null;
-  relationship_type: string;
 };
 
 type TopBarProps = {
@@ -61,7 +53,7 @@ const TopBar = ({
   const [resetToken, setResetToken] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [profileSwitcherOpen, setProfileSwitcherOpen] = useState(false);
-  const [dependents, setDependents] = useState<Dependent[]>([]);
+  const [dependents, setDependents] = useState<DependentSummary[]>([]);
   const [primaryPatientId, setPrimaryPatientId] = useState<number | null>(null);
   const [primaryPatientName, setPrimaryPatientName] = useState<string>('My Health');
   const [accessRequests, setAccessRequests] = useState<AccessRequestItem[]>([]);
@@ -81,30 +73,21 @@ const TopBar = ({
   const loadDependents = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
-      const headers = await api.getAuthHeaders();
-      const res = await fetch(buildBackendUrl('/api/v1/dependents'), { headers });
-      if (res.ok) {
-        const data = await res.json();
-        setDependents(data);
-      }
+      const data = await api.listDependents();
+      setDependents(data);
     } catch (error) {
       console.error('Failed to load dependents', error);
+      setDependents([]);
     }
   }, [isAuthenticated]);
 
   const loadPrimaryPatient = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
-      const headers = await api.getAuthHeaders();
-      const res = await fetch(buildBackendUrl('/api/v1/profile'), { headers });
-      if (res.ok) {
-        const data = await res.json();
-        if (typeof data?.id === 'number') {
-          setPrimaryPatientId(data.id);
-        }
-        if (data?.full_name) {
-          setPrimaryPatientName(data.full_name);
-        }
+      const profile = await api.getPrimaryProfile();
+      setPrimaryPatientId(profile.id);
+      if (profile.full_name) {
+        setPrimaryPatientName(profile.full_name);
       }
     } catch {
       // Silently fail
