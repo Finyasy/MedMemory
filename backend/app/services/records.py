@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional, Protocol
+from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy import select
-from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models import Patient, Record
 from app.schemas.records import RecordCreate
@@ -17,22 +17,18 @@ from app.schemas.records import RecordCreate
 class RecordRepository(Protocol):
     async def list_records(
         self,
-        patient_id: Optional[int],
-        owner_user_id: Optional[int],
-        record_type: Optional[str],
+        patient_id: int | None,
+        owner_user_id: int | None,
+        record_type: str | None,
         skip: int,
         limit: int,
-    ) -> list:
-        ...
+    ) -> list: ...
 
-    async def create_record(self, patient_id: int, record: RecordCreate):
-        ...
+    async def create_record(self, patient_id: int, record: RecordCreate): ...
 
-    async def get_record(self, record_id: int):
-        ...
+    async def get_record(self, record_id: int): ...
 
-    async def delete_record(self, record_id: int) -> bool:
-        ...
+    async def delete_record(self, record_id: int) -> bool: ...
 
 
 class SQLRecordRepository:
@@ -43,9 +39,9 @@ class SQLRecordRepository:
 
     async def list_records(
         self,
-        patient_id: Optional[int],
-        owner_user_id: Optional[int],
-        record_type: Optional[str],
+        patient_id: int | None,
+        owner_user_id: int | None,
+        record_type: str | None,
         skip: int,
         limit: int,
     ) -> list[Record]:
@@ -94,10 +90,8 @@ class SQLRecordRepository:
         await self.db.refresh(new_record)
         return new_record
 
-    async def get_record(self, record_id: int) -> Optional[Record]:
-        result = await self.db.execute(
-            select(Record).where(Record.id == record_id)
-        )
+    async def get_record(self, record_id: int) -> Record | None:
+        result = await self.db.execute(select(Record).where(Record.id == record_id))
         return result.scalar_one_or_none()
 
     async def delete_record(self, record_id: int) -> bool:
@@ -128,9 +122,9 @@ class InMemoryRecordRepository:
 
     async def list_records(
         self,
-        patient_id: Optional[int],
-        owner_user_id: Optional[int],
-        record_type: Optional[str],
+        patient_id: int | None,
+        owner_user_id: int | None,
+        record_type: str | None,
         skip: int,
         limit: int,
     ) -> list[InMemoryRecord]:
@@ -144,8 +138,10 @@ class InMemoryRecordRepository:
 
         return records[skip : skip + limit]
 
-    async def create_record(self, patient_id: int, record: RecordCreate) -> InMemoryRecord:
-        now = datetime.now(timezone.utc)
+    async def create_record(
+        self, patient_id: int, record: RecordCreate
+    ) -> InMemoryRecord:
+        now = datetime.now(UTC)
         new_record = InMemoryRecord(
             id=self._next_id,
             patient_id=patient_id,
@@ -159,7 +155,7 @@ class InMemoryRecordRepository:
         self._next_id += 1
         return new_record
 
-    async def get_record(self, record_id: int) -> Optional[InMemoryRecord]:
+    async def get_record(self, record_id: int) -> InMemoryRecord | None:
         for record in self._records:
             if record.id == record_id:
                 return record
