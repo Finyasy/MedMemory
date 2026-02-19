@@ -1,22 +1,18 @@
 """Memory and search API endpoints."""
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.api.deps import get_authenticated_user, get_patient_for_user
-from app.database import get_db
 from app.config import settings
-from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
+from app.database import get_db
 from app.models import MemoryChunk, Patient, User
 from app.schemas.memory import (
     ContextRequest,
     ContextResponse,
     IndexingStatsResponse,
-    IndexPatientRequest,
     IndexTextRequest,
     MemoryChunkResponse,
     MemoryStatsResponse,
@@ -31,6 +27,7 @@ from app.services.embeddings import (
     MemoryIndexingService,
     SimilaritySearchService,
 )
+from app.utils.cache import CacheKeys, clear_cache, get_cached, set_cached
 
 router = APIRouter(prefix="/memory", tags=["Memory & Search"])
 
@@ -58,18 +55,25 @@ async def semantic_search(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Perform semantic search over the medical memory."""
+    if request.patient_id is not None:
+        await get_patient_for_user(
+            patient_id=request.patient_id,
+            db=db,
+            current_user=current_user,
+        )
     search_service = SimilaritySearchService(db)
-    
+
     response = await search_service.search(
         query=request.query,
         patient_id=request.patient_id,
+        owner_user_id=current_user.id,
         source_types=request.source_types,
         limit=request.limit,
         min_similarity=request.min_similarity,
         date_from=request.date_from,
         date_to=request.date_to,
     )
-    
+
     return SearchResponse(
         query=response.query,
         results=[
@@ -101,7 +105,7 @@ async def search_patient_history(
 ):
     """Search within a specific patient's medical history."""
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
-    
+
     search_service = SimilaritySearchService(db)
     response = await search_service.search_patient_history(
         patient_id=patient_id,
@@ -109,7 +113,7 @@ async def search_patient_history(
         limit=limit,
         min_similarity=min_similarity,
     )
-    
+
     return SearchResponse(
         query=response.query,
         results=[
@@ -137,8 +141,13 @@ async def get_context_for_question(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get relevant context for answering a question (RAG)."""
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
+    )
     search_service = SimilaritySearchService(db)
-    
+
     context = await search_service.get_patient_context(
         patient_id=request.patient_id,
         query=request.question,
@@ -146,7 +155,7 @@ async def get_context_for_question(
         max_tokens=request.max_tokens,
     )
     num_chunks = context.count("---") + 1 if context else 0
-    
+
     return ContextResponse(
         patient_id=request.patient_id,
         question=request.question,
@@ -173,9 +182,10 @@ async def find_similar_chunks(
     similar = await search_service.find_similar_chunks(
         chunk_id=request.chunk_id,
         limit=request.limit,
-        same_patient_only=True,
+        same_patient_only=request.same_patient_only,
+        owner_user_id=current_user.id,
     )
-    
+
     return SimilarChunksResponse(
         source_chunk_id=request.chunk_id,
         similar_chunks=[
@@ -201,8 +211,13 @@ async def index_custom_text(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Index custom text content into memory."""
+    await get_patient_for_user(
+        patient_id=request.patient_id,
+        db=db,
+        current_user=current_user,
+    )
     indexing_service = MemoryIndexingService(db)
-    
+
     chunks = await indexing_service.index_text(
         patient_id=request.patient_id,
         content=request.content,
@@ -211,7 +226,7 @@ async def index_custom_text(
         chunk_type=request.chunk_type,
         importance_score=request.importance_score,
     )
-    
+
     return IndexingStatsResponse(total_chunks=len(chunks))
 
 
@@ -224,10 +239,10 @@ async def index_patient_records(
     """Index all records for a patient."""
     # Verify patient exists
     await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
-    
+
     indexing_service = MemoryIndexingService(db)
     stats = await indexing_service.index_all_for_patient(patient_id)
-    
+
     return IndexingStatsResponse(**stats)
 
 
@@ -239,7 +254,7 @@ async def reindex_chunk(
 ):
     """Re-generate embedding for a specific chunk."""
     indexing_service = MemoryIndexingService(db)
-    
+
     await _get_chunk_for_user(chunk_id=chunk_id, db=db, current_user=current_user)
     try:
         chunk = await indexing_service.reindex_chunk(chunk_id)
@@ -252,10 +267,11 @@ async def reindex_chunk(
 # Memory Management
 # ============================================
 
+
 @router.get("/chunks", response_model=list[MemoryChunkResponse])
 async def list_memory_chunks(
-    patient_id: Optional[int] = None,
-    source_type: Optional[str] = None,
+    patient_id: int | None = None,
+    source_type: str | None = None,
     indexed_only: bool = True,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
@@ -286,22 +302,24 @@ async def list_memory_chunks(
         .join(Patient, MemoryChunk.patient_id == Patient.id)
         .where(Patient.user_id == current_user.id)
     )
-    
+
     if patient_id:
-        await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+        await get_patient_for_user(
+            patient_id=patient_id, db=db, current_user=current_user
+        )
         query = query.where(MemoryChunk.patient_id == patient_id)
-    
+
     if source_type:
         query = query.where(MemoryChunk.source_type == source_type)
-    
+
     if indexed_only:
-        query = query.where(MemoryChunk.is_indexed == True)
-    
+        query = query.where(MemoryChunk.is_indexed)
+
     query = query.order_by(MemoryChunk.created_at.desc()).offset(skip).limit(limit)
-    
+
     result = await db.execute(query)
     chunks = result.scalars().all()
-    
+
     return [MemoryChunkResponse.model_validate(c) for c in chunks]
 
 
@@ -312,8 +330,10 @@ async def get_memory_chunk(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get a specific memory chunk."""
-    chunk = await _get_chunk_for_user(chunk_id=chunk_id, db=db, current_user=current_user)
-    
+    chunk = await _get_chunk_for_user(
+        chunk_id=chunk_id, db=db, current_user=current_user
+    )
+
     return MemoryChunkResponse.model_validate(chunk)
 
 
@@ -324,7 +344,9 @@ async def delete_memory_chunk(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Delete a specific memory chunk."""
-    chunk = await _get_chunk_for_user(chunk_id=chunk_id, db=db, current_user=current_user)
+    chunk = await _get_chunk_for_user(
+        chunk_id=chunk_id, db=db, current_user=current_user
+    )
     db.delete(chunk)
     await clear_cache(CacheKeys.memory_stats_prefix(current_user.id))
 
@@ -336,37 +358,48 @@ async def delete_patient_memory(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Delete all memory chunks for a patient (irreversible)."""
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+    )
     indexing_service = MemoryIndexingService(db)
     count = await indexing_service.delete_patient_memory(patient_id)
     await clear_cache(CacheKeys.memory_stats_prefix(current_user.id))
     return {"deleted_chunks": count}
 
 
-
 @router.get("/stats", response_model=MemoryStatsResponse)
 async def get_memory_stats(
-    patient_id: Optional[int] = None,
+    patient_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get statistics about indexed memory."""
     if patient_id is not None:
-        await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+        await get_patient_for_user(
+            patient_id=patient_id, db=db, current_user=current_user
+        )
     cache_key = CacheKeys.memory_stats(current_user.id, patient_id)
     cached = await get_cached(cache_key)
     if cached is not None:
         return cached
     search_service = SimilaritySearchService(db)
-    counts = await search_service.count_indexed_chunks(patient_id)
-    
+    counts = await search_service.count_indexed_chunks(
+        patient_id=patient_id,
+        owner_user_id=current_user.id,
+    )
+
     total = counts.pop("total", 0)
-    
+
     response = MemoryStatsResponse(
         total=total,
         by_source_type=counts,
         patient_id=patient_id,
     )
-    await set_cached(cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds)
+    await set_cached(
+        cache_key, response, ttl_seconds=settings.response_cache_ttl_seconds
+    )
     return response
 
 
@@ -374,36 +407,9 @@ async def get_memory_stats(
 async def get_embedding_info():
     """Get information about the embedding model."""
     embedding_service = EmbeddingService.get_instance()
-    
+
     return {
         "model_name": embedding_service.model_name,
         "dimension": embedding_service.dimension,
         "device": embedding_service.device,
     }
-    await get_patient_for_user(
-        patient_id=request.patient_id,
-        db=db,
-        current_user=current_user,
-    )
-    await get_patient_for_user(
-        patient_id=request.patient_id,
-        db=db,
-        current_user=current_user,
-    )
-    if request.same_patient_only:
-        source_chunk = await _get_chunk_for_user(
-            chunk_id=request.chunk_id,
-            db=db,
-            current_user=current_user,
-        )
-        await get_patient_for_user(
-            patient_id=source_chunk.patient_id,
-            db=db,
-            current_user=current_user,
-        )
-    await get_patient_for_user(
-        patient_id=request.patient_id,
-        db=db,
-        current_user=current_user,
-    )
-    await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
