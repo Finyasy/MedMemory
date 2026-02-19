@@ -27,10 +27,12 @@ def test_ingestion_result_to_dict():
 @pytest.mark.anyio
 async def test_ingestion_batch_counts_errors():
     service = DummyIngestionService(db=None)
-    result = await service.ingest_batch([
-        {"id": 1},
-        {"id": 2, "fail": True},
-    ])
+    result = await service.ingest_batch(
+        [
+            {"id": 1},
+            {"id": 2, "fail": True},
+        ]
+    )
 
     assert result.records_created == 1
     assert result.records_skipped == 1
@@ -51,8 +53,12 @@ def test_lab_helpers_category_and_abnormal():
     service = LabIngestionService(db=None)
 
     assert service._detect_category("CBC Panel") == "Hematology"
-    assert service._check_abnormal(status=None, numeric_value=15.0, reference_range="1-10")
-    assert service._check_abnormal(status="critical", numeric_value=None, reference_range=None)
+    assert service._check_abnormal(
+        status=None, numeric_value=15.0, reference_range="1-10"
+    )
+    assert service._check_abnormal(
+        status="critical", numeric_value=None, reference_range=None
+    )
 
 
 def test_medication_helpers_parsing():
@@ -69,10 +75,12 @@ def test_encounter_helpers_normalization_and_notes():
     service = EncounterIngestionService(db=None)
 
     assert service._normalize_encounter_type("ER") == "emergency"
-    notes = service._build_clinical_notes({
-        "chief_complaint": "Headache",
-        "assessment": "Migraine",
-        "plan": "Rest",
-    })
+    notes = service._build_clinical_notes(
+        {
+            "chief_complaint": "Headache",
+            "assessment": "Migraine",
+            "plan": "Rest",
+        }
+    )
     assert "Chief Complaint" in notes
     assert "Assessment" in notes
