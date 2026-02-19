@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
+import useApiList from './useApiList';
 import { api } from '../api';
 import type { MedicalRecord } from '../types';
 
@@ -9,28 +10,18 @@ type UsePatientRecordsOptions = {
 };
 
 const usePatientRecords = ({ patientId, onError, onSuccess }: UsePatientRecordsOptions) => {
-  const [records, setRecords] = useState<MedicalRecord[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const fetchRecords = useCallback(() => api.getRecords(patientId), [patientId]);
 
-  const reloadRecords = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const data = await api.getRecords(patientId);
-      setRecords(data);
-      onSuccess?.();
-    } catch (error) {
-      onError('Failed to load records', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [patientId, onError]);
+  const { data, isLoading, reload } = useApiList<MedicalRecord[]>({
+    enabled: Boolean(patientId),
+    fetcher: fetchRecords,
+    errorLabel: 'Failed to load records',
+    onError,
+    onSuccess,
+    initialValue: [],
+  });
 
-  useEffect(() => {
-    if (!patientId) return;
-    reloadRecords();
-  }, [patientId, reloadRecords]);
-
-  return { records, isLoading, reloadRecords };
+  return { records: data, isLoading, reloadRecords: reload };
 };
 
 export default usePatientRecords;
