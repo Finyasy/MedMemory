@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import date
 import importlib.util
 import os
 import sys
+from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -34,8 +34,10 @@ async def _no_lifespan(_app: FastAPI):
 
 def _expected_age(birth_date: date) -> int:
     today = date.today()
-    return today.year - birth_date.year - (
-        (today.month, today.day) < (birth_date.month, birth_date.day)
+    return (
+        today.year
+        - birth_date.year
+        - ((today.month, today.day) < (birth_date.month, birth_date.day))
     )
 
 
@@ -137,7 +139,9 @@ async def client(async_session_maker):
 
     app.dependency_overrides[get_authenticated_user] = _override_get_authenticated_user
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as async_client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as async_client:
         yield async_client
 
     app.dependency_overrides.clear()
