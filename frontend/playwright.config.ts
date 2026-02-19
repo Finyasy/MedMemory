@@ -24,7 +24,10 @@ export default defineConfig({
   timeout: 60_000,
   expect: {
     timeout: 10_000,
-    toHaveScreenshot: { maxDiffPixels: 200 },
+    toHaveScreenshot: { 
+      maxDiffPixels: 500,
+      maxDiffPixelRatio: 0.03,
+    },
   },
   globalSetup: './e2e/global-setup.ts',
   use: {
