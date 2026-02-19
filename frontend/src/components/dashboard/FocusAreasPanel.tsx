@@ -74,7 +74,7 @@ function FocusAreasPanel({
   return (
     <div className="insight-panel focus">
       <h2>Focus areas</h2>
-      <div className="focus-row">
+      <div className={`focus-row ${!latestDocument ? 'no-action' : ''}`}>
         <div>
           <p className="eyebrow">Latest document</p>
           <h3>{latestDocument?.title || latestDocument?.original_filename || 'No documents yet'}</h3>
@@ -85,17 +85,19 @@ function FocusAreasPanel({
             </p>
           )}
         </div>
-        <button
-          className="ghost-button compact"
-          type="button"
-          onClick={onSummarizeLatestDocument}
-          disabled={summarizeDisabled}
-          title={summarizeTitle}
-        >
-          Summarize in chat
-        </button>
+        {latestDocument ? (
+          <button
+            className="ghost-button compact"
+            type="button"
+            onClick={onSummarizeLatestDocument}
+            disabled={summarizeDisabled}
+            title={summarizeTitle}
+          >
+            Summarize in chat
+          </button>
+        ) : null}
       </div>
-      <div className="focus-row">
+      <div className={`focus-row ${!latestRecord ? 'no-action' : ''}`}>
         <div>
           <p className="eyebrow">Latest record</p>
           <h3>{latestRecord?.title || 'No records yet'}</h3>
@@ -103,15 +105,15 @@ function FocusAreasPanel({
             {latestRecord ? formatDate(latestRecord.created_at) : 'Add a clinical note to start tracking.'}
           </p>
         </div>
-        <button
-          className="ghost-button compact"
-          type="button"
-          onClick={onReviewLatestRecord}
-          disabled={!latestRecord}
-          title={!latestRecord ? 'No records available. Add a clinical note first to enable this feature.' : undefined}
-        >
-          Review in chat
-        </button>
+        {latestRecord ? (
+          <button
+            className="ghost-button compact"
+            type="button"
+            onClick={onReviewLatestRecord}
+          >
+            Review in chat
+          </button>
+        ) : null}
       </div>
       <div className="focus-row">
         <div>
