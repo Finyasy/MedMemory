@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, api } from '../api';
 import type {
   ClinicianAccessRequest,
+  ConnectionSyncEvent,
   DataConnection,
   DashboardSummary,
   HighlightItem,
@@ -56,6 +57,7 @@ type UseDashboardDataResult = {
   activeAlertId: number | null;
   dashboardConnectionLoading: boolean;
   dataConnections: DataConnection[];
+  connectionSyncEvents: ConnectionSyncEvent[];
   activeConnectionSlug: string | null;
   activeSyncConnectionId: number | null;
   ocrAvailable: boolean | null;
@@ -102,6 +104,7 @@ const useDashboardData = ({
   const [alertsEvaluating, setAlertsEvaluating] = useState(false);
   const [dashboardConnectionLoading, setDashboardConnectionLoading] = useState(false);
   const [dataConnections, setDataConnections] = useState<DataConnection[]>([]);
+  const [connectionSyncEvents, setConnectionSyncEvents] = useState<ConnectionSyncEvent[]>([]);
   const [activeConnectionSlug, setActiveConnectionSlug] = useState<string | null>(null);
   const [activeSyncConnectionId, setActiveSyncConnectionId] = useState<number | null>(null);
   const [activeWatchMetricId, setActiveWatchMetricId] = useState<number | null>(null);
@@ -141,14 +144,18 @@ const useDashboardData = ({
   const loadDashboardConnections = useCallback(async () => {
     if (!patientId || patientId <= 0 || !isAuthenticated) {
       setDataConnections([]);
+      setConnectionSyncEvents([]);
       return;
     }
     setDashboardConnectionLoading(true);
     try {
       const rows = await api.listDataConnections(patientId);
       setDataConnections(rows);
+      const events = await api.listConnectionSyncEvents(patientId, { limit: 20 });
+      setConnectionSyncEvents(events);
     } catch (error) {
       setDataConnections([]);
+      setConnectionSyncEvents([]);
       handleError('Failed to load data connections', error);
     } finally {
       setDashboardConnectionLoading(false);
@@ -209,6 +216,7 @@ const useDashboardData = ({
   useEffect(() => {
     if (!isAuthenticated || !patientId || patientId <= 0) {
       setDataConnections([]);
+      setConnectionSyncEvents([]);
       setDashboardHighlights(null);
       setWatchMetrics([]);
       setMetricAlerts([]);
@@ -506,6 +514,7 @@ const useDashboardData = ({
     activeAlertId,
     dashboardConnectionLoading,
     dataConnections,
+    connectionSyncEvents,
     activeConnectionSlug,
     activeSyncConnectionId,
     ocrAvailable,
