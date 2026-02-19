@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback } from 'react';
+import useApiList from './useApiList';
 import { api } from '../api';
 import useDebouncedValue from './useDebouncedValue';
 import type { PatientSummary } from '../types';
@@ -11,32 +12,20 @@ type UsePatientsOptions = {
 
 const usePatients = ({ search, isAuthenticated, onError }: UsePatientsOptions) => {
   const debouncedSearch = useDebouncedValue(search, 300);
-  const [patients, setPatients] = useState<PatientSummary[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const fetchPatients = useCallback(() => {
+    const searchTerm = debouncedSearch.trim();
+    return api.listPatients(searchTerm || undefined);
+  }, [debouncedSearch]);
 
-  useEffect(() => {
-    const fetchPatients = async () => {
-      if (!isAuthenticated) {
-        setPatients([]);
-        setIsLoading(false);
-        return;
-      }
-      setIsLoading(true);
-      try {
-        const searchTerm = debouncedSearch.trim();
-        const data = await api.listPatients(searchTerm || undefined);
-        setPatients(data);
-      } catch (error) {
-        onError('Failed to load patients', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  const { data, isLoading, reload, hasLoadedSuccessfully } = useApiList<PatientSummary[]>({
+    enabled: isAuthenticated,
+    fetcher: fetchPatients,
+    errorLabel: 'Failed to load patients',
+    onError,
+    initialValue: [],
+  });
 
-    fetchPatients();
-  }, [debouncedSearch, isAuthenticated, onError]);
-
-  return { patients, isLoading };
+  return { patients: data, isLoading, reload, hasLoadedSuccessfully };
 };
 
 export default usePatients;
