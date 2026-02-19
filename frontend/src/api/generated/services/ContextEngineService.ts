@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { ContextRequest } from '../models/ContextRequest';
-import type { ContextResponse } from '../models/ContextResponse';
+import type { app__schemas__context__ContextRequest } from '../models/app__schemas__context__ContextRequest';
+import type { app__schemas__context__ContextResponse } from '../models/app__schemas__context__ContextResponse';
 import type { QueryAnalysisResponse } from '../models/QueryAnalysisResponse';
 import type { QuickSearchRequest } from '../models/QuickSearchRequest';
 import type { QuickSearchResponse } from '../models/QuickSearchResponse';
@@ -26,12 +26,12 @@ export class ContextEngineService {
      * The response includes detailed information about each step
      * for transparency and debugging.
      * @param requestBody
-     * @returns ContextResponse Successful Response
+     * @returns app__schemas__context__ContextResponse Successful Response
      * @throws ApiError
      */
     public static getContextApiV1ContextPost(
-        requestBody: ContextRequest,
-    ): CancelablePromise<ContextResponse> {
+        requestBody: app__schemas__context__ContextRequest,
+    ): CancelablePromise<app__schemas__context__ContextResponse> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/context/',
