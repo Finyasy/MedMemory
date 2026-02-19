@@ -4,13 +4,13 @@ import io
 import tempfile
 from types import SimpleNamespace
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.api import deps as deps_module
+from app.main import app
 
 
 class FakeUser:
@@ -43,6 +43,7 @@ async def test_volume_chat_flow(monkeypatch):
             )
 
     from app.api import chat as chat_api
+
     monkeypatch.setattr(chat_api, "get_patient_for_user", fake_patient)
     monkeypatch.setattr(chat_api.LLMService, "get_instance", lambda: FakeLLM())
 
