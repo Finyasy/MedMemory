@@ -1,15 +1,14 @@
 """Shared API dependencies."""
 
-from datetime import datetime, timezone
-from typing import Annotated
-
 import asyncio
 import time
+from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -44,24 +43,27 @@ async def get_authenticated_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        
+        payload = jwt.decode(
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+        )
+
         user_id_str: str | None = payload.get("sub")
         token_type: str | None = payload.get("type")
         jti: str | None = payload.get("jti")
-        
+
         if user_id_str is None:
             raise credentials_exception
         if token_type and token_type != "access":
             raise credentials_exception
         if jti:
             from app.api.auth import is_token_blacklisted
-            if await is_token_blacklisted(jti):
+
+            if await is_token_blacklisted(jti, db=db):
                 raise credentials_exception
-        
+
         user_id = int(user_id_str)
     except JWTError:
         raise credentials_exception
@@ -85,11 +87,15 @@ async def get_patient_for_user(
 ) -> Patient:
     """Fetch a patient owned by the current user or raise."""
     result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.user_id == current_user.id)
+        select(Patient).where(
+            Patient.id == patient_id, Patient.user_id == current_user.id
+        )
     )
     patient = result.scalar_one_or_none()
     if not patient:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
+        )
     return patient
 
 
@@ -104,7 +110,9 @@ async def get_authorized_patient(
     result = await db.execute(select(Patient).where(Patient.id == patient_id))
     patient = result.scalar_one_or_none()
     if not patient:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
+        )
     if patient.user_id == current_user.id:
         return patient
     grant_result = await db.execute(
@@ -114,15 +122,21 @@ async def get_authorized_patient(
             PatientAccessGrant.status == "active",
             or_(
                 PatientAccessGrant.expires_at.is_(None),
-                PatientAccessGrant.expires_at > datetime.now(timezone.utc),
+                PatientAccessGrant.expires_at > datetime.now(UTC),
             ),
         )
     )
     grant = grant_result.scalar_one_or_none()
     if not grant:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access not granted to this patient")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access not granted to this patient",
+        )
     if scope and not grant.has_scope(scope):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Grant does not include scope: {scope}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Grant does not include scope: {scope}",
+        )
     return patient
 
 
