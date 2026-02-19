@@ -20,6 +20,12 @@ npm exec playwright test --ui
 # Run specific test file
 npm exec playwright test e2e/auth.spec.ts
 
+# Run dashboard smoke test
+npm exec playwright test e2e/dashboard-smoke.spec.ts
+
+# Run clinician portal smoke test
+npm exec playwright test e2e/clinician-smoke.spec.ts
+
 # Run in headed mode (see browser)
 npm exec playwright test --headed
 ```
