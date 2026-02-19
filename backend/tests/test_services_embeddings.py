@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from app.services.embeddings.embedding import EmbeddingService
-from app.services.embeddings.search import SearchResponse, SearchResult
-from app.services.embeddings.search import SimilaritySearchService
+from app.services.embeddings.embedding import (
+    EmbeddingService,
+    MissingMLDependencyError,
+)
+from app.services.embeddings.search import (
+    SearchResponse,
+    SearchResult,
+    SimilaritySearchService,
+)
 
 
 class DummyModel:
-    def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, **_kwargs):
+    def encode(
+        self, texts, convert_to_numpy=True, normalize_embeddings=True, **_kwargs
+    ):
         if isinstance(texts, str):
             return np.array([1.0, 0.0, 0.0])
         return np.array([[1.0, 0.0, 0.0] for _ in texts])
@@ -29,8 +38,37 @@ def test_embedding_service_embed_and_similarity(monkeypatch):
     assert service.compute_similarity([1.0, 0.0], [0.0, 1.0]) == 0.0
 
 
+def test_embedding_service_missing_dependency_error_message(monkeypatch):
+    import builtins
+
+    service = object.__new__(EmbeddingService)
+    service.model_name = "all-MiniLM-L6-v2"
+    service.device = "cpu"
+
+    original_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sentence_transformers":
+            raise ModuleNotFoundError(
+                "No module named 'requests'",
+                name="requests",
+            )
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    with pytest.raises(MissingMLDependencyError) as exc:
+        service._load_model()
+
+    message = str(exc.value)
+    assert "Missing required ML dependency 'requests'" in message
+    assert "cd backend && uv sync" in message
+
+
 class DummySearchService(SimilaritySearchService):
-    async def search_patient_history(self, patient_id: int, query: str, limit: int = 10, min_similarity: float = 0.3):
+    async def search_patient_history(
+        self, patient_id: int, query: str, limit: int = 10, min_similarity: float = 0.3
+    ):
         return SearchResponse(
             query=query,
             results=[
@@ -64,13 +102,12 @@ class DummyDB:
     pass
 
 
-import pytest
-
-
 @pytest.mark.anyio
 async def test_similarity_search_context_building():
     service = DummySearchService(DummyDB())
-    context = await service.get_patient_context(patient_id=1, query="test", max_chunks=2, max_tokens=50)
+    context = await service.get_patient_context(
+        patient_id=1, query="test", max_chunks=2, max_tokens=50
+    )
 
     assert "Result A" in context
     assert "Result B" in context
