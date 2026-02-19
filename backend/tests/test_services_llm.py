@@ -298,6 +298,71 @@ async def test_rag_stream_uses_routed_task_guidance_in_context_prompt():
     assert "TREND_ANALYSIS" in context_engine.last_system_prompt
 
 
+@pytest.mark.anyio
+async def test_rag_applies_warm_concise_profile_overlay_to_context_prompt(monkeypatch):
+    monkeypatch.setattr(settings, "llm_prompt_profile", "warm_concise_v1")
+    context_engine = RecordingContextEngine()
+    rag = RAGService(
+        db=None,
+        llm_service=FakeLLMService(),
+        context_engine=context_engine,
+        conversation_manager=FakeConversationManager(),
+    )
+
+    await rag.ask(
+        question="what medications am i currently taking?",
+        patient_id=1,
+    )
+
+    assert context_engine.last_system_prompt is not None
+    assert "Tone profile: warm_concise_v1." in context_engine.last_system_prompt
+
+
+@pytest.mark.anyio
+async def test_rag_applies_clinician_humanized_profile_overlay(monkeypatch):
+    monkeypatch.setattr(settings, "llm_prompt_profile", "clinician_terse_humanized")
+    context_engine = RecordingContextEngine()
+    rag = RAGService(
+        db=None,
+        llm_service=FakeLLMService(),
+        context_engine=context_engine,
+        conversation_manager=FakeConversationManager(),
+    )
+
+    await rag.ask(
+        question="latest hemoglobin value",
+        patient_id=1,
+        system_prompt=RAGService.CLINICIAN_SYSTEM_PROMPT,
+    )
+
+    assert context_engine.last_system_prompt is not None
+    assert (
+        "Tone profile: clinician_terse_humanized."
+        in context_engine.last_system_prompt
+    )
+
+
+def test_rag_warm_concise_v2_tone_guardrail_deduplicates_repetition(monkeypatch):
+    monkeypatch.setattr(settings, "llm_prompt_profile", "warm_concise_v2")
+    rag = RAGService(
+        db=None,
+        llm_service=FakeLLMService(),
+        context_engine=FakeContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    cleaned = rag._apply_tone_guardrails(
+        response_text=(
+            "From your records, From your records, your hemoglobin is 10.1 g/dL.\n"
+            "From your records, From your records, your hemoglobin is 10.1 g/dL."
+        ),
+        clinician_mode=False,
+    )
+
+    assert cleaned.count("From your records") == 1
+    assert cleaned.count("10.1 g/dL") == 1
+
+
 class FakeStructuredContextEngine:
     async def get_context(
         self,
@@ -345,10 +410,7 @@ class FakeTrendStructuredContextEngine:
         return FakeContextResult(
             prompt="PROMPT",
             synthesized_context=SimpleNamespace(
-                full_context=(
-                    "Lab: HbA1c = 7.4 %\n"
-                    "Lab: HbA1c = 6.8 %"
-                ),
+                full_context=("Lab: HbA1c = 7.4 %\nLab: HbA1c = 6.8 %"),
                 total_chunks_used=2,
             ),
             ranked_results=[
@@ -502,6 +564,52 @@ class FakeTrendPolarityContextEngine:
         )
 
 
+class FakeMedicationPanelContextEngine:
+    async def get_context(
+        self,
+        query,
+        patient_id,
+        max_tokens=4000,
+        system_prompt=None,
+        min_score=None,
+        **_kwargs,
+    ):
+        return FakeContextResult(
+            prompt="PROMPT",
+            synthesized_context=SimpleNamespace(
+                full_context=(
+                    "Medication list update (2026-01-15)\n"
+                    "Metformin 500 mg by mouth twice daily - Active\n"
+                    "Lisinopril 10 mg daily - Active\n"
+                    "Isoniazid 300 mg daily - Discontinued on 2026-01-15\n"
+                    "No adverse drug reaction documented."
+                ),
+                total_chunks_used=1,
+            ),
+            ranked_results=[
+                SimpleNamespace(
+                    result=SimpleNamespace(
+                        source_type="medication",
+                        source_id=77,
+                        content=(
+                            "Medication list update (2026-01-15)\n"
+                            "Metformin 500 mg by mouth twice daily - Active\n"
+                            "Lisinopril 10 mg daily - Active\n"
+                            "Isoniazid 300 mg daily - Discontinued on 2026-01-15\n"
+                            "No adverse drug reaction documented."
+                        ),
+                    ),
+                    final_score=0.96,
+                )
+            ],
+            query_analysis=SimpleNamespace(
+                intent=QueryIntent.LIST,
+                test_names=[],
+                medication_names=["metformin", "lisinopril", "isoniazid"],
+            ),
+        )
+
+
 @pytest.mark.anyio
 async def test_rag_service_uses_direct_structured_answer():
     rag = RAGService(
@@ -544,6 +652,42 @@ async def test_rag_stream_uses_direct_structured_answer():
     assert "Metformin" in chunks[0]
     assert "(source: medication#1)" in chunks[0]
     assert rag.get_guardrail_counters().get("structured_direct") == 1
+
+
+@pytest.mark.anyio
+async def test_rag_direct_structured_discontinued_medication_answer():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeMedicationPanelContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response = await rag.ask(
+        question="Which medication is marked as discontinued?",
+        patient_id=1,
+    )
+
+    assert "discontinued" in response.answer.lower()
+    assert "Isoniazid 300 mg daily - Discontinued on 2026-01-15" in response.answer
+
+
+def test_rag_normalize_structured_content_prefers_fact_lines():
+    rag = RAGService(
+        db=None,
+        llm_service=FakeLLMService(),
+        context_engine=FakeContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    normalized = rag._normalize_structured_content(
+        "Eval fixture - de-identified lab panel\n"
+        "Date: 2026-01-12\n"
+        "Hemoglobin: 10.1 g/dL (low)\n"
+        "Notes: De-identified demo values normalized for product QA."
+    )
+
+    assert normalized == "Hemoglobin: 10.1 g/dL (low)"
 
 
 @pytest.mark.anyio
@@ -907,6 +1051,30 @@ async def test_rag_ask_structured_refuses_without_evidence():
 
 
 @pytest.mark.anyio
+async def test_rag_ask_structured_latest_document_unavailable_message():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeNoContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response, structured = await rag.ask_structured(
+        question="Summarize the most recent document using only explicit values.",
+        patient_id=1,
+    )
+
+    assert structured is None
+    assert response.answer == RAGService.LATEST_DOCUMENT_UNAVAILABLE
+    assert (
+        response.llm_response.finish_reason == "structured_latest_document_unavailable"
+    )
+    assert (
+        rag.get_guardrail_counters().get("structured_latest_document_unavailable") == 1
+    )
+
+
+@pytest.mark.anyio
 async def test_rag_ask_structured_refuses_on_invalid_json():
     llm = FakeInvalidStructuredLLMService()
     rag = RAGService(
@@ -1000,6 +1168,25 @@ async def test_rag_strict_grounding_refuses_low_evidence_fact_query():
 
 
 @pytest.mark.anyio
+async def test_rag_ask_latest_document_summary_refuses_with_specific_message():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response = await rag.ask(
+        question="Summarize the most recent document using only explicit values.",
+        patient_id=1,
+    )
+
+    assert response.answer == RAGService.LATEST_DOCUMENT_UNAVAILABLE
+    assert response.llm_response.finish_reason == "latest_document_unavailable"
+    assert rag.get_guardrail_counters().get("latest_document_unavailable") == 1
+
+
+@pytest.mark.anyio
 async def test_rag_stream_strict_grounding_refuses_low_evidence_fact_query():
     rag = RAGService(
         db=None,
@@ -1016,6 +1203,26 @@ async def test_rag_stream_strict_grounding_refuses_low_evidence_fact_query():
         chunks.append(chunk)
 
     assert chunks == ["I do not know from the available records."]
+
+
+@pytest.mark.anyio
+async def test_rag_stream_latest_document_summary_refuses_with_specific_message():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    chunks = []
+    async for chunk in rag.stream_ask(
+        question="Summarize the most recent document using only explicit values.",
+        patient_id=1,
+    ):
+        chunks.append(chunk)
+
+    assert chunks == [RAGService.LATEST_DOCUMENT_UNAVAILABLE]
+    assert rag.get_guardrail_counters().get("latest_document_unavailable") == 1
 
 
 @pytest.mark.anyio
