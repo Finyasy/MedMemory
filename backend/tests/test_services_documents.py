@@ -8,7 +8,11 @@ from fastapi import UploadFile
 from PIL import Image
 
 from app.services.documents.chunking import TextChunker
-from app.services.documents.extraction import ExtractionResult, get_extractor, ImageExtractor
+from app.services.documents.extraction import (
+    ExtractionResult,
+    ImageExtractor,
+    get_extractor,
+)
 from app.services.documents.processor import DocumentProcessor
 from app.services.documents.upload import DocumentUploadService
 
@@ -41,7 +45,9 @@ def test_extraction_result_empty_property():
 def test_get_extractor_by_mime_type():
     assert get_extractor("application/pdf").supports("application/pdf")
     assert get_extractor("image/png").supports("image/png")
-    assert get_extractor("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    assert get_extractor(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
     assert get_extractor("application/unknown") is None
 
 
@@ -67,7 +73,10 @@ async def test_document_upload_helpers_validate_and_detect():
     await service._validate_file(file)
 
     assert service._get_extension("labs.pdf") == ".pdf"
-    assert service._detect_document_type("lab_results.pdf", "application/pdf") == "lab_report"
+    assert (
+        service._detect_document_type("lab_results.pdf", "application/pdf")
+        == "lab_report"
+    )
     assert service._compute_hash(b"content") == service._compute_hash(b"content")
 
     bad_file = UploadFile(filename="bad.exe", file=BytesIO(b"content"))
@@ -79,7 +88,9 @@ async def test_document_upload_helpers_validate_and_detect():
 async def test_document_processor_creates_chunks():
     db = DummyDB()
     processor = DocumentProcessor(db, chunk_size=20, chunk_overlap=0)
-    document = type("Doc", (), {"patient_id": 1, "id": 2, "document_date": datetime(2024, 1, 1)})()
+    document = type(
+        "Doc", (), {"patient_id": 1, "id": 2, "document_date": datetime(2024, 1, 1)}
+    )()
     extraction = ExtractionResult(text="Alpha Beta Gamma Delta", page_count=1)
 
     chunks = await processor._create_memory_chunks(document, extraction)
