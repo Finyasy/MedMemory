@@ -2,6 +2,74 @@
 
 Scripts for downloading and managing LLM models for local use.
 
+## Apply Provider Sync Env
+
+Write live provider sync settings into `backend/.env` from JSON maps (inline JSON
+or file paths):
+
+```bash
+cd backend
+python scripts/apply_provider_sync_env.py \
+  --env-file .env \
+  --base-urls '{"digital_health_agency_dha":"https://med.kenya-hie.health/fhir"}' \
+  --bearer-tokens '{"digital_health_agency_dha":"<token>"}' \
+  --api-keys '{}'
+```
+
+Tip:
+- Keep credentials in files ignored by git, then pass file paths to `--base-urls`,
+  `--bearer-tokens`, and `--api-keys`.
+- Use `--print-only` to preview changes without writing.
+
+## Provider Sync Dry-Run
+
+Validate live provider connectivity for one patient's dashboard connections without
+writing ingested records:
+
+```bash
+cd backend
+python scripts/dry_run_provider_connections.py \
+  --base-url http://localhost:8000/api/v1 \
+  --patient-id 1 \
+  --token "<JWT>"
+```
+
+Useful options:
+- `--provider-slug kenya_health_information_system_khis` to validate one provider.
+- `--include-inactive` to include disabled connections.
+- `--json` for machine-readable output.
+- `--insecure` for local/self-signed TLS endpoints.
+
+Fallback behavior:
+- If live connectivity fails and `PROVIDER_SYNC_LIVE_FALLBACK_TO_LOCAL_SCAN=true`,
+  dry-run reports `mode=local_fallback` and returns success (`ok=true`).
+
+Exit codes:
+- `0` all selected dry-runs passed.
+- `1` at least one connection failed.
+- `2` request/auth/setup failure.
+
+## One-Time Eval Fixture Cleanup
+
+Remove stale tone-eval fixture data (`[EVAL:` / `EVAL_FIXTURE`) from:
+- `memory_chunks` (`chunk_type=eval_fixture` and marker content)
+- `records` (eval-prefixed titles/marker content)
+- `conversation_messages` (marker content)
+
+Dry-run first:
+
+```bash
+cd backend
+uv run python scripts/cleanup_eval_fixtures.py
+```
+
+Apply deletion:
+
+```bash
+cd backend
+uv run python scripts/cleanup_eval_fixtures.py --apply
+```
+
 ## Download Model Script
 
 ### Usage
