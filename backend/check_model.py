@@ -35,7 +35,6 @@ except Exception as e:
 
 # Check model cache
 print("\n📦 Model Cache:")
-from transformers.utils import TRANSFORMERS_CACHE
 cache_dir = Path.home() / ".cache" / "huggingface" / "transformers"
 model_cache = cache_dir / "google--medgemma-4b-it"
 if model_cache.exists():
