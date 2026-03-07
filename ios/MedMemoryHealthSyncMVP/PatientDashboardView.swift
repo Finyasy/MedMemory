@@ -5,10 +5,28 @@ struct PatientDashboardView: View {
     @State private var selectedSection: PatientSection = .overview
 
     private var summaryCards: [DashboardSummaryCard] {
+        let trackedMetrics = viewModel.dashboardHighlights?.summary.tracked_metrics ?? 0
+        let syncedDays = viewModel.appleHealthStatus?.total_synced_days ?? 0
+        let latestSteps = viewModel.appleHealthTrend?.latest_step_count ?? 0
         [
-            DashboardSummaryCard(title: "Records", value: "12", note: "Clinical notes and uploads", symbolName: "doc.text"),
-            DashboardSummaryCard(title: "Signals", value: viewModel.lastResponse == nil ? "0" : "1", note: "Apple Health connected", symbolName: "waveform.path.ecg"),
-            DashboardSummaryCard(title: "Chat", value: "Grounded", note: "MedGemma-backed answers", symbolName: "sparkles")
+            DashboardSummaryCard(
+                title: "Records",
+                value: "\(viewModel.recentRecords.count)",
+                note: "\(viewModel.recentDocuments.count) document(s) available",
+                symbolName: "doc.text"
+            ),
+            DashboardSummaryCard(
+                title: "Signals",
+                value: syncedDays == 0 ? "0" : "\(syncedDays)",
+                note: latestSteps == 0 ? "No Apple Health steps yet" : "\(latestSteps) latest steps",
+                symbolName: "waveform.path.ecg"
+            ),
+            DashboardSummaryCard(
+                title: "Highlights",
+                value: trackedMetrics == 0 ? "0" : "\(trackedMetrics)",
+                note: "Grounded MedGemma-backed insights",
+                symbolName: "sparkles"
+            )
         ]
     }
 
@@ -54,7 +72,7 @@ struct PatientDashboardView: View {
                 .font(.system(size: 34, weight: .bold, design: .serif))
                 .foregroundStyle(MedMemoryTheme.textPrimary)
 
-            Text("Track records, trends, and grounded answers in one place.")
+            Text(viewModel.profileSummary.map { "Track records, trends, and grounded answers for \($0.full_name)." } ?? "Track records, trends, and grounded answers in one place.")
                 .font(.subheadline)
                 .foregroundStyle(MedMemoryTheme.textSecondary)
         }
@@ -72,6 +90,8 @@ struct PatientDashboardView: View {
 
     private var overviewSection: some View {
         VStack(alignment: .leading, spacing: 18) {
+            dataStatusCard
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(summaryCards) { card in
@@ -105,11 +125,11 @@ struct PatientDashboardView: View {
         VStack(alignment: .leading, spacing: 18) {
             statusCard(
                 title: "Watchlist",
-                body: "Native watchlist screens should mirror the web monitoring section, but use drill-in cards instead of sidebars."
+                body: "Tracked metrics: \(viewModel.dashboardHighlights?.summary.tracked_metrics ?? 0). Native watchlist screens should mirror the web monitoring section, but use drill-in cards instead of sidebars."
             )
             statusCard(
                 title: "Alerts",
-                body: "Use local notification-friendly alert summaries and a clear acknowledge flow."
+                body: "Use local notification-friendly alert summaries and a clear acknowledge flow. Out-of-range highlights: \(viewModel.dashboardHighlights?.summary.out_of_range ?? 0)."
             )
         }
     }
@@ -118,12 +138,22 @@ struct PatientDashboardView: View {
         VStack(alignment: .leading, spacing: 18) {
             statusCard(
                 title: "Documents",
-                body: "This tab should eventually own camera scan, upload progress, and document previews."
+                body: "Available now: \(viewModel.recentDocuments.count) document(s). This tab should eventually own camera scan, upload progress, and document previews."
             )
             statusCard(
                 title: "Records",
-                body: "Use grouped lists and detail sheets rather than desktop-style dual panels."
+                body: "Available now: \(viewModel.recentRecords.count) clinical note(s). Use grouped lists and detail sheets rather than desktop-style dual panels."
             )
+        }
+    }
+
+    private var dataStatusCard: some View {
+        Group {
+            if viewModel.isLoadingPatientData {
+                statusCard(title: "Loading", body: "Fetching profile, highlights, documents, and Apple Health state from MedMemory.")
+            } else if let error = viewModel.patientDataError {
+                statusCard(title: "Backend connection needed", body: error)
+            }
         }
     }
 
@@ -139,7 +169,7 @@ struct PatientDashboardView: View {
                         .foregroundStyle(MedMemoryTheme.textSecondary)
                 }
                 Spacer()
-                Text(viewModel.lastResponse?.connection_status.capitalized ?? "Disconnected")
+                Text((viewModel.appleHealthStatus?.status ?? viewModel.lastResponse?.connection_status ?? "Disconnected").capitalized)
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -147,7 +177,11 @@ struct PatientDashboardView: View {
                     .clipShape(Capsule())
             }
 
-            if let response = viewModel.lastResponse {
+            if let trend = viewModel.appleHealthTrend, let latestSteps = trend.latest_step_count {
+                Text("Latest steps: \(latestSteps). \(trend.points.count) day(s) loaded for dashboard trends.")
+                .font(.subheadline)
+                .foregroundStyle(MedMemoryTheme.textSecondary)
+            } else if let response = viewModel.lastResponse {
                 Text("Last sync inserted \(response.inserted_days) day(s), updated \(response.updated_days) day(s).")
                     .font(.subheadline)
                     .foregroundStyle(MedMemoryTheme.textSecondary)
@@ -166,14 +200,25 @@ struct PatientDashboardView: View {
                 .font(.headline)
                 .foregroundStyle(MedMemoryTheme.textPrimary)
 
-            Text("Mirror the web dashboard hierarchy, not the exact panel layout: summary first, then trends, then actions.")
-                .font(.subheadline)
-                .foregroundStyle(MedMemoryTheme.textSecondary)
+            if let highlights = viewModel.dashboardHighlights?.highlights, !highlights.isEmpty {
+                VStack(spacing: 10) {
+                    ForEach(highlights.prefix(3)) { item in
+                        highlightRow(
+                            item.metric_name,
+                            highlightBody(for: item)
+                        )
+                    }
+                }
+            } else {
+                Text("Mirror the web dashboard hierarchy, not the exact panel layout: summary first, then trends, then actions.")
+                    .font(.subheadline)
+                    .foregroundStyle(MedMemoryTheme.textSecondary)
 
-            VStack(spacing: 10) {
-                highlightRow("Grounded answers", "Patient chat should preserve citations and refusal behavior.")
-                highlightRow("Trend cards", "Apple Health and lab trends should share one visual language.")
-                highlightRow("Fast actions", "Upload document, ask question, sync iPhone.")
+                VStack(spacing: 10) {
+                    highlightRow("Grounded answers", "Patient chat should preserve citations and refusal behavior.")
+                    highlightRow("Trend cards", "Apple Health and lab trends should share one visual language.")
+                    highlightRow("Fast actions", "Upload document, ask question, sync iPhone.")
+                }
             }
         }
         .medMemoryCard()
@@ -211,5 +256,17 @@ struct PatientDashboardView: View {
         }
         .medMemoryCard()
     }
+
+    private func highlightBody(for item: HighlightItemDTO) -> String {
+        let valueText = item.value ?? item.numeric_value.map { String($0) } ?? "No value"
+        let unitText = item.unit.map { " \($0)" } ?? ""
+        let statusText = item.status.replacingOccurrences(of: "_", with: " ")
+        return "\(valueText)\(unitText) · \(statusText.capitalized)"
+    }
 }
 
+#Preview {
+    NavigationStack {
+        PatientDashboardView(viewModel: HealthSyncViewModel())
+    }
+}

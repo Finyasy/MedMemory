@@ -1,21 +1,14 @@
 import SwiftUI
 
 struct PatientWorkspaceView: View {
-    private let documents: [DemoDocumentItem] = [
-        DemoDocumentItem(title: "Quest lipid panel", note: "Processed PDF · 4 pages", status: "Ready"),
-        DemoDocumentItem(title: "Function Health summary", note: "Processed PDF · 2 pages", status: "Needs review")
-    ]
-
-    private let records: [DemoRecordItem] = [
-        DemoRecordItem(title: "Pediatric annual checkup", type: "visit_note", summary: "Annual wellness visit with stable vitals and routine counseling."),
-        DemoRecordItem(title: "LDL follow-up", type: "lab_result", summary: "LDL remains elevated but improved compared with prior panel.")
-    ]
+    @ObservedObject var viewModel: HealthSyncViewModel
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 workspaceHeader
                 quickActions
+                dataStatusCard
                 documentsCard
                 recordsCard
             }
@@ -46,7 +39,7 @@ struct PatientWorkspaceView: View {
                 .font(.system(size: 32, weight: .bold, design: .serif))
                 .foregroundStyle(MedMemoryTheme.textPrimary)
 
-            Text("Mirror the web workspace using grouped lists, upload actions, and detail drill-ins instead of desktop panels.")
+            Text(viewModel.profileSummary.map { "Documents and notes for \($0.full_name)." } ?? "Mirror the web workspace using grouped lists, upload actions, and detail drill-ins instead of desktop panels.")
                 .font(.subheadline)
                 .foregroundStyle(MedMemoryTheme.textSecondary)
         }
@@ -70,36 +63,40 @@ struct PatientWorkspaceView: View {
                 subtitle: "Processed reports and uploaded files"
             )
 
-            ForEach(documents) { item in
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "doc.text.fill")
-                        .foregroundStyle(MedMemoryTheme.accent)
-                        .padding(10)
-                        .background(MedMemoryTheme.accentSoft)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            if viewModel.recentDocuments.isEmpty {
+                emptyStateCard("No documents loaded yet. Connect the backend in the Sync tab, then refresh patient data.")
+            } else {
+                ForEach(viewModel.recentDocuments.prefix(5)) { item in
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "doc.text.fill")
+                            .foregroundStyle(MedMemoryTheme.accent)
+                            .padding(10)
+                            .background(MedMemoryTheme.accentSoft)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.title)
-                            .font(.subheadline.weight(.semibold))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.title ?? item.original_filename)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(MedMemoryTheme.textPrimary)
+                            Text(documentSubtitle(for: item))
+                                .font(.caption)
+                                .foregroundStyle(MedMemoryTheme.textSecondary)
+                        }
+
+                        Spacer()
+
+                        Text(documentStatus(for: item))
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(MedMemoryTheme.textPrimary)
-                        Text(item.note)
-                            .font(.caption)
-                            .foregroundStyle(MedMemoryTheme.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.78))
+                            .clipShape(Capsule())
                     }
-
-                    Spacer()
-
-                    Text(item.status)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(MedMemoryTheme.textPrimary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.78))
-                        .clipShape(Capsule())
+                    .padding(14)
+                    .background(Color.white.opacity(0.72))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
-                .padding(14)
-                .background(Color.white.opacity(0.72))
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
         }
         .medMemoryCard()
@@ -112,26 +109,31 @@ struct PatientWorkspaceView: View {
                 subtitle: "Structured notes and summaries"
             )
 
-            ForEach(records) { record in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(record.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(MedMemoryTheme.textPrimary)
-                        Spacer()
-                        Text(record.type)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(MedMemoryTheme.textSecondary)
-                            .textCase(.uppercase)
-                    }
+            if viewModel.recentRecords.isEmpty {
+                emptyStateCard("No clinical notes loaded yet. Once patient data is connected, recent notes will appear here.")
+            } else {
+                ForEach(viewModel.recentRecords.prefix(5)) { record in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(record.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(MedMemoryTheme.textPrimary)
+                            Spacer()
+                            Text(record.record_type ?? "general")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(MedMemoryTheme.textSecondary)
+                                .textCase(.uppercase)
+                        }
 
-                    Text(record.summary)
-                        .font(.caption)
-                        .foregroundStyle(MedMemoryTheme.textSecondary)
+                        Text(record.content)
+                            .font(.caption)
+                            .foregroundStyle(MedMemoryTheme.textSecondary)
+                            .lineLimit(3)
+                    }
+                    .padding(14)
+                    .background(Color.white.opacity(0.72))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
-                .padding(14)
-                .background(Color.white.opacity(0.72))
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
         }
         .medMemoryCard()
@@ -146,5 +148,43 @@ struct PatientWorkspaceView: View {
                 .font(.caption)
                 .foregroundStyle(MedMemoryTheme.textSecondary)
         }
+    }
+
+    private var dataStatusCard: some View {
+        Group {
+            if viewModel.isLoadingPatientData {
+                emptyStateCard("Loading patient documents and records from MedMemory.")
+            } else if let error = viewModel.patientDataError {
+                emptyStateCard(error)
+            }
+        }
+    }
+
+    private func documentSubtitle(for item: DocumentItemDTO) -> String {
+        let pages = item.page_count.map { "\($0) page(s)" } ?? "Unknown pages"
+        return "\(item.document_type) · \(pages)"
+    }
+
+    private func documentStatus(for item: DocumentItemDTO) -> String {
+        if item.is_processed {
+            return "Ready"
+        }
+        return item.processing_status.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func emptyStateCard(_ message: String) -> some View {
+        Text(message)
+            .font(.subheadline)
+            .foregroundStyle(MedMemoryTheme.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color.white.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+#Preview {
+    NavigationStack {
+        PatientWorkspaceView(viewModel: HealthSyncViewModel())
     }
 }

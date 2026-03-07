@@ -16,7 +16,7 @@ struct ContentView: View {
                         Label("Chat", systemImage: "bubble.left.and.bubble.right.fill")
                     }
 
-                PatientWorkspaceView()
+                PatientWorkspaceView(viewModel: viewModel)
                     .tabItem {
                         Label("Workspace", systemImage: "folder.fill")
                     }
@@ -25,6 +25,9 @@ struct ContentView: View {
                     .tabItem {
                         Label("Sync", systemImage: "heart.text.square.fill")
                     }
+            }
+            .task {
+                await viewModel.loadPatientExperience()
             }
         }
     }

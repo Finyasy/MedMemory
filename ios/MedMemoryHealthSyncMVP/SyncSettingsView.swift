@@ -50,6 +50,12 @@ struct SyncSettingsView: View {
                 .buttonStyle(MedMemoryPrimaryButtonStyle())
                 .disabled(viewModel.isSyncing || viewModel.isAuthorizing)
 
+                Button(viewModel.isLoadingPatientData ? "Refreshing patient data…" : "Refresh patient data") {
+                    Task { await viewModel.loadPatientExperience(force: true) }
+                }
+                .buttonStyle(MedMemorySecondaryButtonStyle())
+                .disabled(viewModel.isSyncing || viewModel.isAuthorizing || viewModel.isLoadingPatientData)
+
                 if viewModel.lastError != nil {
                     Button("Retry sync") {
                         Task { await viewModel.retryLastSync() }
@@ -113,4 +119,3 @@ struct SyncSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 }
-

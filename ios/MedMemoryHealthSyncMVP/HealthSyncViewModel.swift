@@ -12,10 +12,19 @@ final class HealthSyncViewModel: ObservableObject {
     @Published var lastResponse: AppleHealthStepsSyncResponseDTO?
     @Published var lastSamplesPreview: [DailyStepSample] = []
     @Published var lastSyncStartedAt: Date?
+    @Published var isLoadingPatientData = false
+    @Published var patientDataError: String?
+    @Published var profileSummary: PatientProfileSummaryDTO?
+    @Published var dashboardHighlights: DashboardHighlightsResponseDTO?
+    @Published var recentRecords: [MedicalRecordDTO] = []
+    @Published var recentDocuments: [DocumentItemDTO] = []
+    @Published var appleHealthStatus: AppleHealthSyncStatusDTO?
+    @Published var appleHealthTrend: AppleHealthStepsTrendResponseDTO?
 
     private let healthKit = HealthKitManager()
     private let backendClient = MedMemoryBackendClient()
     private let defaults = UserDefaults.standard
+    private var hasLoadedPatientData = false
 
     init() {
         loadSavedConfig()
@@ -52,6 +61,7 @@ final class HealthSyncViewModel: ObservableObject {
             let response = try await backendClient.syncDailySteps(config: config, samples: samples)
             lastResponse = response
             statusMessage = "Sync complete: \(response.inserted_days) inserted, \(response.updated_days) updated."
+            await loadPatientExperience(force: true)
         } catch {
             lastError = error.localizedDescription
             statusMessage = "Sync failed."
@@ -60,6 +70,28 @@ final class HealthSyncViewModel: ObservableObject {
 
     func retryLastSync() async {
         await syncNow()
+    }
+
+    func loadPatientExperience(force: Bool = false) async {
+        if isLoadingPatientData { return }
+        if hasLoadedPatientData && !force { return }
+
+        isLoadingPatientData = true
+        patientDataError = nil
+        defer { isLoadingPatientData = false }
+
+        do {
+            let snapshot = try await backendClient.fetchPatientExperienceSnapshot(config: config)
+            profileSummary = snapshot.profile
+            dashboardHighlights = snapshot.highlights
+            recentRecords = snapshot.records
+            recentDocuments = snapshot.documents
+            appleHealthStatus = snapshot.appleHealthStatus
+            appleHealthTrend = snapshot.appleHealthTrend
+            hasLoadedPatientData = true
+        } catch {
+            patientDataError = error.localizedDescription
+        }
     }
 
     private func persistConfig() {

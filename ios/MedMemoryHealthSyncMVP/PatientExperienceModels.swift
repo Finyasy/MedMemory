@@ -26,17 +26,3 @@ struct DemoChatMessage: Identifiable {
         case assistant
     }
 }
-
-struct DemoDocumentItem: Identifiable {
-    let id = UUID()
-    let title: String
-    let note: String
-    let status: String
-}
-
-struct DemoRecordItem: Identifiable {
-    let id = UUID()
-    let title: String
-    let type: String
-    let summary: String
-}
