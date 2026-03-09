@@ -13,9 +13,10 @@ This is a minimal iPhone-side SwiftUI scaffold for:
 - Reads daily step totals for the last `N` days
 - Sends the totals to MedMemory (idempotent upsert by date)
 - Shows sync result counts (`inserted`, `updated`, `unchanged`)
+- Issues a short-lived patient-scoped mobile token and stores it in Keychain
 - Includes an initial native patient shell with:
   - Dashboard tab
-  - Chat prototype tab
+  - Chat tab wired to `/chat/ask`
   - Workspace tab
   - Sync/settings tab
 
@@ -32,9 +33,10 @@ This is a minimal iPhone-side SwiftUI scaffold for:
 - `ContentView.swift` - UI for config + sync
 - `DesignSystem.swift` - reusable colors, cards, and button styles
 - `PatientDashboardView.swift` - native patient dashboard shell
-- `PatientChatPrototypeView.swift` - patient chat shell
+- `PatientChatPrototypeView.swift` - patient chat view wired to backend chat
 - `PatientWorkspaceView.swift` - records/documents workspace shell
 - `SyncSettingsView.swift` - backend + HealthKit sync configuration
+- `KeychainTokenStore.swift` - secure token storage on device
 - `PatientExperienceModels.swift` - lightweight UI model types
 - `HealthKitManager.swift` - HealthKit auth + daily steps query
 - `MedMemoryBackendClient.swift` - posts to MedMemory API
@@ -61,11 +63,7 @@ Use your Mac's LAN IP (example):
 
 ## Security note (MVP)
 
-This scaffold uses a pasted bearer token for speed. For production:
-
-- Store tokens in Keychain
-- Add token refresh flow
-- Consider short-lived mobile session tokens scoped to Apple Health sync only
+This scaffold now stores the patient mobile token in Keychain. The remaining production step is to replace the bootstrap pasted token with a first-class mobile sign-in screen.
 
 ## Patient design migration
 

@@ -42,6 +42,24 @@ struct SyncConfig {
     }
 }
 
+struct MobileTokenRequestPayload: Encodable {
+    let patient_id: Int
+    let scopes: [String]
+}
+
+struct MobileTokenResponseDTO: Decodable {
+    let access_token: String
+    let refresh_token: String
+    let token_type: String
+    let expires_in: Int
+    let patient_id: Int
+    let scopes: [String]
+}
+
+struct RefreshTokenRequestPayload: Encodable {
+    let refresh_token: String
+}
+
 struct AppleHealthStepSamplePayload: Encodable {
     let sample_date: String
     let step_count: Int
@@ -130,6 +148,25 @@ struct DocumentItemDTO: Decodable, Identifiable {
     let page_count: Int?
 }
 
+struct ChatSourceDTO: Decodable {
+    let source_type: String
+    let source_id: Int?
+    let relevance: Double
+}
+
+struct ChatResponseDTO: Decodable {
+    let answer: String
+    let conversation_id: String?
+    let num_sources: Int?
+    let sources: [ChatSourceDTO]?
+}
+
+struct RecordCreatePayload: Encodable {
+    let title: String
+    let content: String
+    let record_type: String
+}
+
 struct AppleHealthStepTrendPointDTO: Decodable, Identifiable {
     let sample_date: String
     let step_count: Int
@@ -191,6 +228,9 @@ enum HealthSyncError: LocalizedError {
         case .healthDataUnavailable:
             return "HealthKit is not available on this device."
         case .httpError(let code, let message):
+            if code == 401 {
+                return "Backend request failed (401): token rejected. Clear the stored mobile token, paste a fresh token, or issue a new mobile token. Server said: \(message)"
+            }
             return "Backend request failed (\(code)): \(message)"
         case .decodingError(let message):
             return "Failed to decode backend response: \(message)"

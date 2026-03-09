@@ -14,9 +14,19 @@ struct SyncSettingsView: View {
                 TextField("Patient ID", text: $viewModel.config.patientIDText)
                     .keyboardType(.numberPad)
 
-                SecureField("Bearer token", text: $viewModel.config.bearerToken)
+                SecureField("Access token override (optional)", text: $viewModel.config.bearerToken)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+
+                Text(viewModel.accessTokenSourceDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                LabeledContent("Token suffix") {
+                    Text(viewModel.accessTokenFingerprint)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
 
                 Stepper(value: $viewModel.config.daysBack, in: 1...365) {
                     Text("Days to sync: \(viewModel.config.daysBack)")
@@ -43,12 +53,49 @@ struct SyncSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Mobile token") {
+                Button(viewModel.isIssuingMobileToken ? "Issuing mobile token…" : "Issue patient mobile token") {
+                    Task { await viewModel.issueMobileToken() }
+                }
+                .buttonStyle(MedMemorySecondaryButtonStyle())
+                .disabled(viewModel.isIssuingMobileToken || viewModel.isSyncing)
+
+                Button("Clear stored mobile token") {
+                    viewModel.clearMobileToken()
+                }
+                .buttonStyle(MedMemorySecondaryButtonStyle())
+                .disabled(viewModel.isIssuingMobileToken || viewModel.isSyncing)
+
+                if viewModel.hasStoredMobileToken {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Stored in Keychain")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Scopes: \(viewModel.mobileTokenScopes.joined(separator: ", "))")
+                            .font(.caption)
+                        if let expiresAt = viewModel.mobileTokenExpiresAt {
+                            Text("Expires: \(expiresAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                        }
+                    }
+                } else {
+                    Text("No mobile token is currently stored in Keychain. You can paste a fresh token in the field above to override auth for debugging.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Sync") {
                 Button(viewModel.isSyncing ? "Syncing…" : "Sync now") {
                     Task { await viewModel.syncNow() }
                 }
                 .buttonStyle(MedMemoryPrimaryButtonStyle())
                 .disabled(viewModel.isSyncing || viewModel.isAuthorizing)
+
+                Button("Test auth with current token") {
+                    Task { await viewModel.probeAuth() }
+                }
+                .buttonStyle(MedMemorySecondaryButtonStyle())
+                .disabled(viewModel.isSyncing || viewModel.isAuthorizing || viewModel.isLoadingPatientData)
 
                 Button(viewModel.isLoadingPatientData ? "Refreshing patient data…" : "Refresh patient data") {
                     Task { await viewModel.loadPatientExperience(force: true) }
@@ -66,7 +113,7 @@ struct SyncSettingsView: View {
 
                 LabeledContent("Status") {
                     Text(viewModel.statusMessage)
-                        .foregroundStyle(viewModel.lastError == nil ? .secondary : .red)
+                        .foregroundStyle(viewModel.lastError == nil ? Color.secondary : Color.red)
                 }
 
                 if let lastResponse = viewModel.lastResponse {
@@ -89,6 +136,20 @@ struct SyncSettingsView: View {
                             .font(.subheadline.weight(.semibold))
                         Text(error)
                             .foregroundStyle(.red)
+                    }
+                    .font(.caption)
+                }
+
+                if let authProbeMessage = viewModel.authProbeMessage {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Auth probe")
+                            .font(.subheadline.weight(.semibold))
+                        Text(authProbeMessage)
+                            .foregroundStyle(
+                                authProbeMessage.hasPrefix("Auth OK")
+                                    ? AnyShapeStyle(.secondary)
+                                    : AnyShapeStyle(Color.red)
+                            )
                     }
                     .font(.caption)
                 }

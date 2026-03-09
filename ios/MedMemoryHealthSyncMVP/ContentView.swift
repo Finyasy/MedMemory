@@ -11,7 +11,7 @@ struct ContentView: View {
                         Label("Dashboard", systemImage: "square.grid.2x2.fill")
                     }
 
-                PatientChatPrototypeView()
+                PatientChatView(viewModel: viewModel)
                     .tabItem {
                         Label("Chat", systemImage: "bubble.left.and.bubble.right.fill")
                     }

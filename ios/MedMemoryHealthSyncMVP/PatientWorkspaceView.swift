@@ -1,7 +1,13 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PatientWorkspaceView: View {
     @ObservedObject var viewModel: HealthSyncViewModel
+    @State private var isShowingFileImporter = false
+    @State private var isShowingRecordSheet = false
+    @State private var recordTitle = ""
+    @State private var recordContent = ""
+    @State private var recordType = "general"
 
     var body: some View {
         ScrollView {
@@ -26,6 +32,65 @@ struct PatientWorkspaceView: View {
         )
         .navigationTitle("Workspace")
         .navigationBarTitleDisplayMode(.inline)
+        .fileImporter(
+            isPresented: $isShowingFileImporter,
+            allowedContentTypes: [.data, .content, .pdf, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            Task { await viewModel.uploadDocument(fileURL: url) }
+        }
+        .sheet(isPresented: $isShowingRecordSheet) {
+            NavigationStack {
+                Form {
+                    Section("Record") {
+                        TextField("Title", text: $recordTitle)
+                        Picker("Type", selection: $recordType) {
+                            Text("General").tag("general")
+                            Text("Lab Result").tag("lab_result")
+                            Text("Visit Note").tag("visit_note")
+                            Text("Prescription").tag("prescription")
+                            Text("Imaging").tag("imaging")
+                        }
+                        TextEditor(text: $recordContent)
+                            .frame(minHeight: 160)
+                    }
+                }
+                .navigationTitle("Add record")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            isShowingRecordSheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(viewModel.isCreatingRecord ? "Saving…" : "Save") {
+                            let title = recordTitle
+                            let content = recordContent
+                            let type = recordType
+                            Task {
+                                await viewModel.createRecord(
+                                    title: title,
+                                    content: content,
+                                    recordType: type
+                                )
+                                if viewModel.workspaceError == nil {
+                                    recordTitle = ""
+                                    recordContent = ""
+                                    recordType = "general"
+                                    isShowingRecordSheet = false
+                                }
+                            }
+                        }
+                        .disabled(
+                            viewModel.isCreatingRecord ||
+                            recordTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                            recordContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private var workspaceHeader: some View {
@@ -48,11 +113,17 @@ struct PatientWorkspaceView: View {
 
     private var quickActions: some View {
         HStack(spacing: 12) {
-            Button("Upload document") {}
+            Button(viewModel.isUploadingDocument ? "Uploading…" : "Upload document") {
+                isShowingFileImporter = true
+            }
                 .buttonStyle(MedMemoryPrimaryButtonStyle())
+                .disabled(viewModel.isUploadingDocument)
 
-            Button("Add record") {}
+            Button("Add record") {
+                isShowingRecordSheet = true
+            }
                 .buttonStyle(MedMemorySecondaryButtonStyle())
+                .disabled(viewModel.isCreatingRecord)
         }
     }
 
@@ -154,7 +225,11 @@ struct PatientWorkspaceView: View {
         Group {
             if viewModel.isLoadingPatientData {
                 emptyStateCard("Loading patient documents and records from MedMemory.")
+            } else if let status = viewModel.workspaceStatusMessage {
+                emptyStateCard(status)
             } else if let error = viewModel.patientDataError {
+                emptyStateCard(error)
+            } else if let error = viewModel.workspaceError {
                 emptyStateCard(error)
             }
         }

@@ -9,7 +9,7 @@ final class HealthKitManager {
         guard HKHealthStore.isHealthDataAvailable() else {
             throw HealthSyncError.healthDataUnavailable
         }
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             healthStore.requestAuthorization(toShare: [], read: [stepType]) { success, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -92,4 +92,3 @@ final class HealthKitManager {
         }
     }
 }
-

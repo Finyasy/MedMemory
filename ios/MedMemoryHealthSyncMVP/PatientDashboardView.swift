@@ -8,7 +8,7 @@ struct PatientDashboardView: View {
         let trackedMetrics = viewModel.dashboardHighlights?.summary.tracked_metrics ?? 0
         let syncedDays = viewModel.appleHealthStatus?.total_synced_days ?? 0
         let latestSteps = viewModel.appleHealthTrend?.latest_step_count ?? 0
-        [
+        return [
             DashboardSummaryCard(
                 title: "Records",
                 value: "\(viewModel.recentRecords.count)",

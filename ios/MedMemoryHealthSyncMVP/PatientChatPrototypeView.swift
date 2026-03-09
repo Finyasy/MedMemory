@@ -1,26 +1,13 @@
 import SwiftUI
 
-struct PatientChatPrototypeView: View {
-    private let messages: [DemoChatMessage] = [
-        DemoChatMessage(
-            role: .assistant,
-            text: "Ask about a report, lab value, medication, or date. I will only use what is in the record."
-        ),
-        DemoChatMessage(
-            role: .user,
-            text: "Summarize my latest document in short sentences."
-        ),
-        DemoChatMessage(
-            role: .assistant,
-            text: "From your records: the latest document summary should stay grounded, cited, and concise."
-        )
-    ]
+struct PatientChatView: View {
+    @ObservedObject var viewModel: HealthSyncViewModel
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(spacing: 14) {
-                    ForEach(messages) { message in
+                    ForEach(viewModel.chatMessages) { message in
                         messageBubble(message)
                     }
                 }
@@ -31,21 +18,26 @@ struct PatientChatPrototypeView: View {
                 HStack {
                     Image(systemName: "sparkles")
                         .foregroundStyle(MedMemoryTheme.accent)
-                    Text("Grounded patient chat")
+                    Text(viewModel.isSendingChat ? "Thinking…" : "Grounded patient chat")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(MedMemoryTheme.textSecondary)
                     Spacer()
                 }
 
                 HStack(spacing: 12) {
-                    Text("Message MedMemory...")
-                        .foregroundStyle(MedMemoryTheme.textSecondary)
-                    Spacer()
-                    Image(systemName: "paperplane.fill")
-                        .foregroundStyle(.white)
-                        .padding(10)
-                        .background(MedMemoryTheme.accent)
-                        .clipShape(Circle())
+                    TextField("Message MedMemory...", text: $viewModel.chatDraft, axis: .vertical)
+                        .foregroundStyle(MedMemoryTheme.textPrimary)
+                        .lineLimit(1...4)
+                    Button {
+                        Task { await viewModel.sendChatMessage() }
+                    } label: {
+                        Image(systemName: "paperplane.fill")
+                            .foregroundStyle(.white)
+                            .padding(10)
+                            .background(MedMemoryTheme.accent)
+                            .clipShape(Circle())
+                    }
+                    .disabled(viewModel.isSendingChat || viewModel.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
@@ -60,7 +52,7 @@ struct PatientChatPrototypeView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func messageBubble(_ message: DemoChatMessage) -> some View {
+    private func messageBubble(_ message: PatientChatMessage) -> some View {
         HStack {
             if message.role == .assistant {
                 VStack(alignment: .leading, spacing: 8) {
@@ -69,11 +61,17 @@ struct PatientChatPrototypeView: View {
                         .foregroundStyle(MedMemoryTheme.textPrimary)
 
                     HStack(spacing: 8) {
-                        Text("Grounded")
-                        Text("Cited")
+                        if message.isError {
+                            Text("Error")
+                        } else {
+                            Text("Grounded")
+                            if let citationCount = message.citationCount, citationCount > 0 {
+                                Text("\(citationCount) source(s)")
+                            }
+                        }
                     }
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(MedMemoryTheme.success)
+                    .foregroundStyle(message.isError ? .red : MedMemoryTheme.success)
                 }
                 .padding(14)
                 .background(Color.white.opacity(0.92))
@@ -92,3 +90,8 @@ struct PatientChatPrototypeView: View {
     }
 }
 
+#Preview {
+    NavigationStack {
+        PatientChatView(viewModel: HealthSyncViewModel())
+    }
+}

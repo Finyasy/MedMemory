@@ -16,10 +16,12 @@ enum PatientSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-struct DemoChatMessage: Identifiable {
+struct PatientChatMessage: Identifiable {
     let id = UUID()
     let role: MessageRole
     let text: String
+    let citationCount: Int?
+    let isError: Bool
 
     enum MessageRole {
         case user

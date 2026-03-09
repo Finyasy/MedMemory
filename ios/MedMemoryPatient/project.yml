@@ -1,0 +1,39 @@
+name: MedMemoryPatient
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.bryanbosire.medmemory.patient
+    SWIFT_VERSION: "5.0"
+    INFOPLIST_FILE: Config/Info.plist
+    CODE_SIGN_ENTITLEMENTS: Config/MedMemoryPatient.entitlements
+    TARGETED_DEVICE_FAMILY: "1,2"
+
+targets:
+  MedMemoryPatient:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../MedMemoryHealthSyncMVP
+        excludes:
+          - README.md
+    info:
+      path: Config/Info.plist
+      properties:
+        NSHealthShareUsageDescription: MedMemory uses your step count to show grounded trends in your patient dashboard.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Config/MedMemoryPatient.entitlements
+
+schemes:
+  MedMemoryPatient:
+    build:
+      targets:
+        MedMemoryPatient: all
+    run:
+      config: Debug
