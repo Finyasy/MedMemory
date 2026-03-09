@@ -1,8 +1,14 @@
 from app.models.access_audit_log import AccessAuditLog
 from app.models.base import Base, TimestampMixin, model_to_dict
+from app.models.clinician_copilot import (
+    ClinicianAgentRun,
+    ClinicianAgentStep,
+    ClinicianAgentSuggestion,
+)
 from app.models.clinician_profile import ClinicianProfile
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.dashboard import (
+    PatientAppleHealthStepDaily,
     PatientConnectionSyncEvent,
     PatientDataConnection,
     PatientMetricAlert,
@@ -43,6 +49,9 @@ __all__ = [
     "UserRole",
     "Patient",
     "ClinicianProfile",
+    "ClinicianAgentRun",
+    "ClinicianAgentStep",
+    "ClinicianAgentSuggestion",
     "PatientAccessGrant",
     "GrantStatus",
     "AccessAuditLog",
@@ -55,6 +64,7 @@ __all__ = [
     "ConversationMessage",
     "PatientDataConnection",
     "PatientConnectionSyncEvent",
+    "PatientAppleHealthStepDaily",
     "PatientMetricDailySummary",
     "PatientWatchMetric",
     "PatientMetricAlert",

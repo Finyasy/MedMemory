@@ -11,13 +11,15 @@ from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_authenticated_user, rate_limit_auth
+from app.api.deps import get_authenticated_user, get_patient_for_user, rate_limit_auth
 from app.config import settings
 from app.database import get_db
-from app.models import TokenBlacklist
+from app.models import Patient, TokenBlacklist
 from app.models.user import User
 from app.schemas.auth import (
     ForgotPasswordRequest,
+    MobileTokenRequest,
+    MobileTokenResponse,
     RefreshTokenRequest,
     ResetPasswordRequest,
     TokenResponse,
@@ -34,6 +36,14 @@ security = HTTPBearer()
 
 _token_blacklist: set[str] = set()
 _blacklist_lock = asyncio.Lock()
+
+
+def _normalized_role(value: object, default: str = "patient") -> str:
+    """Normalize role strings to avoid case/whitespace mismatches."""
+    if value is None:
+        return default
+    role = str(value).strip().lower()
+    return role or default
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -138,6 +148,46 @@ def _hash_reset_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _normalize_mobile_scopes(scopes: list[str]) -> list[str]:
+    allowed = {"chat", "records", "documents", "apple_health"}
+    normalized = sorted(
+        {
+            scope.strip()
+            for scope in scopes
+            if isinstance(scope, str) and scope.strip() in allowed
+        }
+    )
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one valid mobile scope is required",
+        )
+    return normalized
+
+
+def _issue_mobile_tokens(
+    *,
+    user: User,
+    patient_id: int,
+    scopes: list[str],
+) -> tuple[str, str, int]:
+    role = _normalized_role(getattr(user, "role", "patient"))
+    token_claims = {
+        "sub": str(user.id),
+        "role": role,
+        "mobile_patient_id": patient_id,
+        "mobile_scopes": scopes,
+        "aud": "mobile",
+    }
+    expires_in_seconds = settings.jwt_mobile_access_token_expire_minutes * 60
+    access_token = create_access_token(
+        data=token_claims,
+        expires_delta=timedelta(minutes=settings.jwt_mobile_access_token_expire_minutes),
+    )
+    refresh_token = create_refresh_token(data=token_claims)
+    return access_token, refresh_token, expires_in_seconds
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -208,7 +258,7 @@ async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_
     await db.refresh(new_user)
 
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    role = getattr(new_user, "role", "patient")
+    role = _normalized_role(getattr(new_user, "role", "patient"))
     access_token = create_access_token(
         data={"sub": str(new_user.id), "role": role}, expires_delta=access_token_expires
     )
@@ -246,7 +296,7 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
         )
 
-    role = getattr(user, "role", "patient")
+    role = _normalized_role(getattr(user, "role", "patient"))
     if role == "clinician":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -326,7 +376,7 @@ async def refresh_access_token(
         )
 
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    role = getattr(user, "role", "patient")
+    role = _normalized_role(getattr(user, "role", "patient"))
     access_token = create_access_token(
         data={"sub": str(user.id), "role": role}, expires_delta=access_token_expires
     )
@@ -339,6 +389,108 @@ async def refresh_access_token(
         expires_in=settings.jwt_access_token_expire_minutes * 60,
         user_id=user.id,
         email=user.email,
+    )
+
+
+@router.post("/auth/mobile-token", response_model=MobileTokenResponse)
+async def issue_mobile_token(
+    payload: MobileTokenRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+):
+    """Issue a short-lived patient-scoped token for the native mobile app."""
+    patient = await get_patient_for_user(
+        patient_id=payload.patient_id,
+        db=db,
+        current_user=current_user,
+    )
+    scopes = _normalize_mobile_scopes(payload.scopes)
+    access_token, refresh_token, expires_in_seconds = _issue_mobile_tokens(
+        user=current_user,
+        patient_id=patient.id,
+        scopes=scopes,
+    )
+    return MobileTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in_seconds,
+        patient_id=patient.id,
+        scopes=scopes,
+    )
+
+
+@router.post("/auth/mobile-refresh", response_model=MobileTokenResponse)
+async def refresh_mobile_token(
+    payload: RefreshTokenRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Refresh a patient-scoped mobile token using a mobile refresh token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid mobile refresh token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        token_payload = jwt.decode(
+            payload.refresh_token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+        )
+        user_id_str: str | None = token_payload.get("sub")
+        token_type: str | None = token_payload.get("type")
+        jti: str | None = token_payload.get("jti")
+        audience: str | None = token_payload.get("aud")
+        mobile_patient_id = token_payload.get("mobile_patient_id")
+        raw_scopes = token_payload.get("mobile_scopes")
+
+        if user_id_str is None or token_type != "refresh" or audience != "mobile":
+            raise credentials_exception
+        if mobile_patient_id is None:
+            raise credentials_exception
+        if jti and await is_token_blacklisted(jti, db=db):
+            raise credentials_exception
+
+        user_id = int(user_id_str)
+        patient_id = int(mobile_patient_id)
+        if isinstance(raw_scopes, list):
+            scopes = _normalize_mobile_scopes([str(scope) for scope in raw_scopes])
+        elif isinstance(raw_scopes, str):
+            scopes = _normalize_mobile_scopes(raw_scopes.split(","))
+        else:
+            raise credentials_exception
+    except (JWTError, ValueError, TypeError):
+        raise credentials_exception
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise credentials_exception
+
+    patient_result = await db.execute(
+        select(Patient.id).where(Patient.id == patient_id, Patient.user_id == user.id)
+    )
+    if patient_result.scalar_one_or_none() is None:
+        raise credentials_exception
+
+    if jti:
+        await blacklist_token(
+            jti,
+            db=db,
+            token_type="refresh",
+            expires_at=_coerce_exp_datetime(token_payload.get("exp")),
+        )
+
+    access_token, refresh_token, expires_in_seconds = _issue_mobile_tokens(
+        user=user,
+        patient_id=patient_id,
+        scopes=scopes,
+    )
+    return MobileTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in_seconds,
+        patient_id=patient_id,
+        scopes=scopes,
     )
 
 

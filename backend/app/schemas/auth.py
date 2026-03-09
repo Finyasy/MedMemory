@@ -31,6 +31,27 @@ class TokenResponse(BaseModel):
     email: str = Field(..., description="User email")
 
 
+class MobileTokenRequest(BaseModel):
+    """Request a short-lived patient-scoped mobile token."""
+
+    patient_id: int = Field(..., ge=1, description="Patient ID the mobile token is bound to")
+    scopes: list[str] = Field(
+        default_factory=lambda: ["chat", "records", "documents", "apple_health"],
+        description="Allowed scopes for the mobile patient token",
+    )
+
+
+class MobileTokenResponse(BaseModel):
+    """Response for patient-scoped mobile token issuance."""
+
+    access_token: str = Field(..., description="Short-lived patient-scoped JWT access token")
+    refresh_token: str = Field(..., description="Patient-scoped JWT refresh token for mobile")
+    token_type: str = Field(default="bearer", description="Token type")
+    expires_in: int = Field(..., description="Token expiry in seconds")
+    patient_id: int = Field(..., description="Patient ID bound to the token")
+    scopes: list[str] = Field(..., description="Scopes embedded in the token")
+
+
 class RefreshTokenRequest(BaseModel):
     """Schema for refresh token request."""
 

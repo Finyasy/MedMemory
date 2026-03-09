@@ -222,6 +222,48 @@ class PatientMetricAlert(Base, TimestampMixin):
     )
 
 
+class PatientAppleHealthStepDaily(Base, TimestampMixin):
+    """Daily Apple Health step totals synced from an iOS client."""
+
+    __tablename__ = "patient_apple_health_steps_daily"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    patient_id: Mapped[int] = mapped_column(
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sample_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    step_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_bundle_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    source_uuid: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sync_anchor: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ingest_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "sample_date",
+            name="uq_patient_apple_steps_patient_date",
+        ),
+        Index(
+            "ix_patient_apple_steps_patient_date",
+            "patient_id",
+            "sample_date",
+        ),
+    )
+
+
 class PatientConnectionSyncEvent(Base, TimestampMixin):
     """Audit events for provider connection state and sync lifecycle."""
 

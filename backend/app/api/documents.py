@@ -11,7 +11,11 @@ from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
-from app.api.deps import get_authenticated_user, get_patient_for_user
+from app.api.deps import (
+    enforce_mobile_patient_scope,
+    get_authenticated_user,
+    get_patient_for_user,
+)
 from app.config import settings
 from app.database import get_db
 from app.models import Document, MemoryChunk, Patient, User
@@ -70,6 +74,7 @@ async def _get_document_for_user(
     document = result.scalar_one_or_none()
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    enforce_mobile_patient_scope(current_user, document.patient_id, "documents")
     return document
 
 
@@ -85,7 +90,12 @@ async def upload_document(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Upload a new document for a patient."""
-    await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+        scope="documents",
+    )
     service = DocumentUploadService(db)
 
     try:
@@ -363,7 +373,10 @@ async def list_documents(
 
     if patient_id:
         await get_patient_for_user(
-            patient_id=patient_id, db=db, current_user=current_user
+            patient_id=patient_id,
+            db=db,
+            current_user=current_user,
+            scope="documents",
         )
         query = query.where(Document.patient_id == patient_id)
 
@@ -547,7 +560,12 @@ async def get_patient_documents(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Get all documents for a specific patient."""
-    await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+        scope="documents",
+    )
     service = DocumentUploadService(db)
 
     documents = await service.get_patient_documents(

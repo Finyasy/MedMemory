@@ -31,7 +31,7 @@ async def list_records(
     """List all medical records with optional filtering."""
     if patient_id is not None:
         await get_patient_for_user(
-            patient_id=patient_id, db=db, current_user=current_user
+            patient_id=patient_id, db=db, current_user=current_user, scope="records"
         )
     cache_key = CacheKeys.records(current_user.id, patient_id, record_type, skip, limit)
     cached = await get_cached(cache_key)
@@ -61,7 +61,12 @@ async def create_record(
     current_user: User = Depends(get_authenticated_user),
 ):
     """Create a new medical record."""
-    await get_patient_for_user(patient_id=patient_id, db=db, current_user=current_user)
+    await get_patient_for_user(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+        scope="records",
+    )
     try:
         new_record = await repo.create_record(patient_id=patient_id, record=record)
     except ValueError as exc:
@@ -84,7 +89,10 @@ async def get_record(
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
     await get_patient_for_user(
-        patient_id=record.patient_id, db=db, current_user=current_user
+        patient_id=record.patient_id,
+        db=db,
+        current_user=current_user,
+        scope="records",
     )
 
     return RecordResponse.model_validate(record)
@@ -102,7 +110,10 @@ async def delete_record(
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
     await get_patient_for_user(
-        patient_id=record.patient_id, db=db, current_user=current_user
+        patient_id=record.patient_id,
+        db=db,
+        current_user=current_user,
+        scope="records",
     )
     deleted = await repo.delete_record(record_id)
     if not deleted:

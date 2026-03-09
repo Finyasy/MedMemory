@@ -21,6 +21,14 @@ _auth_rate_limit: dict[str, tuple[int, float]] = {}
 _auth_rate_limit_lock = asyncio.Lock()
 
 
+def _normalized_role(value: object, default: str = "patient") -> str:
+    """Normalize role strings to avoid case/whitespace mismatches."""
+    if value is None:
+        return default
+    role = str(value).strip().lower()
+    return role or default
+
+
 async def require_api_key(x_api_key: str | None = Header(None, alias="X-API-Key")):
     """Require API key when configured (fallback for backward compatibility)."""
     if not settings.api_key:
@@ -77,15 +85,57 @@ async def get_authenticated_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
         )
+    mobile_patient_id = payload.get("mobile_patient_id")
+    parsed_mobile_patient_id: int | None = None
+    if mobile_patient_id is not None:
+        try:
+            parsed_mobile_patient_id = int(mobile_patient_id)
+        except (TypeError, ValueError):
+            raise credentials_exception
+    raw_scopes = payload.get("mobile_scopes")
+    if isinstance(raw_scopes, list):
+        parsed_mobile_scopes = {str(scope).strip() for scope in raw_scopes if str(scope).strip()}
+    elif isinstance(raw_scopes, str):
+        parsed_mobile_scopes = {
+            scope.strip() for scope in raw_scopes.split(",") if scope.strip()
+        }
+    else:
+        parsed_mobile_scopes = set()
+    setattr(user, "_mobile_patient_id", parsed_mobile_patient_id)
+    setattr(user, "_mobile_scopes", parsed_mobile_scopes)
     return user
+
+
+def enforce_mobile_patient_scope(
+    current_user: User,
+    patient_id: int,
+    required_scope: str | None = None,
+) -> None:
+    mobile_patient_id = getattr(current_user, "_mobile_patient_id", None)
+    if mobile_patient_id is None:
+        return
+    if int(mobile_patient_id) != int(patient_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Mobile token is scoped to a different patient",
+        )
+    if required_scope:
+        mobile_scopes: set[str] = getattr(current_user, "_mobile_scopes", set())
+        if required_scope not in mobile_scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Mobile token missing scope: {required_scope}",
+            )
 
 
 async def get_patient_for_user(
     patient_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_authenticated_user)],
+    scope: str | None = None,
 ) -> Patient:
     """Fetch a patient owned by the current user or raise."""
+    enforce_mobile_patient_scope(current_user, patient_id, scope)
     result = await db.execute(
         select(Patient).where(
             Patient.id == patient_id, Patient.user_id == current_user.id
@@ -107,6 +157,7 @@ async def get_authorized_patient(
 ) -> Patient:
     """Fetch a patient the current user is allowed to access: owner or clinician with active grant.
     Optionally require a scope (documents, records, labs, medications, chat)."""
+    enforce_mobile_patient_scope(current_user, patient_id, scope)
     result = await db.execute(select(Patient).where(Patient.id == patient_id))
     patient = result.scalar_one_or_none()
     if not patient:
@@ -144,7 +195,7 @@ async def require_clinician(
     current_user: Annotated[User, Depends(get_authenticated_user)],
 ) -> User:
     """Require the current user to have role clinician. Use for clinician-only endpoints."""
-    if getattr(current_user, "role", "patient") != "clinician":
+    if _normalized_role(getattr(current_user, "role", "patient")) != "clinician":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Clinician access required",

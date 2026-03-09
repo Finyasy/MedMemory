@@ -1,6 +1,7 @@
 """API Routes for MedMemory."""
 
 from app.api import (
+    apple_health,
     auth,
     chat,
     clinician,
@@ -16,9 +17,11 @@ from app.api import (
     patients,
     profile,
     records,
+    speech,
 )
 
 __all__ = [
+    "apple_health",
     "auth",
     "chat",
     "context",
@@ -34,4 +37,5 @@ __all__ = [
     "dependents",
     "clinician",
     "patient_access",
+    "speech",
 ]

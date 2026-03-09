@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_authenticated_user
+from app.api.deps import enforce_mobile_patient_scope, get_authenticated_user
 from app.database import get_db
 from app.models import (
     EmergencyContact,
@@ -96,6 +96,11 @@ async def get_user_patient(
     db: AsyncSession, user: User, patient_id: int | None = None
 ) -> Patient:
     """Get the patient for the current user or specified patient ID."""
+    mobile_patient_id = getattr(user, "_mobile_patient_id", None)
+    if patient_id is None and mobile_patient_id is not None:
+        patient_id = int(mobile_patient_id)
+    if patient_id is not None:
+        enforce_mobile_patient_scope(user, patient_id)
     if patient_id:
         result = await db.execute(
             select(Patient).where(Patient.id == patient_id, Patient.user_id == user.id)

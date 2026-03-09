@@ -167,6 +167,13 @@ class Settings(BaseSettings):
             "just clinician mode. When enabled, uncited numeric claims are refused."
         ),
     )
+    llm_summary_best_effort_fallback: bool = Field(
+        default=True,
+        description=(
+            "Allow summary-style prompts to return a best-effort ungrounded response "
+            "instead of a hard no-evidence refusal when retrieval/document context is missing."
+        ),
+    )
     llm_enable_self_correction: bool = Field(
         default=True,
         description=(
@@ -357,6 +364,94 @@ class Settings(BaseSettings):
         default=False,
         description="Run Transformers in offline mode. Set via TRANSFORMERS_OFFLINE=1",
     )
+    speech_require_local_assets: bool = Field(
+        default=True,
+        description=(
+            "Require speech models to be available from a local path or local Hugging Face "
+            "cache instead of downloading at request time."
+        ),
+    )
+    speech_transcription_model: str = Field(
+        default="google/medasr",
+        description="Model id used for English MedASR transcription.",
+    )
+    speech_transcription_model_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional local path to a MedASR checkpoint directory. When set, runtime "
+            "loads speech transcription strictly from this path."
+        ),
+    )
+    speech_transcription_min_confidence: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum accepted transcription confidence when the runtime can estimate one. "
+            "Explicit transcript review is still required before submission."
+        ),
+    )
+    speech_transcription_max_upload_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description="Maximum accepted speech upload size in bytes.",
+    )
+    speech_transcription_max_duration_seconds: int = Field(
+        default=45,
+        ge=1,
+        le=300,
+        description="Maximum accepted speech clip duration in seconds.",
+    )
+    speech_transcription_timeout_seconds: int = Field(
+        default=90,
+        ge=5,
+        le=600,
+        description="Soft timeout budget for a single transcription request.",
+    )
+    speech_transcription_chunk_length_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=120,
+        description="Chunk length hint passed to the ASR pipeline when supported.",
+    )
+    speech_transcription_stride_length_seconds: int = Field(
+        default=2,
+        ge=0,
+        le=30,
+        description="Stride overlap hint passed to the ASR pipeline when supported.",
+    )
+    speech_transcription_use_lm_decoder: bool = Field(
+        default=True,
+        description=(
+            "Enable the MedASR KenLM-backed CTC decoder when local LM assets and optional "
+            "dependencies are available."
+        ),
+    )
+    speech_transcription_lm_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional local path to the KenLM decoder shipped with MedASR. When omitted, "
+            "runtime will look for lm_6.kenlm inside SPEECH_TRANSCRIPTION_MODEL_PATH."
+        ),
+    )
+    speech_transcription_decoder_beam_width: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description="Beam width used by the LM-backed CTC decoder.",
+    )
+    speech_transcription_decoder_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=5.0,
+        description="LM weight passed to the CTC beam-search decoder.",
+    )
+    speech_transcription_decoder_beta: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=5.0,
+        description="Word insertion bonus passed to the CTC beam-search decoder.",
+    )
 
     api_key: str | None = None
     log_level: str = "INFO"
@@ -382,6 +477,7 @@ class Settings(BaseSettings):
     )
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
+    jwt_mobile_access_token_expire_minutes: int = 480
     jwt_refresh_token_expire_days: int = 7
 
     model_config = SettingsConfigDict(

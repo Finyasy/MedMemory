@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
+    apple_health,
     auth,
     chat,
     clinician,
@@ -24,6 +25,7 @@ from app.api import (
     patients,
     profile,
     records,
+    speech,
 )
 from app.api.deps import get_authenticated_user
 from app.config import settings
@@ -137,7 +139,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
-        "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+        "Permissions-Policy", "geolocation=(), microphone=(self), camera=()"
     )
     response.headers.setdefault(
         "Content-Security-Policy",
@@ -197,12 +199,22 @@ app.include_router(
     dependencies=[Depends(get_authenticated_user)],
 )
 app.include_router(
+    speech.router,
+    prefix=settings.api_prefix,
+    dependencies=[Depends(get_authenticated_user)],
+)
+app.include_router(
     insights.router,
     prefix=settings.api_prefix,
     dependencies=[Depends(get_authenticated_user)],
 )
 app.include_router(
     dashboard.router,
+    prefix=settings.api_prefix,
+    dependencies=[Depends(get_authenticated_user)],
+)
+app.include_router(
+    apple_health.router,
     prefix=settings.api_prefix,
     dependencies=[Depends(get_authenticated_user)],
 )
