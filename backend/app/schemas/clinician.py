@@ -1,6 +1,7 @@
-"""Pydantic schemas for Clinician and Access Grant APIs."""
+"""Pydantic schemas for clinician auth, access grants, and copilot runs."""
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -140,3 +141,76 @@ class PatientAccessRequestItem(BaseModel):
     status: str
     scopes: str
     created_at: datetime
+
+
+class ClinicianAgentCitation(BaseModel):
+    source_type: str
+    source_id: int | None = None
+    label: str | None = None
+    detail: str | None = None
+
+
+class ClinicianAgentStepResponse(BaseModel):
+    id: int
+    step_order: int
+    tool_name: str
+    title: str
+    status: str
+    output_summary: str | None = None
+    citations: list[ClinicianAgentCitation] = Field(default_factory=list)
+    safety_flags: list[str] = Field(default_factory=list)
+    output_payload: dict | list | None = None
+    error_message: str | None = None
+    created_at: datetime | None = None
+
+
+class ClinicianAgentSuggestionResponse(BaseModel):
+    id: int
+    suggestion_order: int
+    kind: str
+    title: str
+    description: str
+    action_label: str | None = None
+    action_target: str | None = None
+    citations: list[ClinicianAgentCitation] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+
+class ClinicianAgentRunCreate(BaseModel):
+    patient_id: int = Field(..., gt=0)
+    prompt: str = Field(..., min_length=3, max_length=2000)
+    template: str = Field(
+        ...,
+        pattern="^(chart_review|trend_review|med_reconciliation|data_quality)$",
+    )
+    conversation_id: UUID | None = None
+
+
+class ClinicianAgentRunSummaryResponse(BaseModel):
+    id: int
+    patient_id: int
+    clinician_user_id: int
+    template: str
+    prompt: str
+    status: str
+    final_answer_preview: str | None = None
+    safety_flags: list[str] = Field(default_factory=list)
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class ClinicianAgentRunResponse(BaseModel):
+    id: int
+    patient_id: int
+    clinician_user_id: int
+    template: str
+    prompt: str
+    status: str
+    final_answer: str | None = None
+    citations: list[ClinicianAgentCitation] = Field(default_factory=list)
+    safety_flags: list[str] = Field(default_factory=list)
+    steps: list[ClinicianAgentStepResponse] = Field(default_factory=list)
+    suggestions: list[ClinicianAgentSuggestionResponse] = Field(default_factory=list)
+    error_message: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None

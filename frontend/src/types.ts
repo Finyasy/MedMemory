@@ -1,3 +1,6 @@
+export type ChatInputMode = 'text' | 'voice';
+export type ChatResponseMode = 'text' | 'speech' | 'both';
+
 export interface MedicalRecord {
   id: number;
   patient_id: number;
@@ -65,9 +68,41 @@ export interface ChatSource {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  message_id?: number | null;
+  input_mode?: ChatInputMode;
+  response_mode?: ChatResponseMode;
   num_sources?: number;
   sources?: ChatSource[];
   structured_data?: Record<string, unknown> | null;
+  detected_language?: string | null;
+  input_language?: string | null;
+  output_language?: string | null;
+  translated_question?: string | null;
+  translation_applied?: boolean;
+  speech_locale?: string | null;
+  audio_asset_id?: string | null;
+  audio_url?: string | null;
+  audio_duration_ms?: number | null;
+  transcript_confidence?: number | null;
+}
+
+export interface SpeechTranscriptionResult {
+  transcript: string;
+  detected_language: string;
+  input_mode: 'voice';
+  transcript_confidence?: number | null;
+  duration_ms?: number | null;
+  model_name?: string | null;
+}
+
+export interface SpeechSynthesisResult {
+  audio_asset_id: string;
+  output_language: string;
+  response_mode: 'speech' | 'both';
+  audio_url?: string | null;
+  audio_duration_ms?: number | null;
+  speech_locale?: string | null;
+  model_name?: string | null;
 }
 
 export interface LocalizationBox {
@@ -262,6 +297,106 @@ export interface ConnectionSyncEvent {
   triggered_by_user_id?: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ClinicianAgentCitation {
+  source_type: string;
+  source_id?: number | null;
+  label?: string | null;
+  detail?: string | null;
+}
+
+export interface ClinicianAgentStep {
+  id: number;
+  step_order: number;
+  tool_name: string;
+  title: string;
+  status: string;
+  output_summary?: string | null;
+  citations: ClinicianAgentCitation[];
+  safety_flags: string[];
+  output_payload?: Record<string, unknown> | unknown[] | null;
+  error_message?: string | null;
+  created_at?: string | null;
+}
+
+export interface ClinicianAgentSuggestion {
+  id: number;
+  suggestion_order: number;
+  kind: string;
+  title: string;
+  description: string;
+  action_label?: string | null;
+  action_target?: string | null;
+  citations: ClinicianAgentCitation[];
+  created_at?: string | null;
+}
+
+export interface ClinicianAgentRunSummary {
+  id: number;
+  patient_id: number;
+  clinician_user_id: number;
+  template: 'chart_review' | 'trend_review' | 'med_reconciliation' | 'data_quality';
+  prompt: string;
+  status: string;
+  final_answer_preview?: string | null;
+  safety_flags: string[];
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface ClinicianAgentRun {
+  id: number;
+  patient_id: number;
+  clinician_user_id: number;
+  template: 'chart_review' | 'trend_review' | 'med_reconciliation' | 'data_quality';
+  prompt: string;
+  status: string;
+  final_answer?: string | null;
+  citations: ClinicianAgentCitation[];
+  safety_flags: string[];
+  steps: ClinicianAgentStep[];
+  suggestions: ClinicianAgentSuggestion[];
+  error_message?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface AppleHealthStepTrendPoint {
+  sample_date: string;
+  step_count: number;
+  start_at?: string | null;
+  end_at?: string | null;
+  timezone?: string | null;
+  source_name?: string | null;
+}
+
+export interface AppleHealthStepsTrendResponse {
+  patient_id: number;
+  metric_key: 'steps' | string;
+  metric_name: string;
+  unit: string;
+  start_date: string;
+  end_date: string;
+  points: AppleHealthStepTrendPoint[];
+  total_steps: number;
+  average_steps?: number | null;
+  latest_step_count?: number | null;
+  latest_sample_date?: string | null;
+  last_synced_at?: string | null;
+}
+
+export interface AppleHealthSyncStatusResponse {
+  patient_id: number;
+  provider_name: string;
+  provider_slug: 'apple_health' | string;
+  status: 'connected' | 'syncing' | 'error' | 'disconnected' | string;
+  is_active: boolean;
+  last_synced_at?: string | null;
+  last_error?: string | null;
+  total_synced_days: number;
+  earliest_sample_date?: string | null;
+  latest_sample_date?: string | null;
 }
 
 export interface AlertsEvaluateResponse {

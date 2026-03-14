@@ -280,6 +280,163 @@ uv run python scripts/run_real_medgemma_smoke.py \
   --output-json artifacts/hallucination_eval/real_inference_smoke.json
 ```
 
+### 7) Speech Transcription Evaluation
+
+Use this to benchmark the local MedASR runtime on real clips before changing
+decoder settings, confidence thresholds, or transcript post-processing.
+
+```bash
+cd backend
+uv run python scripts/evaluate_speech_transcription.py \
+  --audio /absolute/path/to/patient-question.wav \
+  --output-dir artifacts/speech_eval/current \
+  --compare-plain-ctc
+```
+
+You can also pass a JSONL manifest with `audio_path`, `reference`, and optional `id`:
+
+```bash
+cd backend
+uv run python scripts/evaluate_speech_transcription.py \
+  --manifest data/speech_eval/manifest.jsonl \
+  --output-dir artifacts/speech_eval/current
+```
+
+Outputs:
+- `artifacts/speech_eval/current/summary.json`
+- `artifacts/speech_eval/current/report.md`
+
+### 8) Live Speech-to-Chat Smoke
+
+Use this to verify the full local path:
+
+1. login
+2. `auth/me`
+3. speech transcription
+4. `chat/ask` with `input_mode=voice`
+
+```bash
+cd backend
+uv run python scripts/run_speech_chat_smoke.py \
+  --audio /absolute/path/to/patient-question.wav \
+  --patient-id 10 \
+  --output-json artifacts/speech_eval/live_smoke.json
+```
+
+Options:
+- add `--skip-chat` to verify login + transcription only
+- add `--question "..."` to override the transcript before `/chat/ask`
+- add `--base-url http://localhost:8002` to point at a patched backend instance
+
+Output:
+- `artifacts/speech_eval/live_smoke.json`
+
+### 9) Validate Human Speech Eval Manifest
+
+Use this before running the MedASR eval on real human recordings:
+
+```bash
+cd backend
+uv run python scripts/validate_speech_eval_manifest.py \
+  --manifest data/speech_eval/human_en_v1/manifest.jsonl \
+  --output-json artifacts/speech_eval/human_en_v1/manifest_summary.json
+```
+
+This checks:
+- audio files exist
+- references are present
+- role / environment / speaker coverage can be summarized
+
+### 10) Materialize WAXAL `swa_tts`
+
+Download the Swahili TTS subset from Hugging Face and export normalized manifests:
+
+```bash
+cd backend
+uv run --group finetune python scripts/materialize_waxal_swa_tts.py \
+  --output-dir data/waxal_swa_tts
+```
+
+Outputs:
+- `data/waxal_swa_tts/materialization_summary.json`
+- `data/waxal_swa_tts/manifests/<split>.manifest.jsonl`
+- `data/waxal_swa_tts/hf_cache/` (ignored in git)
+
+### 11) Prepare the Swahili TTS Fine-Tune Job
+
+Resolve the tracked fine-tune config against the local manifests:
+
+```bash
+cd backend
+uv run python scripts/prepare_swa_tts_finetune.py \
+  --config configs/speech/swa_tts_finetune_v1.json
+```
+
+Outputs:
+- `artifacts/tts_finetune/swa_tts_v1/resolved_config.json`
+- `artifacts/tts_finetune/swa_tts_v1/dataset_summary.json`
+
+### 12) Release Deploy the Split TTS Worker
+
+Use the release runbook in:
+
+- `/Users/bryan.bosire/anaconda_projects/MedMemory/docs/SPEECH_SERVICE_RELEASE_DEPLOYMENT.md`
+
+This is the operational reference for:
+- `SPEECH_SYNTHESIS_BACKEND=http`
+- worker health checks
+- rollout / rollback
+- split-runtime release gates
+
+One-command local release gate:
+
+```bash
+cd /Users/bryan.bosire/anaconda_projects/MedMemory
+./scripts/run_speech_service_release_gate.sh
+```
+
+### 13) Live Clinician Copilot Smoke
+
+Use this to verify the clinician copilot v1 path end to end:
+
+1. clinician signup/login
+2. patient login
+3. access request and grant reconciliation
+4. bounded copilot run creation
+5. run listing and single-run fetch
+
+```bash
+cd backend
+python scripts/run_clinician_copilot_smoke.py \
+  --template chart_review \
+  --output-json artifacts/clinician_copilot/live_smoke.json
+```
+
+Options:
+- add `--patient-id 10` to force a specific patient
+- add `--template data_quality` to verify a different bounded flow
+- add `--base-url http://localhost:8002` to point at another backend instance
+
+Output:
+- `artifacts/clinician_copilot/live_smoke.json`
+
+One-command wrapper from the repo root:
+
+```bash
+./scripts/run_clinician_copilot_demo_check.sh
+```
+
+Useful options:
+- `--template data_quality` to exercise a different bounded path
+- `--backend-url http://localhost:8002` to point at another API instance
+- `--frontend-url http://localhost:4173` to point Playwright at a non-default UI
+- `--restart-frontend` to restart the local `frontend` dev service on `:5173` before Playwright
+- `--skip-browser` or `--skip-backend` when isolating failures
+
+Loopback note:
+- if the backend URL uses `localhost` and `http://127.0.0.1:8000/health` is reachable, the wrapper automatically switches to the IPv4 loopback URL before running the smoke checks
+- before Playwright runs, the wrapper validates that the frontend URL serves the MedMemory app shell; if the local UI is stale or down, rerun with `--restart-frontend`
+
 ### One-Command Orchestration
 
 ```bash

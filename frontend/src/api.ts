@@ -1,7 +1,13 @@
 import type {
+  AppleHealthStepsTrendResponse,
+  AppleHealthSyncStatusResponse,
   AlertsEvaluateResponse,
+  ChatInputMode,
   ChatMessage,
+  ChatResponseMode,
   ChatSource,
+  ClinicianAgentRun,
+  ClinicianAgentRunSummary,
   ContextSimpleResponse,
   ConnectionSyncEvent,
   CreateRecordPayload,
@@ -14,6 +20,8 @@ import type {
   MedicalRecord,
   MemorySearchResponse,
   PatientSummary,
+  SpeechSynthesisResult,
+  SpeechTranscriptionResult,
   WatchMetric,
   WatchMetricPayload,
 } from './types';
@@ -31,6 +39,13 @@ import {
   OpenAPI,
   PatientsService,
 } from './api/generated';
+import {
+  clearActiveAuthTokens,
+  readActiveAccessToken,
+  readActiveRefreshToken,
+  readActiveTokenExpiresAt,
+  writeActiveAuthTokens,
+} from './utils/authStorage';
 import type {
   BatchIngestionRequest,
   CxrCompareResponse,
@@ -95,19 +110,15 @@ const resolveAuthRecoveryUrls = (path: string) => {
 };
 
 const getAccessToken = () => {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem('medmemory_access_token');
+  return readActiveAccessToken();
 };
 
 const getRefreshToken = () => {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem('medmemory_refresh_token');
+  return readActiveRefreshToken();
 };
 
 const getTokenExpiresAt = () => {
-  if (typeof window === 'undefined') return null;
-  const val = window.localStorage.getItem('medmemory_token_expires_at');
-  return val ? parseInt(val, 10) : null;
+  return readActiveTokenExpiresAt();
 };
 
 const hasAccessToken = () => Boolean(getAccessToken());
@@ -137,15 +148,15 @@ const refreshAccessToken = async (): Promise<string | null> => {
           });
           if (res.ok) {
             const data = await res.json();
-            window.localStorage.setItem('medmemory_access_token', data.access_token);
-            window.localStorage.setItem('medmemory_refresh_token', data.refresh_token);
-            window.localStorage.setItem('medmemory_token_expires_at', String(Date.now() + data.expires_in * 1000));
+            writeActiveAuthTokens(
+              data.access_token,
+              data.refresh_token,
+              Date.now() + data.expires_in * 1000,
+            );
             return data.access_token;
           }
           if (res.status === 401) {
-            window.localStorage.removeItem('medmemory_access_token');
-            window.localStorage.removeItem('medmemory_refresh_token');
-            window.localStorage.removeItem('medmemory_token_expires_at');
+            clearActiveAuthTokens();
             return null;
           }
         } catch {
@@ -308,14 +319,45 @@ export type ChatAskResponse = {
   answer: string;
   conversation_id?: string;
   message_id?: number | null;
+  input_mode?: ChatInputMode;
+  response_mode?: ChatResponseMode;
+  detected_language?: string | null;
+  input_language?: string | null;
+  output_language?: string | null;
+  translated_question?: string | null;
+  translation_applied?: boolean;
+  speech_locale?: string | null;
+  audio_asset_id?: string | null;
+  audio_url?: string | null;
+  audio_duration_ms?: number | null;
+  transcript_confidence?: number | null;
   num_sources?: number;
   sources?: ChatSource[];
   structured_data?: Record<string, unknown> | null;
 } & Record<string, unknown>;
 
+export type ConversationMessageResponse = {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  message_id?: number | null;
+  structured_data?: Record<string, unknown> | null;
+};
+
+export type ConversationDetailResponse = {
+  conversation_id: string;
+  patient_id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  messages: ConversationMessageResponse[];
+};
+
 export type PrimaryProfileSummary = {
   id: number;
   full_name: string;
+  preferred_language?: string | null;
 };
 
 export type ProfileSummary = PrimaryProfileSummary & {
@@ -462,6 +504,7 @@ export const api = {
     return {
       id: profile.id,
       full_name: profile.full_name,
+      preferred_language: profile.preferred_language ?? null,
     };
   },
 
@@ -740,6 +783,34 @@ export const api = {
     );
   },
 
+  async getAppleHealthStepsTrend(
+    patientId: number,
+    options?: { days?: number; startDate?: string; endDate?: string },
+  ): Promise<AppleHealthStepsTrendResponse> {
+    const params = new URLSearchParams();
+    if (typeof options?.days === 'number') params.set('days', String(options.days));
+    if (options?.startDate) params.set('start_date', options.startDate);
+    if (options?.endDate) params.set('end_date', options.endDate);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<AppleHealthStepsTrendResponse>(
+      `${API_BASE}/integrations/apple-health/patient/${patientId}/steps${suffix}`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
+  async getAppleHealthSyncStatus(patientId: number): Promise<AppleHealthSyncStatusResponse> {
+    return request<AppleHealthSyncStatusResponse>(
+      `${API_BASE}/integrations/apple-health/patient/${patientId}/status`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
   async listWatchMetrics(patientId: number): Promise<WatchMetric[]> {
     return request<WatchMetric[]>(`${API_BASE}/dashboard/patient/${patientId}/watchlist`, {
       method: 'GET',
@@ -843,6 +914,10 @@ export const api = {
       structured?: boolean;
       coachingMode?: boolean;
       clinicianMode?: boolean;
+      input_mode?: ChatInputMode;
+      response_mode?: ChatResponseMode;
+      input_language?: string;
+      output_language?: string;
     },
   ): Promise<ChatAskResponse> {
     const { structured, coachingMode, clinicianMode, ...bodyOptions } = options || {};
@@ -863,6 +938,8 @@ export const api = {
         body: JSON.stringify({
           question,
           patient_id: patientId,
+          input_mode: bodyOptions.input_mode ?? 'text',
+          response_mode: bodyOptions.response_mode ?? 'text',
           ...bodyOptions,
         }),
       },
@@ -875,12 +952,31 @@ export const api = {
     onChunk: (chunk: string) => void,
     onDone: () => void,
     options?: {
+      conversationId?: string;
       clinicianMode?: boolean;
       onMetadata?: (metadata: {
+        conversation_id?: string;
+        message_id?: number | null;
+        input_mode?: ChatInputMode;
+        response_mode?: ChatResponseMode;
         num_sources?: number;
         sources?: ChatSource[];
         structured_data?: Record<string, unknown> | null;
+        detected_language?: string | null;
+        input_language?: string | null;
+        output_language?: string | null;
+        translated_question?: string | null;
+        translation_applied?: boolean;
+        speech_locale?: string | null;
+        audio_asset_id?: string | null;
+        audio_url?: string | null;
+        audio_duration_ms?: number | null;
+        transcript_confidence?: number | null;
       }) => void;
+      inputLanguage?: string;
+      outputLanguage?: string;
+      inputMode?: ChatInputMode;
+      responseMode?: ChatResponseMode;
     },
   ) {
     const headers = await withAuthHeaders();
@@ -888,7 +984,12 @@ export const api = {
       patient_id: String(patientId),
       question,
     });
+    if (options?.conversationId) params.set('conversation_id', options.conversationId);
     if (options?.clinicianMode) params.set('clinician_mode', 'true');
+    if (options?.inputLanguage) params.set('input_language', options.inputLanguage);
+    if (options?.outputLanguage) params.set('output_language', options.outputLanguage);
+    if (options?.inputMode) params.set('input_mode', options.inputMode);
+    if (options?.responseMode) params.set('response_mode', options.responseMode);
     const res = await fetch(
       `${API_BASE}/chat/stream?${params.toString()}`,
       {
@@ -928,15 +1029,39 @@ export const api = {
           const payload = JSON.parse(jsonStr) as {
             chunk?: string;
             is_complete?: boolean;
+            conversation_id?: string;
+            message_id?: number | null;
+            input_mode?: ChatInputMode;
+            response_mode?: ChatResponseMode;
             num_sources?: number;
             sources?: ChatSource[];
             structured_data?: Record<string, unknown> | null;
+            detected_language?: string | null;
+            input_language?: string | null;
+            output_language?: string | null;
+            translated_question?: string | null;
+            translation_applied?: boolean;
+            speech_locale?: string | null;
+            audio_asset_id?: string | null;
+            audio_url?: string | null;
+            audio_duration_ms?: number | null;
+            transcript_confidence?: number | null;
           };
           if (payload.chunk) {
             onChunk(payload.chunk);
           }
           if (payload.is_complete) {
             options?.onMetadata?.({
+              conversation_id:
+                typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined,
+              message_id:
+                typeof payload.message_id === 'number' ? payload.message_id : null,
+              input_mode:
+                payload.input_mode === 'voice' ? 'voice' : 'text',
+              response_mode:
+                payload.response_mode === 'speech' || payload.response_mode === 'both'
+                  ? payload.response_mode
+                  : 'text',
               num_sources:
                 typeof payload.num_sources === 'number' ? payload.num_sources : undefined,
               sources: Array.isArray(payload.sources)
@@ -945,6 +1070,27 @@ export const api = {
               structured_data:
                 payload.structured_data && typeof payload.structured_data === 'object'
                   ? payload.structured_data
+                  : null,
+              detected_language:
+                typeof payload.detected_language === 'string' ? payload.detected_language : null,
+              input_language:
+                typeof payload.input_language === 'string' ? payload.input_language : null,
+              output_language:
+                typeof payload.output_language === 'string' ? payload.output_language : null,
+              translated_question:
+                typeof payload.translated_question === 'string' ? payload.translated_question : null,
+              translation_applied: Boolean(payload.translation_applied),
+              speech_locale:
+                typeof payload.speech_locale === 'string' ? payload.speech_locale : null,
+              audio_asset_id:
+                typeof payload.audio_asset_id === 'string' ? payload.audio_asset_id : null,
+              audio_url:
+                typeof payload.audio_url === 'string' ? payload.audio_url : null,
+              audio_duration_ms:
+                typeof payload.audio_duration_ms === 'number' ? payload.audio_duration_ms : null,
+              transcript_confidence:
+                typeof payload.transcript_confidence === 'number'
+                  ? payload.transcript_confidence
                   : null,
             });
             onDone();
@@ -956,8 +1102,79 @@ export const api = {
     }
   },
 
+  async getConversation(conversationId: string): Promise<ConversationDetailResponse> {
+    return request<ConversationDetailResponse>(
+      `${API_BASE}/chat/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: 'GET',
+        headers: await withAuthHeaders(),
+      },
+    );
+  },
+
   async getAuthHeaders(): Promise<Record<string, string>> {
     return getAuthHeaders();
+  },
+
+  async speechTranscribe(
+    audio: File,
+    options?: {
+      patientId?: number;
+      clinicianMode?: boolean;
+      language?: string;
+    },
+  ): Promise<SpeechTranscriptionResult> {
+    const form = new FormData();
+    form.append('audio', audio);
+    if (typeof options?.patientId === 'number') {
+      form.append('patient_id', String(options.patientId));
+    }
+    if (options?.clinicianMode) {
+      form.append('clinician_mode', 'true');
+    }
+    form.append('language', options?.language ?? 'en');
+
+    return request<SpeechTranscriptionResult>(`${API_BASE}/speech/transcribe`, {
+      method: 'POST',
+      headers: await withAuthHeaders(),
+      body: form,
+    });
+  },
+
+  async speechSynthesize(payload: {
+    text: string;
+    patient_id?: number;
+    conversation_id?: string;
+    message_id?: number;
+    output_language?: string;
+    response_mode?: Extract<ChatResponseMode, 'speech' | 'both'>;
+  }): Promise<SpeechSynthesisResult> {
+    return request<SpeechSynthesisResult>(`${API_BASE}/speech/synthesize`, {
+      method: 'POST',
+      headers: await withAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        output_language: payload.output_language ?? 'sw',
+        response_mode: payload.response_mode ?? 'speech',
+        ...payload,
+      }),
+    });
+  },
+
+  async speechFetchAudioAsset(assetId: string): Promise<Blob> {
+    const encodedAssetId = assetId
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const res = await fetch(`${API_BASE}/speech/assets/${encodedAssetId}`, {
+      method: 'GET',
+      headers: await withAuthHeaders(),
+    });
+    if (!res.ok) {
+      const data = await parseJson(res);
+      const message = data?.error?.message || data?.detail || res.statusText;
+      throw new ApiError(res.status, message);
+    }
+    return res.blob();
   },
 
   // ----- Clinician API -----
@@ -1123,6 +1340,43 @@ export const api = {
       method: 'GET',
       headers: await getAuthHeaders(),
     });
+  },
+
+  async createClinicianAgentRun(payload: {
+    patient_id: number;
+    prompt: string;
+    template: 'chart_review' | 'trend_review' | 'med_reconciliation' | 'data_quality';
+    conversation_id?: string;
+  }) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<ClinicianAgentRun>(`${base}/clinician/agent/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getClinicianAgentRun(runId: number) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    return request<ClinicianAgentRun>(`${base}/clinician/agent/runs/${runId}`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+    });
+  },
+
+  async listClinicianAgentRuns(patientId: number, limit = 10) {
+    const base = API_BASE.startsWith('http') ? API_BASE : `${API_ORIGIN}${API_BASE}`;
+    const params = new URLSearchParams({
+      patient_id: String(patientId),
+      limit: String(limit),
+    });
+    return request<ClinicianAgentRunSummary[]>(
+      `${base}/clinician/agent/runs?${params.toString()}`,
+      {
+        method: 'GET',
+        headers: await getAuthHeaders(),
+      },
+    );
   },
 
   async patientAccessGrant(payload: { grant_id: number; scopes?: string; expires_in_days?: number }) {
