@@ -5,7 +5,8 @@ import useChat from '../hooks/useChat';
 import useAppErrorHandler from '../hooks/useAppErrorHandler';
 import useToast from '../hooks/useToast';
 import ChatInterface from '../components/ChatInterface';
-import type { DocumentItem, MedicalRecord } from '../types';
+import ClinicianCopilotPanel from '../components/clinician/ClinicianCopilotPanel';
+import type { ConnectionSyncEvent, DataConnection, DocumentItem, MedicalRecord } from '../types';
 
 type Tab = 'login' | 'signup';
 type BackendStatus = 'checking' | 'online' | 'offline';
@@ -18,6 +19,8 @@ type OnboardingStep = {
   state: OnboardingStepState;
 };
 type MobileSection = 'queue' | 'link' | 'panel';
+type PatientPanelSection = 'documents' | 'records' | 'connections' | 'dependents';
+type SidebarUtilitySection = 'link' | 'uploads';
 
 type PatientWithGrant = {
   patient_id: number;
@@ -31,12 +34,88 @@ type PatientWithGrant = {
   expires_at?: string | null;
 };
 
+type AttentionBadgeTone = 'active-soft' | 'pending-soft' | 'neutral' | 'error-soft';
+type AttentionBadge = {
+  label: string;
+  tone: AttentionBadgeTone;
+  priority: number;
+};
+
 const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const ONBOARDING_STEP_LABEL: Record<OnboardingStepState, string> = {
   upcoming: 'Next',
   active: 'In progress',
   complete: 'Done',
   ready: 'Ready',
+};
+
+const parseTimestamp = (value?: string | null) => {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const humanizeProviderSlug = (providerSlug: string) =>
+  providerSlug
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => (segment.length <= 4 ? segment.toUpperCase() : segment.charAt(0).toUpperCase() + segment.slice(1)))
+    .join(' ');
+
+const summarizeAttentionReason = (lastError?: string | null, fallback = 'Most recent sync needs review') => {
+  const normalized = lastError?.replace(/\s+/g, ' ').trim();
+  if (!normalized) return fallback;
+  const lower = normalized.toLowerCase();
+  if (/(unauthorized|forbidden|token|credential|bearer|api key|apikey|permission denied)/.test(lower)) {
+    return 'Credentials need refresh';
+  }
+  if (/(timeout|timed out|unreachable|refused|dns|socket|network|failed to establish)/.test(lower)) {
+    return 'Provider endpoint unreachable';
+  }
+  if (/(non-fhir|fhir|capabilitystatement|capability statement)/.test(lower)) {
+    return 'FHIR endpoint needs review';
+  }
+  if (/(429|rate limit|too many requests)/.test(lower)) {
+    return 'Provider rate limit hit';
+  }
+  if (/(404|not found|missing resource)/.test(lower)) {
+    return 'Requested resource not found';
+  }
+  if (/(invalid|malformed|parse|schema|unexpected response|json decode|decode error)/.test(lower)) {
+    return 'Provider response needs review';
+  }
+  const firstClause = normalized.split(/[\n.;]/)[0]?.replace(/^(error|issue)[:\s-]*/i, '').trim();
+  const candidate = firstClause || fallback;
+  if (candidate.length <= 54) return candidate;
+  const preview = candidate.slice(0, 54).trimEnd();
+  const lastSpace = preview.lastIndexOf(' ');
+  return `${(lastSpace > 28 ? preview.slice(0, lastSpace) : preview).trimEnd()}…`;
+};
+
+const getConnectionAttentionBadge = (connection: DataConnection): AttentionBadge => {
+  if (connection.last_error || connection.status === 'error') {
+    return { label: 'Error', tone: 'error-soft', priority: 0 };
+  }
+  if (connection.status === 'syncing') {
+    return { label: 'Syncing', tone: 'pending-soft', priority: 1 };
+  }
+  if (!connection.is_active || connection.status === 'disconnected') {
+    return { label: 'Disconnected', tone: 'neutral', priority: 2 };
+  }
+  return { label: 'Healthy', tone: 'active-soft', priority: 3 };
+};
+
+const getSyncEventAttentionBadge = (event: ConnectionSyncEvent): AttentionBadge => {
+  if (event.last_error || event.event_type === 'sync_failed') {
+    return { label: 'Error', tone: 'error-soft', priority: 0 };
+  }
+  if (event.event_type === 'sync_started') {
+    return { label: 'Syncing', tone: 'pending-soft', priority: 1 };
+  }
+  if (event.event_type === 'disconnected') {
+    return { label: 'Disconnected', tone: 'neutral', priority: 2 };
+  }
+  return { label: 'Healthy', tone: 'active-soft', priority: 3 };
 };
 
 export default function ClinicianDashboardPage() {
@@ -78,19 +157,30 @@ export default function ClinicianDashboardPage() {
   const [showWorkspaceChecklist, setShowWorkspaceChecklist] = useState(false);
   const [showQueueInsights, setShowQueueInsights] = useState(false);
   const [mobileSection, setMobileSection] = useState<MobileSection>('queue');
+  const [expandedPatientPanelSection, setExpandedPatientPanelSection] = useState<PatientPanelSection | null>('documents');
+  const [expandedSidebarUtilitySection, setExpandedSidebarUtilitySection] = useState<SidebarUtilitySection | null>(null);
+  const [expandedIssueRows, setExpandedIssueRows] = useState<Record<string, boolean>>({});
+  const [showAttentionOnly, setShowAttentionOnly] = useState(false);
 
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [records, setRecords] = useState<MedicalRecord[]>([]);
+  const [connections, setConnections] = useState<DataConnection[]>([]);
+  const [connectionSyncEvents, setConnectionSyncEvents] = useState<ConnectionSyncEvent[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [loadingRecords, setLoadingRecords] = useState(false);
+  const [loadingConnections, setLoadingConnections] = useState(false);
 
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const requestPatientInputRef = useRef<HTMLInputElement>(null);
+  const patientPanelTopRef = useRef<HTMLDivElement>(null);
+  const documentsSectionRef = useRef<HTMLElement>(null);
+  const recordsSectionRef = useRef<HTMLElement>(null);
+  const connectionsSectionRef = useRef<HTMLElement>(null);
 
   const user = useAppStore((state) => state.user);
   const { pushToast } = useToast();
-  const stableNoBanner = useCallback((_value: string | null) => {}, []);
+  const stableNoBanner = useCallback(() => {}, []);
   const { handleError } = useAppErrorHandler({ setBanner: stableNoBanner, pushToast });
   const handleErrorRef = useRef(handleError);
   handleErrorRef.current = handleError;
@@ -315,13 +405,18 @@ export default function ClinicianDashboardPage() {
   const loadPatientWorkspace = useCallback(async (patientId: number) => {
     setLoadingDocs(true);
     setLoadingRecords(true);
+    setLoadingConnections(true);
     try {
-      const [docs, recs] = await Promise.all([
+      const [docs, recs, linkedConnections, syncEvents] = await Promise.all([
         api.listClinicianPatientDocuments(patientId),
         api.listClinicianPatientRecords(patientId),
+        api.listDataConnections(patientId),
+        api.listConnectionSyncEvents(patientId, { limit: 10 }),
       ]);
       setDocuments(docs);
       setRecords(recs);
+      setConnections(linkedConnections);
+      setConnectionSyncEvents(syncEvents);
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         setSelectedPatientId(null);
@@ -332,6 +427,7 @@ export default function ClinicianDashboardPage() {
     } finally {
       setLoadingDocs(false);
       setLoadingRecords(false);
+      setLoadingConnections(false);
     }
   }, []);
 
@@ -371,6 +467,7 @@ export default function ClinicianDashboardPage() {
     setQuestion,
     isStreaming,
     send,
+    sendVoiceTranscript,
   } = useChat({
     patientId: selectedPatientId ?? 0,
     onError: handleError,
@@ -382,23 +479,83 @@ export default function ClinicianDashboardPage() {
     setSelectedPatientName(fullName);
     setShowQueueInsights(false);
     setMobileSection('panel');
+    setExpandedPatientPanelSection('documents');
+    setExpandedIssueRows({});
+    setShowAttentionOnly(false);
   }, []);
 
   const handleBackToList = useCallback(() => {
     setSelectedPatientId(null);
     setSelectedPatientName('');
+    setConnections([]);
+    setConnectionSyncEvents([]);
     setMobileSection('queue');
+    setExpandedPatientPanelSection('documents');
+    setExpandedIssueRows({});
+    setShowAttentionOnly(false);
   }, []);
 
   const handleFocusLinkPatient = useCallback(() => {
     setMobileSection('link');
-    requestPatientInputRef.current?.focus();
+    setExpandedSidebarUtilitySection('link');
+    window.setTimeout(() => {
+      requestPatientInputRef.current?.focus();
+    }, 0);
+  }, []);
+
+  const toggleSidebarUtilitySection = useCallback((section: SidebarUtilitySection) => {
+    setExpandedSidebarUtilitySection((current) => (current === section ? null : section));
   }, []);
 
   const handleLogout = useCallback(() => {
     logout();
     window.location.href = '/clinician';
   }, [logout]);
+  const handleCopilotError = useCallback((title: string, error: unknown) => {
+    handleErrorRef.current(title, error);
+  }, []);
+  const handleCopilotNavigate = useCallback((actionTarget: string) => {
+    const section = actionTarget.split(':').pop();
+    if (!section) return;
+
+    if (section === 'workspace') {
+      document.getElementById('clinician-chat-workspace')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+      return;
+    }
+
+    setMobileSection('panel');
+    if (section === 'panel') {
+      patientPanelTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (section === 'documents') {
+      setExpandedPatientPanelSection('documents');
+      documentsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (section === 'records') {
+      setExpandedPatientPanelSection('records');
+      recordsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (section === 'connections') {
+      setExpandedPatientPanelSection('connections');
+      connectionsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
+  const togglePatientPanelSection = useCallback((section: PatientPanelSection) => {
+    setExpandedPatientPanelSection((current) => (current === section ? null : section));
+  }, []);
+
+  const handleOpenConnectionsAttention = useCallback(() => {
+    setExpandedPatientPanelSection('connections');
+    setShowAttentionOnly(true);
+    connectionsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   const activePatientCount = useMemo(
     () => patients.filter((p) => p.grant_status === 'active').length,
@@ -421,6 +578,58 @@ export default function ClinicianDashboardPage() {
     () => uploads.slice(0, 4),
     [uploads],
   );
+  const prioritizedConnections = useMemo(
+    () => [...connections].sort((left, right) => {
+      const leftAttention = getConnectionAttentionBadge(left);
+      const rightAttention = getConnectionAttentionBadge(right);
+      if (leftAttention.priority !== rightAttention.priority) {
+        return leftAttention.priority - rightAttention.priority;
+      }
+      const syncDiff = parseTimestamp(right.last_synced_at) - parseTimestamp(left.last_synced_at);
+      if (syncDiff !== 0) return syncDiff;
+      return left.provider_name.localeCompare(right.provider_name);
+    }),
+    [connections],
+  );
+  const prioritizedConnectionSyncEvents = useMemo(
+    () => [...connectionSyncEvents].sort((left, right) => {
+      const leftAttention = getSyncEventAttentionBadge(left);
+      const rightAttention = getSyncEventAttentionBadge(right);
+      if (leftAttention.priority !== rightAttention.priority) {
+        return leftAttention.priority - rightAttention.priority;
+      }
+      const createdDiff = parseTimestamp(right.created_at) - parseTimestamp(left.created_at);
+      if (createdDiff !== 0) return createdDiff;
+      return left.provider_slug.localeCompare(right.provider_slug);
+    }),
+    [connectionSyncEvents],
+  );
+  const attentionConnections = useMemo(
+    () => prioritizedConnections.filter((connection) => getConnectionAttentionBadge(connection).priority < 3),
+    [prioritizedConnections],
+  );
+  const attentionConnectionSyncEvents = useMemo(
+    () => prioritizedConnectionSyncEvents.filter((event) => getSyncEventAttentionBadge(event).priority < 3),
+    [prioritizedConnectionSyncEvents],
+  );
+  const attentionReviewCount = attentionConnections.length + attentionConnectionSyncEvents.length;
+  const visibleConnections = showAttentionOnly ? attentionConnections : prioritizedConnections;
+  const visibleConnectionSyncEvents = showAttentionOnly ? attentionConnectionSyncEvents : prioritizedConnectionSyncEvents;
+  const providerNameBySlug = useMemo(
+    () => new Map(connections.map((connection) => [connection.provider_slug, connection.provider_name])),
+    [connections],
+  );
+  const attentionReviewSummary = useMemo(() => {
+    const parts = [
+      attentionConnections.length > 0
+        ? `${attentionConnections.length} connection${attentionConnections.length === 1 ? '' : 's'} need review`
+        : null,
+      attentionConnectionSyncEvents.length > 0
+        ? `${attentionConnectionSyncEvents.length} sync event${attentionConnectionSyncEvents.length === 1 ? '' : 's'} need review`
+        : null,
+    ].filter((part): part is string => Boolean(part));
+    return parts.join(' • ') || 'No connection issues need review';
+  }, [attentionConnections.length, attentionConnectionSyncEvents.length]);
   const filteredPatients = useMemo(() => {
     const term = patientSearchTerm.trim().toLowerCase();
     if (!term) return patients;
@@ -496,6 +705,42 @@ export default function ClinicianDashboardPage() {
     : pendingPatientCount > 0
       ? 'Requests are in progress. Patients must approve access before records appear.'
       : 'No linked patients yet. Use the left panel to submit a patient ID access request.';
+  const actionStripHeadline = activePatientCount > 0
+    ? `${activePatientCount} active patient${activePatientCount === 1 ? '' : 's'} ready for review`
+    : 'No approved patients ready yet';
+  const actionStripDetail = pendingPatientCount > 0
+    ? `${pendingPatientCount} pending approval${pendingPatientCount === 1 ? '' : 's'} in the queue`
+    : 'Queue is clear and ready for the next patient link.';
+  const documentSummary = loadingDocs
+    ? 'Loading documents…'
+    : documents.length === 0
+      ? 'No documents yet'
+      : `${documents.length} document${documents.length === 1 ? '' : 's'} available`;
+  const recordSummary = loadingRecords
+    ? 'Loading records…'
+    : records.length === 0
+      ? 'No clinical notes yet'
+      : `${records.length} record${records.length === 1 ? '' : 's'} available`;
+  const baseConnectionSummary = loadingConnections
+    ? 'Loading connections…'
+    : connections.length === 0
+      ? 'No Kenya data connections'
+      : `${connections.length} connection${connections.length === 1 ? '' : 's'} linked`;
+  const connectionSummary = loadingConnections || attentionReviewCount === 0
+    ? baseConnectionSummary
+    : `${baseConnectionSummary} • ${attentionReviewCount} need review`;
+  const queueSummary = isQueueLoading
+    ? 'Refreshing clinician queue…'
+    : activePatientCount > 0
+      ? `${activePatientCount} active workspace${activePatientCount === 1 ? '' : 's'} available`
+      : pendingPatientCount > 0
+        ? `${pendingPatientCount} request${pendingPatientCount === 1 ? '' : 's'} waiting for patient approval`
+        : 'No active or pending patient links yet';
+  const uploadsSummary = loadingUploads
+    ? 'Refreshing uploads…'
+    : uploads.length === 0
+      ? 'No recent uploads'
+      : `${uploads.length} upload${uploads.length === 1 ? '' : 's'} in queue`;
 
   const formatDate = (dateStr: string) =>
     new Date(dateStr).toLocaleDateString('en-US', {
@@ -505,6 +750,22 @@ export default function ClinicianDashboardPage() {
       hour: '2-digit',
       minute: '2-digit',
     });
+  const formatCompactMeta = (...parts: Array<string | null | undefined>) =>
+    parts
+      .map((part) => part?.trim())
+      .filter((part): part is string => Boolean(part))
+      .join(' • ');
+  const humanizeStatus = (value: string) => value.replace(/_/g, ' ');
+  const truncateIssue = (value: string, limit = 86) => {
+    if (value.length <= limit) return { text: value, truncated: false };
+    const preview = value.slice(0, limit).trimEnd();
+    const lastSpace = preview.lastIndexOf(' ');
+    const text = `${(lastSpace > 48 ? preview.slice(0, lastSpace) : preview).trimEnd()}…`;
+    return { text, truncated: true };
+  };
+  const toggleIssueRow = (key: string) => {
+    setExpandedIssueRows((current) => ({ ...current, [key]: !current[key] }));
+  };
 
   // —— Loading (verifying clinician) ——
   if (accessToken && clinicianVerified === null) {
@@ -827,30 +1088,38 @@ export default function ClinicianDashboardPage() {
       </section>
 
       <section className="clinician-action-strip" aria-label="Clinician quick actions">
-        <div className="clinician-action-buttons">
-          <button type="button" className="ghost-button compact clinician-action-btn" onClick={handleFocusLinkPatient}>
-            Link patient
-          </button>
-          <button
-            type="button"
-            className="ghost-button compact clinician-action-btn"
-            onClick={loadPatientListAndUploads}
-            disabled={isQueueLoading}
-          >
-            {isQueueLoading ? 'Refreshing…' : 'Refresh queue'}
-          </button>
-          <button
-            type="button"
-            className="primary-button clinician-action-btn"
-            onClick={handleSelectFirstActivePatient}
-            disabled={activePatients.length === 0}
-          >
-            Open first active patient
-          </button>
+        <div className="clinician-action-summary">
+          <strong>{actionStripHeadline}</strong>
+          <span>{actionStripDetail}</span>
         </div>
-        <p className="clinician-sync-chip" role="status" aria-live="polite">
-          {queueSyncLabel}
-        </p>
+        <div className="clinician-action-toolbar">
+          <div className="clinician-action-buttons clinician-action-buttons-secondary">
+            <button type="button" className="ghost-button compact clinician-action-btn" onClick={handleFocusLinkPatient}>
+              Link patient
+            </button>
+            <button
+              type="button"
+              className="ghost-button compact clinician-action-btn"
+              onClick={loadPatientListAndUploads}
+              disabled={isQueueLoading}
+            >
+              {isQueueLoading ? 'Refreshing…' : 'Refresh queue'}
+            </button>
+          </div>
+          <div className="clinician-action-primary-group">
+            <p className="clinician-sync-chip" role="status" aria-live="polite">
+              {queueSyncLabel}
+            </p>
+            <button
+              type="button"
+              className="primary-button clinician-action-btn clinician-action-btn-primary"
+              onClick={handleSelectFirstActivePatient}
+              disabled={activePatients.length === 0}
+            >
+              Open first active patient
+            </button>
+          </div>
+        </div>
       </section>
       <section className="clinician-mobile-section-switcher" aria-label="Mobile clinician sections">
         <button
@@ -890,37 +1159,13 @@ export default function ClinicianDashboardPage() {
             )}
             <div className={`clinician-sidebar-intro ${mobileSection !== 'queue' ? 'clinician-mobile-collapsed' : ''}`}>
               <h2>Patient queue</h2>
-              <p>Request access, monitor approvals, and open active workspaces from one flow.</p>
+              <p>{queueSummary}</p>
+              <div className="clinician-sidebar-summary-row" aria-label="Queue summary">
+                <span className="clinician-sidebar-summary-pill clinician-status-chip" data-tone="active">{activePatientCount} active</span>
+                <span className="clinician-sidebar-summary-pill clinician-status-chip" data-tone="pending">{pendingPatientCount} pending</span>
+                <span className="clinician-sidebar-summary-pill clinician-status-chip" data-tone="uploads">{uploads.length} uploads</span>
+              </div>
             </div>
-            <section className={`clinician-section clinician-link-patient clinician-sidebar-card ${mobileSection !== 'link' ? 'clinician-mobile-collapsed' : ''}`}>
-              <h2>Link a patient</h2>
-              <p className="clinician-link-hint">Enter the patient ID to request access. The patient must approve in their MedMemory account.</p>
-              <form onSubmit={handleRequestAccess} className="clinician-request-form">
-                <label className="clinician-request-label">
-                  Patient ID
-                  <input
-                    ref={requestPatientInputRef}
-                    type="number"
-                    min={1}
-                    value={requestPatientId}
-                    onChange={(e) => { setRequestPatientId(e.target.value); setRequestAccessError(null); }}
-                    placeholder="e.g. 1"
-                    disabled={requestAccessLoading}
-                    className="clinician-request-input"
-                  />
-                </label>
-                {requestAccessError && (
-                  <p className="clinician-request-error" role="alert">{requestAccessError}</p>
-                )}
-                <button
-                  type="submit"
-                  className="primary-button clinician-request-btn"
-                  disabled={requestAccessLoading || !requestPatientId.trim()}
-                >
-                  {requestAccessLoading ? 'Requesting…' : 'Request access'}
-                </button>
-              </form>
-            </section>
             <section className={`clinician-section clinician-sidebar-card ${mobileSection !== 'queue' ? 'clinician-mobile-collapsed' : ''}`}>
               <div className="clinician-section-heading">
                 <h2>Linked patients</h2>
@@ -959,16 +1204,23 @@ export default function ClinicianDashboardPage() {
                           disabled={!isActive}
                           title={!isActive ? 'Waiting for patient approval' : undefined}
                         >
-                          <strong>{p.patient_full_name}</strong>
-                          <span className="clinician-meta">Patient ID: {p.patient_id}</span>
-                          <span className={`clinician-meta clinician-grant-status clinician-grant-${p.grant_status}`}>
-                            {p.grant_status === 'active' ? 'Active – can view' : p.grant_status === 'pending' ? 'Pending – waiting for approval' : p.grant_status}
-                          </span>
-                          {p.expires_at && isActive && (
-                            <span className="clinician-meta">
-                              Expires: {new Date(p.expires_at).toLocaleDateString()}
+                          <div className="clinician-patient-card-header">
+                            <strong>{p.patient_full_name}</strong>
+                            <span className="clinician-status-chip" data-tone="neutral">ID {p.patient_id}</span>
+                          </div>
+                          <div className="clinician-patient-card-status-row">
+                            <span className={`clinician-grant-status clinician-status-chip`} data-tone={p.grant_status === 'active' ? 'active' : p.grant_status === 'pending' ? 'pending' : 'neutral'}>
+                              {p.grant_status === 'active' ? 'Active' : p.grant_status === 'pending' ? 'Pending' : p.grant_status}
                             </span>
-                          )}
+                            <span className="clinician-status-chip" data-tone={isActive ? 'active-soft' : 'pending-soft'}>
+                              {isActive ? 'Can view' : 'Waiting'}
+                            </span>
+                            {p.expires_at && isActive && (
+                              <span className="clinician-status-chip" data-tone="neutral">
+                                Expires {new Date(p.expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </span>
+                            )}
+                          </div>
                         </button>
                       </li>
                     );
@@ -976,25 +1228,83 @@ export default function ClinicianDashboardPage() {
                 </ul>
               )}
             </section>
+            <section className={`clinician-section clinician-link-patient clinician-sidebar-card ${mobileSection !== 'link' ? 'clinician-mobile-collapsed' : ''}`}>
+              <div className="clinician-section-heading clinician-section-heading-compact">
+                <div>
+                  <h2>Link a patient</h2>
+                  <p className="clinician-sidebar-section-summary">Request access by Patient ID when a clinician needs a new workspace.</p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button compact clinician-sidebar-toggle-button"
+                  aria-expanded={expandedSidebarUtilitySection === 'link'}
+                  onClick={() => toggleSidebarUtilitySection('link')}
+                >
+                  {expandedSidebarUtilitySection === 'link' ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {expandedSidebarUtilitySection === 'link' && (
+                <>
+                  <p className="clinician-link-hint">Enter the patient ID to request access. The patient must approve in their MedMemory account.</p>
+                  <form onSubmit={handleRequestAccess} className="clinician-request-form">
+                    <label className="clinician-request-label">
+                      Patient ID
+                      <input
+                        ref={requestPatientInputRef}
+                        type="number"
+                        min={1}
+                        value={requestPatientId}
+                        onChange={(e) => { setRequestPatientId(e.target.value); setRequestAccessError(null); }}
+                        placeholder="e.g. 1"
+                        disabled={requestAccessLoading}
+                        className="clinician-request-input"
+                      />
+                    </label>
+                    {requestAccessError && (
+                      <p className="clinician-request-error" role="alert">{requestAccessError}</p>
+                    )}
+                    <button
+                      type="submit"
+                      className="primary-button clinician-request-btn"
+                      disabled={requestAccessLoading || !requestPatientId.trim()}
+                    >
+                      {requestAccessLoading ? 'Requesting…' : 'Request access'}
+                    </button>
+                  </form>
+                </>
+              )}
+            </section>
             <section className={`clinician-section clinician-sidebar-card ${mobileSection !== 'queue' ? 'clinician-mobile-collapsed' : ''}`}>
               <div className="clinician-section-heading">
-                <h2>Recent uploads</h2>
-                <span className="clinician-section-count">{uploads.length}</span>
+                <div>
+                  <h2>Recent uploads</h2>
+                  <p className="clinician-sidebar-section-summary">{uploadsSummary}</p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button compact clinician-sidebar-toggle-button"
+                  aria-expanded={expandedSidebarUtilitySection === 'uploads'}
+                  onClick={() => toggleSidebarUtilitySection('uploads')}
+                >
+                  {expandedSidebarUtilitySection === 'uploads' ? 'Hide' : 'Show'}
+                </button>
               </div>
-              {loadingUploads ? (
-                <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
-              ) : uploads.length === 0 ? (
-                <p className="clinician-empty">No documents yet.</p>
-              ) : (
-                <ul className="clinician-upload-list">
-                  {uploads.slice(0, 20).map((doc) => (
-                    <li key={doc.id}>
-                      <span className="clinician-upload-title">{doc.title || doc.original_filename}</span>
-                      <span className="clinician-meta">Patient ID: {doc.patient_id}</span>
-                      <span className="clinician-meta">{doc.processing_status}</span>
-                    </li>
-                  ))}
-                </ul>
+              {expandedSidebarUtilitySection === 'uploads' && (
+                loadingUploads ? (
+                  <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
+                ) : uploads.length === 0 ? (
+                  <p className="clinician-empty">No documents yet.</p>
+                ) : (
+                  <ul className="clinician-upload-list">
+                    {recentUploadsPreview.map((doc) => (
+                      <li key={doc.id}>
+                        <span className="clinician-upload-title">{doc.title || doc.original_filename}</span>
+                        <span className="clinician-meta">Patient ID: {doc.patient_id}</span>
+                        <span className="clinician-meta">{doc.processing_status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )
               )}
             </section>
           </aside>
@@ -1052,7 +1362,14 @@ export default function ClinicianDashboardPage() {
                 </div>
               </div>
             ) : (
-              <div className="clinician-chat-wrapper">
+              <div id="clinician-chat-workspace" className="clinician-chat-wrapper">
+                <ClinicianCopilotPanel
+                  patientId={selectedPatientId}
+                  patientName={selectedPatientName}
+                  onError={handleCopilotError}
+                  onNavigate={handleCopilotNavigate}
+                  pushToast={pushToast}
+                />
                 <div className="clinician-chat-header">
                   <span className="clinician-chat-patient-badge">{selectedPatientName}</span>
                   <button type="button" className="clinician-chat-back" onClick={handleBackToList}>
@@ -1067,6 +1384,10 @@ export default function ClinicianDashboardPage() {
                   isDisabled={false}
                   selectedPatient={{ id: selectedPatientId, full_name: selectedPatientName }}
                   showHeader={false}
+                  clinicianMode={true}
+                  voiceInputEnabled={true}
+                  onVoiceSubmit={sendVoiceTranscript}
+                  onError={handleError}
                   onQuestionChange={setQuestion}
                   onSend={send}
                 />
@@ -1114,7 +1435,11 @@ export default function ClinicianDashboardPage() {
                     {recentUploadsPreview.length > 0 && (
                       <section className="clinician-panel-section clinician-panel-card">
                         <h3>Latest uploads</h3>
-                        <ul className="clinician-panel-list">
+                        <ul
+                          className="clinician-panel-list"
+                          aria-label="Provider connections"
+                          data-testid="provider-connections-list"
+                        >
                           {recentUploadsPreview.map((doc) => (
                             <li key={doc.id}>
                               <strong>{doc.title || doc.original_filename}</strong>
@@ -1130,56 +1455,292 @@ export default function ClinicianDashboardPage() {
               </div>
             ) : (
               <>
-                <div className="clinician-panel-patient-badge">
-                  <span className="clinician-panel-patient-name">{selectedPatientName}</span>
-                  <span className="clinician-panel-patient-id">ID: {selectedPatientId}</span>
+                <div ref={patientPanelTopRef} className="clinician-panel-patient-badge">
+                  <div className="clinician-panel-patient-identity">
+                    <span className="clinician-panel-patient-name">{selectedPatientName}</span>
+                    <div className="clinician-panel-patient-status-row">
+                      <span className="clinician-status-chip" data-tone="active">Active workspace</span>
+                      <span className="clinician-status-chip" data-tone="neutral">ID {selectedPatientId}</span>
+                    </div>
+                  </div>
                 </div>
                 <div className="clinician-panel-stats" aria-label="Selected patient stats">
-                  <span><strong>{documents.length}</strong> documents</span>
-                  <span><strong>{records.length}</strong> records</span>
+                  <span className="clinician-panel-stat-chip clinician-status-chip" data-tone="neutral"><strong>{documents.length}</strong> documents</span>
+                  <span className="clinician-panel-stat-chip clinician-status-chip" data-tone="active-soft"><strong>{records.length}</strong> records</span>
+                  <span className="clinician-panel-stat-chip clinician-status-chip" data-tone="uploads"><strong>{connections.length}</strong> connections</span>
                 </div>
-                <section className="clinician-panel-section clinician-panel-card">
-                  <h3>Documents</h3>
-                  {loadingDocs ? (
-                    <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
-                  ) : documents.length === 0 ? (
-                    <p className="clinician-empty clinician-empty-friendly">No documents yet. The patient can upload from their MedMemory account.</p>
-                  ) : (
-                    <ul className="clinician-doc-list clinician-panel-list">
-                      {documents.map((d) => (
-                        <li key={d.id}>
-                          <strong>{d.title || d.original_filename}</strong>
-                          <span className="clinician-meta">{d.processing_status}</span>
-                          <span className="clinician-meta">
-                            {formatDate((d as { received_date?: string; created_at?: string }).received_date ?? (d as { created_at?: string }).created_at ?? '')}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
+                <section ref={documentsSectionRef} className="clinician-panel-section clinician-panel-card">
+                  <div className="clinician-panel-section-header">
+                    <div className="clinician-panel-section-heading-group">
+                      <h3>Documents</h3>
+                      <span className="clinician-panel-section-count-badge clinician-status-chip" data-tone="neutral">{documents.length}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost-button compact clinician-panel-toggle-button"
+                      aria-expanded={expandedPatientPanelSection === 'documents'}
+                      onClick={() => togglePatientPanelSection('documents')}
+                    >
+                      {expandedPatientPanelSection === 'documents' ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  <p className="clinician-panel-section-summary">{documentSummary}</p>
+                  {expandedPatientPanelSection === 'documents' && (
+                    loadingDocs ? (
+                      <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
+                    ) : documents.length === 0 ? (
+                      <p className="clinician-empty clinician-empty-friendly clinician-empty-compact">No uploads yet.</p>
+                    ) : (
+                      <ul className="clinician-doc-list clinician-panel-list">
+                        {documents.map((d) => (
+                          <li key={d.id} className="clinician-list-item">
+                            <strong className="clinician-list-item-title">{d.title || d.original_filename}</strong>
+                            <span className="clinician-meta clinician-list-item-meta-row">
+                              {formatCompactMeta(
+                                humanizeStatus(d.processing_status),
+                                formatDate((d as { received_date?: string; created_at?: string }).received_date ?? (d as { created_at?: string }).created_at ?? ''),
+                              )}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )
                   )}
                 </section>
-                <section className="clinician-panel-section clinician-panel-card">
-                  <h3>Records</h3>
-                  {loadingRecords ? (
-                    <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
-                  ) : records.length === 0 ? (
-                    <p className="clinician-empty clinician-empty-friendly">No clinical notes yet.</p>
-                  ) : (
-                    <ul className="clinician-record-list clinician-panel-list">
-                      {records.map((r) => (
-                        <li key={r.id}>
-                          <strong>{r.title}</strong>
-                          <span className="clinician-meta">{formatDate(r.created_at)}</span>
-                        </li>
-                      ))}
-                    </ul>
+                <section ref={recordsSectionRef} className="clinician-panel-section clinician-panel-card">
+                  <div className="clinician-panel-section-header">
+                    <div className="clinician-panel-section-heading-group">
+                      <h3>Records</h3>
+                      <span className="clinician-panel-section-count-badge clinician-status-chip" data-tone="active-soft">{records.length}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost-button compact clinician-panel-toggle-button"
+                      aria-expanded={expandedPatientPanelSection === 'records'}
+                      onClick={() => togglePatientPanelSection('records')}
+                    >
+                      {expandedPatientPanelSection === 'records' ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  <p className="clinician-panel-section-summary">{recordSummary}</p>
+                  {expandedPatientPanelSection === 'records' && (
+                    loadingRecords ? (
+                      <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
+                    ) : records.length === 0 ? (
+                      <p className="clinician-empty clinician-empty-friendly clinician-empty-compact">No records yet.</p>
+                    ) : (
+                      <ul className="clinician-record-list clinician-panel-list">
+                        {records.map((r) => (
+                          <li key={r.id} className="clinician-list-item">
+                            <strong className="clinician-list-item-title">{r.title}</strong>
+                            <span className="clinician-meta clinician-list-item-meta-row">
+                              {formatCompactMeta(`Updated ${formatDate(r.created_at)}`)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )
+                  )}
+                </section>
+                <section ref={connectionsSectionRef} className="clinician-panel-section clinician-panel-card">
+                  <div className="clinician-panel-section-header">
+                    <div className="clinician-panel-section-heading-group">
+                      <h3>Connections</h3>
+                      <span className="clinician-panel-section-count-badge clinician-status-chip" data-tone="uploads">{connections.length}</span>
+                      {!loadingConnections && attentionReviewCount > 0 && (
+                        <button
+                          type="button"
+                          className="clinician-panel-section-attention-badge clinician-panel-section-attention-button clinician-status-chip"
+                          data-tone="pending-soft"
+                          aria-label={`Open ${attentionReviewCount} connection items needing review`}
+                          onClick={handleOpenConnectionsAttention}
+                        >
+                          {attentionReviewCount} review
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost-button compact clinician-panel-toggle-button"
+                      aria-expanded={expandedPatientPanelSection === 'connections'}
+                      onClick={() => togglePatientPanelSection('connections')}
+                    >
+                      {expandedPatientPanelSection === 'connections' ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  <p className="clinician-panel-section-summary">{connectionSummary}</p>
+                  {expandedPatientPanelSection === 'connections' && (
+                    <>
+                      {(connections.length > 0 || connectionSyncEvents.length > 0) && (
+                        <div className="clinician-panel-filter-row">
+                          <span
+                            className="clinician-status-chip"
+                            data-tone={attentionConnections.length + attentionConnectionSyncEvents.length > 0 ? 'pending-soft' : 'neutral'}
+                          >
+                            {attentionReviewSummary}
+                          </span>
+                          <button
+                            type="button"
+                            className={`ghost-button compact clinician-panel-filter-toggle ${showAttentionOnly ? 'active' : ''}`}
+                            aria-pressed={showAttentionOnly}
+                            onClick={() => setShowAttentionOnly((current) => !current)}
+                          >
+                            {showAttentionOnly ? 'Show all' : 'Attention only'}
+                          </button>
+                        </div>
+                      )}
+                      {loadingConnections ? (
+                        <p className="clinician-loading"><span className="clinician-loading-spinner" aria-hidden /> Loading…</p>
+                      ) : connections.length === 0 ? (
+                        <p className="clinician-empty clinician-empty-friendly clinician-empty-compact">No Kenya connections yet.</p>
+                      ) : visibleConnections.length === 0 ? (
+                        <p className="clinician-empty clinician-empty-friendly clinician-empty-compact">No connections need review.</p>
+                      ) : (
+                        <ul className="clinician-panel-list">
+                          {visibleConnections.map((connection) => {
+                            const attentionBadge = getConnectionAttentionBadge(connection);
+                            const attentionReason =
+                              attentionBadge.priority === 0
+                                ? summarizeAttentionReason(connection.last_error, 'Most recent sync failed')
+                                : null;
+                            return (
+                              <li key={connection.id} className="clinician-list-item">
+                                <strong className="clinician-list-item-title">{connection.provider_name}</strong>
+                                <div className="clinician-list-item-meta-cluster">
+                                  <span className="clinician-status-chip" data-tone={attentionBadge.tone}>
+                                    {attentionBadge.label}
+                                  </span>
+                                  <span className="clinician-meta clinician-list-item-meta-row clinician-list-item-meta-inline">
+                                    {formatCompactMeta(
+                                      `${humanizeStatus(connection.status)} · ${connection.source_count} sources`,
+                                      connection.last_synced_at ? `Last sync ${formatDate(connection.last_synced_at)}` : null,
+                                    )}
+                                  </span>
+                                </div>
+                                {attentionReason && (
+                                  <span className="clinician-list-item-attention-note">
+                                    Needs attention: {attentionReason}
+                                  </span>
+                                )}
+                                {connection.last_error && (() => {
+                                  const issueKey = `connection-${connection.id}`;
+                                  const isExpanded = Boolean(expandedIssueRows[issueKey]);
+                                  const issuePreview = truncateIssue(connection.last_error);
+                                  return (
+                                    <div className="clinician-list-item-issue">
+                                      <span className="clinician-meta clinician-list-item-meta-row">
+                                        Issue {isExpanded ? connection.last_error : issuePreview.text}
+                                      </span>
+                                      {issuePreview.truncated && (
+                                        <button
+                                          type="button"
+                                          className="clinician-inline-expand-button"
+                                          aria-expanded={isExpanded}
+                                          onClick={() => toggleIssueRow(issueKey)}
+                                        >
+                                          {isExpanded ? 'Less' : 'More'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      {(connectionSyncEvents.length > 0 || showAttentionOnly) && (
+                        <div className="clinician-panel-subsection">
+                          <h4>Recent sync activity</h4>
+                          {visibleConnectionSyncEvents.length === 0 ? (
+                            <p className="clinician-empty clinician-empty-friendly clinician-empty-compact">
+                              {connectionSyncEvents.length === 0 ? 'No sync activity yet.' : 'No sync events need review.'}
+                            </p>
+                          ) : (
+                            <ul
+                              className="clinician-panel-list"
+                              aria-label="Recent sync activity"
+                              data-testid="recent-sync-activity-list"
+                            >
+                            {visibleConnectionSyncEvents.slice(0, 5).map((event) => {
+                              const attentionBadge = getSyncEventAttentionBadge(event);
+                              const providerDisplayName =
+                                providerNameBySlug.get(event.provider_slug) ?? humanizeProviderSlug(event.provider_slug);
+                              const attentionReason =
+                                attentionBadge.priority === 0
+                                  ? summarizeAttentionReason(event.last_error, 'Most recent sync failed')
+                                  : null;
+                              return (
+                                <li key={event.id} className="clinician-list-item">
+                                  <strong className="clinician-list-item-title">{providerDisplayName}</strong>
+                                  <div className="clinician-list-item-meta-cluster">
+                                    <span className="clinician-status-chip" data-tone={attentionBadge.tone}>
+                                      {attentionBadge.label}
+                                    </span>
+                                    <span className="clinician-meta clinician-list-item-meta-row clinician-list-item-meta-inline">
+                                      {formatCompactMeta(
+                                        humanizeStatus(event.event_type),
+                                        formatDate(event.created_at),
+                                      )}
+                                    </span>
+                                  </div>
+                                  {attentionReason && (
+                                    <span className="clinician-list-item-attention-note">
+                                      Needs attention: {attentionReason}
+                                    </span>
+                                  )}
+                                  {event.last_error && (() => {
+                                    const issueKey = `sync-event-${event.id}`;
+                                    const isExpanded = Boolean(expandedIssueRows[issueKey]);
+                                    const issuePreview = truncateIssue(event.last_error);
+                                    return (
+                                      <div className="clinician-list-item-issue">
+                                        <span className="clinician-meta clinician-list-item-meta-row">
+                                          Issue {isExpanded ? event.last_error : issuePreview.text}
+                                        </span>
+                                        {issuePreview.truncated && (
+                                          <button
+                                            type="button"
+                                            className="clinician-inline-expand-button"
+                                            aria-expanded={isExpanded}
+                                            onClick={() => toggleIssueRow(issueKey)}
+                                          >
+                                            {isExpanded ? 'Less' : 'More'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                </li>
+                              );
+                            })}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </>
                   )}
                 </section>
                 <section className="clinician-panel-section clinician-panel-card clinician-dependents-note">
-                  <h3>Dependents</h3>
-                  <p className="clinician-dependents-text">
-                    This patient may have family members (dependents) linked in their account. Access is per profile—request access to each person&apos;s Patient ID separately to view their records.
-                  </p>
+                  <div className="clinician-panel-section-header">
+                    <div className="clinician-panel-section-heading-group">
+                      <h3>Dependents</h3>
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost-button compact clinician-panel-toggle-button"
+                      aria-expanded={expandedPatientPanelSection === 'dependents'}
+                      onClick={() => togglePatientPanelSection('dependents')}
+                    >
+                      {expandedPatientPanelSection === 'dependents' ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  <p className="clinician-panel-section-summary">Family member access stays per profile.</p>
+                  {expandedPatientPanelSection === 'dependents' && (
+                    <p className="clinician-dependents-text">
+                      This patient may have family members (dependents) linked in their account. Access is per profile—request access to each person&apos;s Patient ID separately to view their records.
+                    </p>
+                  )}
                 </section>
               </>
             )}

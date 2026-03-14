@@ -31,6 +31,12 @@ import WatchlistPanel from './components/dashboard/WatchlistPanel';
 import ClinicianApp from './pages/ClinicianApp';
 import type { PatientSummary } from './types';
 import { buildDeterministicRecordSummary } from './utils/recordSummary';
+import {
+  buildMetricQuestion,
+  getDateLocaleForLanguage,
+  normalizePatientLanguage,
+  type SupportedPatientLanguage,
+} from './utils/patientLanguage';
 
 const defaultHighlights = [
   { title: 'LDL Cholesterol', value: '167 mg/dL', trend: 'down', note: 'Jun 2025' },
@@ -162,8 +168,11 @@ function PatientApp() {
     id: number;
     is_dependent: boolean;
     profile_completion?: { overall_percentage: number };
+    preferred_language?: string | null;
   } | null>(null);
   const [primaryPatientId, setPrimaryPatientId] = useState<number | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<SupportedPatientLanguage>('en');
+  const [autoSpeakReplies, setAutoSpeakReplies] = useState(false);
   const [viewMode, setViewMode] = useState<'chat' | 'dashboard'>('chat');
   const [dashboardSection, setDashboardSection] = useState<DashboardSection>('overview');
   const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
@@ -209,9 +218,22 @@ function PatientApp() {
     isLoading: documentsLoading,
     reloadDocuments,
   } = usePatientDocuments({ patientId, isAuthenticated, onError: handleError, onSuccess: clearErrorBanner });
-  const { messages, question, setQuestion, isStreaming, send, sendVision, sendVolume, sendWsi, pushMessage } = useChat({
+  const {
+    messages,
+    question,
+    setQuestion,
+    isStreaming,
+    send,
+    sendVoiceTranscript,
+    sendVision,
+    sendVolume,
+    sendWsi,
+    pushMessage,
+  } = useChat({
     patientId,
     onError: handleError,
+    language: selectedLanguage,
+    speechOutputEnabled: autoSpeakReplies,
   });
   const { uploadWithDuplicateCheck } = useDocumentUpload(patientId);
 
@@ -496,6 +518,7 @@ function PatientApp() {
           id: profile.id,
           is_dependent: !!profile.is_dependent,
           profile_completion: profile.profile_completion,
+          preferred_language: profile.preferred_language ?? null,
         });
       })
       .catch(() => {
@@ -505,6 +528,42 @@ function PatientApp() {
       cancelled = true;
     };
   }, [isAuthenticated, patientId]);
+
+  useEffect(() => {
+    setSelectedLanguage(normalizePatientLanguage(profileSummary?.preferred_language));
+  }, [profileSummary?.preferred_language, patientId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !patientId) return;
+    const storedValue = window.localStorage.getItem(`medmemory:auto-speak:${patientId}`);
+    setAutoSpeakReplies(storedValue === '1');
+  }, [patientId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !patientId) return;
+    window.localStorage.setItem(`medmemory:auto-speak:${patientId}`, autoSpeakReplies ? '1' : '0');
+  }, [autoSpeakReplies, patientId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleProfileUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ patientId?: number; preferredLanguage?: string | null }>).detail;
+      if (!detail) return;
+      if (typeof detail.patientId === 'number' && detail.patientId !== patientId) return;
+      const normalized = normalizePatientLanguage(detail.preferredLanguage);
+      setSelectedLanguage(normalized);
+      setProfileSummary((current) =>
+        current
+          ? {
+              ...current,
+              preferred_language: normalized,
+            }
+          : current,
+      );
+    };
+    window.addEventListener('medmemory:profile-updated', handleProfileUpdated);
+    return () => window.removeEventListener('medmemory:profile-updated', handleProfileUpdated);
+  }, [patientId]);
 
   // Document preview reset is handled by useDocumentWorkspace hook
 
@@ -540,6 +599,9 @@ function PatientApp() {
     dashboardConnectionLoading,
     dataConnections,
     connectionSyncEvents,
+    appleHealthLoading,
+    appleHealthStepsTrend,
+    appleHealthSyncStatus,
     activeConnectionSlug,
     activeSyncConnectionId,
     ocrAvailable,
@@ -547,6 +609,7 @@ function PatientApp() {
     accessRequests,
     accessRequestsLoading,
     actingGrantId,
+    refreshAppleHealthOverview,
     handleConnectProvider,
     handleConnectionState,
     handleSyncConnection,
@@ -570,14 +633,15 @@ function PatientApp() {
   const handleAskQuestionFromDashboard = useCallback(() => {
     setViewMode('chat');
   }, []);
+  const handleRefreshAppleHealthStatus = useCallback(async () => {
+    await refreshAppleHealthOverview();
+  }, [refreshAppleHealthOverview]);
 
   const handleAskSelectedMetricInChat = useCallback(() => {
     if (!metricDetail) return;
     setViewMode('chat');
-    send(
-      `Summarize ${metricDetail.metric_name} using only patient records. Include latest value, reference range, and whether it is in or out of range. If evidence is missing, say you do not know.`,
-    );
-  }, [metricDetail, send]);
+    send(buildMetricQuestion(metricDetail.metric_name, selectedLanguage));
+  }, [metricDetail, selectedLanguage, send]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -615,14 +679,14 @@ function PatientApp() {
 
 
   const formatDate = useCallback((dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('en-US', {
+    return new Date(dateStr).toLocaleDateString(getDateLocaleForLanguage(selectedLanguage), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     });
-  }, []);
+  }, [selectedLanguage]);
 
   const recordCount = useMemo(() => records.length, [records.length]);
   const showDashboard = isAuthenticated && viewMode === 'dashboard';
@@ -643,9 +707,11 @@ function PatientApp() {
     if (!latestDocument) return;
     setViewMode('chat');
     send(
-      'Summarize the most recent document using only values explicitly shown. Use short, friendly sentences. Do not infer meanings or add follow-ups. If no numeric values are shown, say so in one sentence.',
+      selectedLanguage === 'sw'
+        ? 'Fupisha hati ya hivi karibuni ukitumia tu thamani zilizoonyeshwa wazi. Tumia sentensi fupi na rahisi. Usiongeze tafsiri au hatua za kufuatilia. Kama hakuna thamani za namba, sema hivyo kwa sentensi moja.'
+        : 'Summarize the most recent document using only values explicitly shown. Use short, friendly sentences. Do not infer meanings or add follow-ups. If no numeric values are shown, say so in one sentence.',
     );
-  }, [latestDocument, send]);
+  }, [latestDocument, selectedLanguage, send]);
   const handleReviewLatestRecordInChat = useCallback(() => {
     if (!latestRecord) return;
     setViewMode('chat');
@@ -687,18 +753,30 @@ function PatientApp() {
     />
   ) : null;
   const insightSummary = useMemo(() => {
-    if (!insights) return 'Connect lab results and medications to unlock insights.';
+    if (!insights) {
+      return selectedLanguage === 'sw'
+        ? 'Unganisha matokeo ya maabara na dawa ili kufungua maarifa.'
+        : 'Connect lab results and medications to unlock insights.';
+    }
     if (!insights.lab_total && !insights.active_medications) {
-      return 'No lab or medication data yet. Add data to see trends.';
+      return selectedLanguage === 'sw'
+        ? 'Bado hakuna data ya maabara au dawa. Ongeza data ili kuona mienendo.'
+        : 'No lab or medication data yet. Add data to see trends.';
     }
     if (insights.lab_total && insights.lab_abnormal) {
-      return `${insights.lab_abnormal} abnormal result${insights.lab_abnormal === 1 ? '' : 's'} across ${insights.lab_total} labs.`;
+      return selectedLanguage === 'sw'
+        ? `Matokeo ${insights.lab_abnormal} yasiyo ya kawaida katika vipimo ${insights.lab_total}.`
+        : `${insights.lab_abnormal} abnormal result${insights.lab_abnormal === 1 ? '' : 's'} across ${insights.lab_total} labs.`;
     }
     if (insights.lab_total) {
-      return `${insights.lab_total} labs recorded. No abnormal results flagged.`;
+      return selectedLanguage === 'sw'
+        ? `Vipimo ${insights.lab_total} vimeandikwa. Hakuna matokeo yasiyo ya kawaida yaliyobainishwa.`
+        : `${insights.lab_total} labs recorded. No abnormal results flagged.`;
     }
-    return `${insights.active_medications} active medication${insights.active_medications === 1 ? '' : 's'} on file.`;
-  }, [insights]);
+    return selectedLanguage === 'sw'
+      ? `Dawa ${insights.active_medications} zinazotumika zimehifadhiwa.`
+      : `${insights.active_medications} active medication${insights.active_medications === 1 ? '' : 's'} on file.`;
+  }, [insights, selectedLanguage]);
   const insightCards = useMemo(() => ([
     {
       title: 'Records',
@@ -738,13 +816,30 @@ function PatientApp() {
     () => (metricTrendValues.length > 1 ? buildScaledPath(metricTrendValues) : ''),
     [metricTrendValues],
   );
+  const appleHealthStepValues = useMemo(
+    () =>
+      appleHealthStepsTrend?.points
+        .map((point) => point.step_count)
+        .filter((value): value is number => typeof value === 'number' && Number.isFinite(value)) ?? [],
+    [appleHealthStepsTrend],
+  );
+  const appleHealthStepsPath = useMemo(
+    () => (appleHealthStepValues.length > 1 ? buildScaledPath(appleHealthStepValues) : ''),
+    [appleHealthStepValues],
+  );
   const dashboardSectionSummary = useMemo<Record<DashboardSection, string>>(
     () => ({
-      overview: 'Connections, highlights, and trends',
-      monitoring: 'Alerts, watchlist, and clinician access',
-      workspace: 'Documents and clinical notes',
+      overview: selectedLanguage === 'sw'
+        ? 'Miunganisho, viashiria, na mienendo'
+        : 'Connections, highlights, and trends',
+      monitoring: selectedLanguage === 'sw'
+        ? 'Tahadhari, ufuatiliaji, na ufikiaji wa daktari'
+        : 'Alerts, watchlist, and clinician access',
+      workspace: selectedLanguage === 'sw'
+        ? 'Nyaraka na maelezo ya kliniki'
+        : 'Documents and clinical notes',
     }),
-    [],
+    [selectedLanguage],
   );
 
   // Only show viewing banner when viewing a dependent's profile
@@ -824,8 +919,10 @@ function PatientApp() {
         <ErrorBanner message={authenticatedBanner} />
         <div className="chat-loading-state">
           <div className="loading-spinner" />
-          <p>Setting up your medical profile...</p>
-          <p className="loading-hint">This may take a few moments...</p>
+          <p>{selectedLanguage === 'sw' ? 'Tunatayarisha wasifu wako wa afya...' : 'Setting up your medical profile...'}</p>
+          <p className="loading-hint">
+            {selectedLanguage === 'sw' ? 'Hii inaweza kuchukua muda mfupi...' : 'This may take a few moments...'}
+          </p>
         </div>
         <ToastStack toasts={toasts} />
         {localizationModal}
@@ -905,24 +1002,34 @@ function PatientApp() {
           {viewingBanner}
           <div className="dashboard-header">
             <div>
-              <p className="eyebrow">Patient overview</p>
+              <p className="eyebrow">{selectedLanguage === 'sw' ? 'Muhtasari wa mgonjwa' : 'Patient overview'}</p>
               <h1>
-                {selectedPatient?.full_name || 'Your health dashboard'}
+                {selectedPatient?.full_name || (selectedLanguage === 'sw' ? 'Dashibodi yako ya afya' : 'Your health dashboard')}
               </h1>
               <p className="subtitle">
-                Track records, documents, and insights in one place.
+                {selectedLanguage === 'sw'
+                  ? 'Fuatilia rekodi, nyaraka, na maarifa sehemu moja.'
+                  : 'Track records, documents, and insights in one place.'}
               </p>
             </div>
             <div className="insight-card primary">
               <h3>
                 {documents.length || recordCount
-                  ? 'Insight snapshot'
-                  : 'Welcome to MedMemory'}
+                  ? selectedLanguage === 'sw'
+                    ? 'Muhtasari wa maarifa'
+                    : 'Insight snapshot'
+                  : selectedLanguage === 'sw'
+                    ? 'Karibu MedMemory'
+                    : 'Welcome to MedMemory'}
               </h3>
               <p>
                 {documents.length || recordCount
-                  ? 'Your data is ready. Ask questions or view trends below.'
-                  : 'Your AI-powered medical memory. Upload documents to get started.'}
+                  ? selectedLanguage === 'sw'
+                    ? 'Data yako iko tayari. Uliza maswali au angalia mienendo hapa chini.'
+                    : 'Your data is ready. Ask questions or view trends below.'
+                  : selectedLanguage === 'sw'
+                    ? 'Kumbukumbu yako ya matibabu inayosaidiwa na AI. Pakia nyaraka kuanza.'
+                    : 'Your AI-powered medical memory. Upload documents to get started.'}
               </p>
               <span className="insight-pill">
                 {processedDocs 
@@ -1028,8 +1135,14 @@ function PatientApp() {
                   insightSummary={insightSummary}
                   recentLabs={recentLabs}
                   a1cPath={a1cSeriesPath}
+                  appleHealthLoading={appleHealthLoading}
+                  appleHealthStepsTrend={appleHealthStepsTrend}
+                  appleHealthSyncStatus={appleHealthSyncStatus}
+                  appleHealthStepsPath={appleHealthStepsPath}
+                  onRetryAppleHealthStatus={handleRefreshAppleHealthStatus}
                   onAskQuestion={handleAskQuestionFromDashboard}
                   formatDate={formatDate}
+                  language={selectedLanguage}
                 />
                 <FocusAreasPanel
                   latestDocument={latestDocument}
@@ -1151,6 +1264,13 @@ function PatientApp() {
         question={question}
         isStreaming={isStreaming}
         isDisabled={!patientId}
+        selectedLanguage={selectedLanguage}
+        onLanguageChange={setSelectedLanguage}
+        speechEnabled={autoSpeakReplies}
+        onSpeechEnabledChange={setAutoSpeakReplies}
+        voiceInputEnabled={selectedLanguage === 'en'}
+        onVoiceSubmit={sendVoiceTranscript}
+        onError={handleError}
         selectedPatient={selectedPatient ? {
           ...selectedPatient,
           is_dependent: profileSummary?.is_dependent,

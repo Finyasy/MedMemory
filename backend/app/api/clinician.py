@@ -34,6 +34,9 @@ from app.schemas.auth import TokenResponse
 from app.schemas.clinician import (
     AccessGrantResponse,
     AccessRequestCreate,
+    ClinicianAgentRunCreate,
+    ClinicianAgentRunResponse,
+    ClinicianAgentRunSummaryResponse,
     ClinicianLogin,
     ClinicianProfileResponse,
     ClinicianProfileUpdate,
@@ -42,6 +45,7 @@ from app.schemas.clinician import (
 )
 from app.schemas.document import DocumentResponse
 from app.schemas.records import RecordResponse
+from app.services.clinician_copilot import ClinicianCopilotService
 from app.services.records import SQLRecordRepository
 
 logger = logging.getLogger("medmemory")
@@ -49,8 +53,16 @@ logger = logging.getLogger("medmemory")
 router = APIRouter(prefix="/clinician", tags=["Clinician"])
 
 
+def _normalized_role(value: object, default: str = "patient") -> str:
+    """Normalize role strings to avoid case/whitespace mismatches."""
+    if value is None:
+        return default
+    role = str(value).strip().lower()
+    return role or default
+
+
 def _tokens_for_user(user: User) -> TokenResponse:
-    role = getattr(user, "role", "patient")
+    role = _normalized_role(getattr(user, "role", "patient"))
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     access_token = create_access_token(
         data={"sub": str(user.id), "role": role},
@@ -153,7 +165,7 @@ async def clinician_login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
         )
-    if getattr(user, "role", "patient") != "clinician":
+    if _normalized_role(getattr(user, "role", "patient")) != "clinician":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a clinician account. Use the regular login for patient accounts.",
@@ -470,3 +482,75 @@ async def list_clinician_patient_records(
         limit=limit,
     )
     return [RecordResponse.model_validate(r) for r in records_list]
+
+
+@router.post("/agent/runs", response_model=ClinicianAgentRunResponse)
+async def create_clinician_agent_run(
+    data: ClinicianAgentRunCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_clinician),
+):
+    """Run the bounded clinician copilot for one patient and persist the trace."""
+    await get_authorized_patient(
+        patient_id=data.patient_id,
+        db=db,
+        current_user=current_user,
+        scope="chat",
+    )
+    service = ClinicianCopilotService(db)
+    return await service.create_run(
+        patient_id=data.patient_id,
+        clinician_user_id=current_user.id,
+        prompt=data.prompt,
+        template=data.template,
+        conversation_id=str(data.conversation_id) if data.conversation_id else None,
+    )
+
+
+@router.get("/agent/runs/{run_id}", response_model=ClinicianAgentRunResponse)
+async def get_clinician_agent_run(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_clinician),
+):
+    """Get one persisted clinician copilot run."""
+    service = ClinicianCopilotService(db)
+    try:
+        patient_id = await service.get_run_patient_id(
+            run_id,
+            clinician_user_id=current_user.id,
+        )
+        await get_authorized_patient(
+            patient_id=patient_id,
+            db=db,
+            current_user=current_user,
+            scope="chat",
+        )
+        return await service.get_run(run_id, clinician_user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/agent/runs", response_model=list[ClinicianAgentRunSummaryResponse])
+async def list_clinician_agent_runs(
+    patient_id: int = Query(..., gt=0),
+    limit: int = Query(10, ge=1, le=25),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_clinician),
+):
+    """List recent clinician copilot runs for one patient."""
+    await get_authorized_patient(
+        patient_id=patient_id,
+        db=db,
+        current_user=current_user,
+        scope="chat",
+    )
+    service = ClinicianCopilotService(db)
+    return await service.list_runs(
+        clinician_user_id=current_user.id,
+        patient_id=patient_id,
+        limit=limit,
+    )

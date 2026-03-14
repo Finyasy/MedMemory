@@ -26,9 +26,39 @@ npm exec playwright test e2e/dashboard-smoke.spec.ts
 # Run clinician portal smoke test
 npm exec playwright test e2e/clinician-smoke.spec.ts
 
+# Run clinician copilot smoke test
+npm exec playwright test e2e/clinician-copilot.spec.ts
+
 # Run in headed mode (see browser)
 npm exec playwright test --headed
 ```
+
+## One-Command Clinician Copilot Demo Check
+
+From the repo root:
+
+```bash
+./scripts/run_clinician_copilot_demo_check.sh
+```
+
+This wrapper runs:
+
+1. the backend clinician copilot live smoke
+2. the frontend clinician copilot Playwright smoke
+
+Useful options:
+
+- `--template data_quality`
+- `--skip-backend`
+- `--skip-browser`
+- `--backend-url http://localhost:8002`
+- `--frontend-url http://localhost:4173`
+- `--restart-frontend`
+
+Loopback note:
+
+- if the wrapper receives a `localhost` backend URL and the service is reachable on `127.0.0.1`, it automatically switches the smoke run to the IPv4 loopback host
+- before Playwright runs, the wrapper validates that the frontend URL serves the MedMemory app shell; if the local UI is stale or down, rerun with `--restart-frontend`
 
 ## Environment Variables
 
