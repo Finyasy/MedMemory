@@ -1,0 +1,64 @@
+{
+  "generated_at": "2026-02-14T08:50:25.906628+00:00",
+  "eval_file": "data/hallucination_rag_eval/eval.jsonl",
+  "notes": "Committed 22-case RAG hallucination regression baseline for CI gate.",
+  "metrics": {
+    "baseline": {
+      "exact_match": 1.0,
+      "contains_reference": 1.0,
+      "token_f1": 1.0,
+      "fact_precision": 1.0,
+      "fact_recall": 1.0,
+      "hallucination_rate": 0.0,
+      "policy_pass_rate": 1.0,
+      "n_examples": 22,
+      "task_metrics": {
+        "context_gate": {
+          "n_examples": 5,
+          "policy_pass_rate": 1.0,
+          "exact_match": 1.0,
+          "token_f1": 1.0,
+          "fact_precision": 1.0,
+          "fact_recall": 1.0,
+          "hallucination_rate": 0.0
+        },
+        "numeric_citation": {
+          "n_examples": 4,
+          "policy_pass_rate": 1.0,
+          "exact_match": 1.0,
+          "token_f1": 1.0,
+          "fact_precision": 1.0,
+          "fact_recall": 1.0,
+          "hallucination_rate": 0.0
+        },
+        "numeric_grounding": {
+          "n_examples": 4,
+          "policy_pass_rate": 1.0,
+          "exact_match": 1.0,
+          "token_f1": 1.0,
+          "fact_precision": 1.0,
+          "fact_recall": 1.0,
+          "hallucination_rate": 0.0
+        },
+        "question_mode": {
+          "n_examples": 4,
+          "policy_pass_rate": 1.0,
+          "exact_match": 1.0,
+          "token_f1": 1.0,
+          "fact_precision": 1.0,
+          "fact_recall": 1.0,
+          "hallucination_rate": 0.0
+        },
+        "trend_direct": {
+          "n_examples": 5,
+          "policy_pass_rate": 1.0,
+          "exact_match": 1.0,
+          "token_f1": 1.0,
+          "fact_precision": 1.0,
+          "fact_recall": 1.0,
+          "hallucination_rate": 0.0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+groups:
+  - name: medmemory-production
+    rules:
+      - alert: MedMemoryBackendHigh5xxRate
+        expr: |
+          (
+            sum(rate(medmemory_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(medmemory_http_requests_total[5m])), 1)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          service: medmemory-api
+        annotations:
+          summary: MedMemory backend 5xx rate is high
+          description: More than 5% of API traffic has returned 5xx responses for 10 minutes.
+
+      - alert: MedMemoryBackendHighLatency
+        expr: |
+          (
+            sum(rate(medmemory_http_request_duration_ms_total[5m]))
+            /
+            clamp_min(sum(rate(medmemory_http_request_duration_ms_count[5m])), 1)
+          ) > 1500
+        for: 15m
+        labels:
+          severity: warning
+          service: medmemory-api
+        annotations:
+          summary: MedMemory backend latency is elevated
+          description: Average API latency has stayed above 1500ms for 15 minutes.
+
+      - alert: MedMemoryClinicianCopilotFailures
+        expr: |
+          sum(increase(medmemory_clinician_agent_runs_total{status!="completed"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: medmemory-api
+        annotations:
+          summary: Clinician copilot failures detected
+          description: One or more clinician copilot runs completed with a non-success status in the last 15 minutes.
+
+      - alert: MedMemoryAccessAuditWriteFailures
+        expr: |
+          sum(increase(medmemory_access_audit_events_total{result="error"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: medmemory-api
+        annotations:
+          summary: Access audit writes are failing
+          description: Access audit log persistence has failed at least once in the last 15 minutes.

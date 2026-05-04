@@ -1,0 +1,52 @@
+[
+  {
+    "id": "patient_recent_labs",
+    "role": "patient",
+    "text": "What are the recent labs in my records?"
+  },
+  {
+    "id": "patient_hemoglobin",
+    "role": "patient",
+    "text": "What is my latest hemoglobin result?"
+  },
+  {
+    "id": "patient_tb_screening",
+    "role": "patient",
+    "text": "Do my records mention TB screening?"
+  },
+  {
+    "id": "patient_latest_document",
+    "role": "patient",
+    "text": "Can you summarize my latest document?"
+  },
+  {
+    "id": "patient_missing_pulse",
+    "role": "patient",
+    "text": "What is my pulse rate from the records?"
+  },
+  {
+    "id": "patient_sleep_summary",
+    "role": "patient",
+    "text": "Give me a short summary of my sleep data."
+  },
+  {
+    "id": "clinician_hemoglobin_cited",
+    "role": "clinician",
+    "text": "Latest hemoglobin value in documents, cite source."
+  },
+  {
+    "id": "clinician_medication_review",
+    "role": "clinician",
+    "text": "Which medication is marked as discontinued?"
+  },
+  {
+    "id": "clinician_document_refusal",
+    "role": "clinician",
+    "text": "Summarize the latest document if available, otherwise say not in documents."
+  },
+  {
+    "id": "clinician_record_gap",
+    "role": "clinician",
+    "text": "Is pulse documented anywhere in the records?"
+  }
+]

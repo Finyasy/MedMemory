@@ -61,6 +61,8 @@ class ContextSynthesizer:
     SECTION_HEADERS = {
         "lab_result": "📊 Laboratory Results",
         "medication": "💊 Medications",
+        "apple_health": "📱 Apple Health",
+        "apple_health_status": "📱 Apple Health",
         "encounter": "🏥 Clinical Encounters",
         "document": "📄 Documents",
         "custom": "📝 Additional Notes",
@@ -133,7 +135,15 @@ class ContextSynthesizer:
 
         # Build sections
         sections = []
-        source_order = ["encounter", "lab_result", "medication", "document", "custom"]
+        source_order = [
+            "encounter",
+            "lab_result",
+            "medication",
+            "apple_health",
+            "apple_health_status",
+            "document",
+            "custom",
+        ]
 
         for source in source_order:
             if source not in by_source:

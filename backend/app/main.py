@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -31,6 +32,7 @@ from app.api.deps import get_authenticated_user
 from app.config import settings
 from app.database import close_db, init_db
 from app.logging import configure_logging, request_id_var
+from app.services.observability import ObservabilityRegistry
 from app.services.dashboard_sync_scheduler import get_dashboard_sync_scheduler
 from app.services.embeddings import EmbeddingService, MissingMLDependencyError
 
@@ -55,9 +57,14 @@ async def lifespan(app: FastAPI):
         logger.info("Embedding model loaded")
     except MissingMLDependencyError as exc:
         logger.error("Embedding startup dependency check failed: %s", exc)
-        raise RuntimeError(str(exc)) from exc
+        if settings.startup_require_embeddings:
+            raise RuntimeError(str(exc)) from exc
+        logger.warning("Continuing without embedding preload because STARTUP_REQUIRE_EMBEDDINGS=false")
     except Exception:
         logger.exception("Failed to preload embedding model")
+        if settings.startup_require_embeddings:
+            raise
+        logger.warning("Continuing without embedding preload because STARTUP_REQUIRE_EMBEDDINGS=false")
 
     preload_llm = os.getenv("PRELOAD_LLM_ON_STARTUP", "0").lower() in {
         "1",
@@ -126,10 +133,24 @@ app = FastAPI(
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
     request_id = request.headers.get("X-Request-Id", str(uuid.uuid4()))
-    request_id_var.set(request_id)
-    response = await call_next(request)
-    response.headers.setdefault("X-Request-Id", request_id)
-    return response
+    token = request_id_var.set(request_id)
+    started = perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response
+    finally:
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        ObservabilityRegistry.get_instance().record_http_request(
+            method=request.method,
+            path=route_path,
+            status_code=status_code,
+            duration_ms=(perf_counter() - started) * 1000.0,
+        )
+        request_id_var.reset(token)
 
 
 @app.middleware("http")

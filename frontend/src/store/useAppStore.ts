@@ -1,13 +1,18 @@
 import { create } from 'zustand';
+import {
+  clearActiveAuthTokens,
+  readActiveAccessToken,
+  readActiveRefreshToken,
+  writeActiveAccessToken,
+  writeActiveAuthTokens,
+} from '../utils/authStorage';
 
 const getInitialToken = () => {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem('medmemory_access_token');
+  return readActiveAccessToken();
 };
 
 const getInitialRefreshToken = () => {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem('medmemory_refresh_token');
+  return readActiveRefreshToken();
 };
 
 const getInitialApiKey = () => {
@@ -74,11 +79,7 @@ const useAppStore = create<AppState>((set) => ({
   },
   setTokens: (accessToken, refreshToken, expiresIn) => {
     const expiresAt = Date.now() + expiresIn * 1000;
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('medmemory_access_token', accessToken);
-      window.localStorage.setItem('medmemory_refresh_token', refreshToken);
-      window.localStorage.setItem('medmemory_token_expires_at', String(expiresAt));
-    }
+    writeActiveAuthTokens(accessToken, refreshToken, expiresAt);
     set({
       accessToken,
       refreshToken,
@@ -87,15 +88,8 @@ const useAppStore = create<AppState>((set) => ({
     });
   },
   setAccessToken: (token) => {
-    if (typeof window !== 'undefined') {
-      if (token) {
-        window.localStorage.setItem('medmemory_access_token', token);
-      } else {
-        window.localStorage.removeItem('medmemory_access_token');
-        window.localStorage.removeItem('medmemory_refresh_token');
-        window.localStorage.removeItem('medmemory_token_expires_at');
-      }
-    }
+    if (token) writeActiveAccessToken(token);
+    else clearActiveAuthTokens();
     if (!token) {
       set({
         accessToken: null,
@@ -132,12 +126,8 @@ const useAppStore = create<AppState>((set) => ({
     set({ theme });
   },
   logout: () => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem('medmemory_access_token');
-      window.localStorage.removeItem('medmemory_refresh_token');
-      window.localStorage.removeItem('medmemory_token_expires_at');
-      window.localStorage.removeItem('medmemory_clinician');
-    }
+    clearActiveAuthTokens();
+    if (typeof window !== 'undefined') window.localStorage.removeItem('medmemory_clinician');
     set({
       accessToken: null,
       refreshToken: null,

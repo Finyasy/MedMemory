@@ -6,12 +6,25 @@ __pycache__/
 *.log
 .DS_Store
 .hybrid-backend.pid
+.hybrid-backend.pid.tmp
+.speech-service.pid
+.tmp/
+artifacts/
+playwright-screenshots/
+screenshots/
+frontend/coverage/
+backend/.coverage
+xcuserdata/
 backend/sh-thd-*
 
 backend/.env
+backend/.env.staging
 backend/models/
 backend/model_download.log
 backend/uploads/
+backend/data/speech_eval/human_en_v1/audio/
+backend/data/waxal_swa_tts/hf_cache/
+backend/data/waxal_swa_tts/exported_audio/
 backend-dev.log
 frontend-dev.log
 node_modules/

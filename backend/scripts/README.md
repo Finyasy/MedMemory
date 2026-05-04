@@ -376,7 +376,45 @@ Outputs:
 - `artifacts/tts_finetune/swa_tts_v1/resolved_config.json`
 - `artifacts/tts_finetune/swa_tts_v1/dataset_summary.json`
 
-### 12) Release Deploy the Split TTS Worker
+### 12) Stage or Execute the Swahili TTS Trainer Path
+
+Stage the trainer workspace from the resolved WAXAL manifests:
+
+```bash
+cd backend
+uv run python scripts/run_swa_tts_finetune.py \
+  --config configs/speech/swa_tts_finetune_v1.json
+```
+
+This writes:
+- `artifacts/tts_finetune/swa_tts_v1/trainer_workspace/launch_plan.json`
+- `artifacts/tts_finetune/swa_tts_v1/trainer_workspace/run_external_trainer.sh`
+- `artifacts/tts_finetune/swa_tts_v1/trainer_workspace/trainer.env`
+- `artifacts/tts_finetune/swa_tts_v1/trainer_workspace/metadata_<split>.csv`
+
+Run the configured external trainer adapter:
+
+```bash
+cd backend
+uv run python scripts/run_swa_tts_finetune.py \
+  --config configs/speech/swa_tts_finetune_v1.json \
+  --execute
+```
+
+That command uses the tracked `trainer.command_template` to execute
+`scripts/swa_tts_trainer_adapter.py`, which stages a concrete `coqui_vits`
+backend workspace and validates the trainer inputs end to end.
+
+To run a real trainer, override `SWA_TTS_TRAINER_CMD` (or pass
+`--trainer-command`) and execute the generated workspace script:
+
+```bash
+cd backend
+SWA_TTS_TRAINER_CMD="python /opt/trainers/vits_trainer.py" \
+  ./artifacts/tts_finetune/swa_tts_v1/trainer_workspace/run_external_trainer.sh
+```
+
+### 13) Release Deploy the Split TTS Worker
 
 Use the release runbook in:
 
@@ -395,7 +433,7 @@ cd /Users/bryan.bosire/anaconda_projects/MedMemory
 ./scripts/run_speech_service_release_gate.sh
 ```
 
-### 13) Live Clinician Copilot Smoke
+### 14) Live Clinician Copilot Smoke
 
 Use this to verify the clinician copilot v1 path end to end:
 
@@ -417,6 +455,10 @@ Options:
 - add `--template data_quality` to verify a different bounded flow
 - add `--base-url http://localhost:8002` to point at another backend instance
 
+Behavior:
+- if the demo patient account does not exist yet, the smoke script signs it up first
+- if the demo patient has no patient rows yet, the smoke script creates the first patient record before continuing
+
 Output:
 - `artifacts/clinician_copilot/live_smoke.json`
 
@@ -436,6 +478,28 @@ Useful options:
 Loopback note:
 - if the backend URL uses `localhost` and `http://127.0.0.1:8000/health` is reachable, the wrapper automatically switches to the IPv4 loopback URL before running the smoke checks
 - before Playwright runs, the wrapper validates that the frontend URL serves the MedMemory app shell; if the local UI is stale or down, rerun with `--restart-frontend`
+
+CI note:
+- the same gate now runs in GitHub Actions via:
+  - `/Users/bryan.bosire/anaconda_projects/MedMemory/.github/workflows/clinician-copilot-demo-gate.yml`
+
+### 15) Prepare a Fresh CI/Staging Database
+
+Use this when local CI or staging needs a ready schema on an empty database:
+
+```bash
+cd backend
+python scripts/ensure_schema_ready.py
+```
+
+Behavior:
+- empty database:
+  - create the current schema from application models
+  - stamp Alembic to head
+- existing versioned database:
+  - run Alembic upgrade to head
+- existing unversioned non-empty database:
+  - fail fast instead of silently stamping drift
 
 ### One-Command Orchestration
 
