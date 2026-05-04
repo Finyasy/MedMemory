@@ -44,6 +44,25 @@ class RAGResponse:
 class RAGService:
     """RAG: context retrieval, prompt build, LLM generation, conversation storage."""
 
+    SMALL_TALK_GREETING_PATTERNS = (
+        re.compile(
+            r"^(hi|hello|hey|hey there|hello there|good morning|good afternoon|good evening|good day)[!. ]*$",
+            re.IGNORECASE,
+        ),
+    )
+    SMALL_TALK_WELLBEING_PATTERNS = (
+        re.compile(
+            r"^(?:(?:hi|hello|hey|hey there)[,!. ]+)?(how are you|how are you doing|how are you today|how's it going|how is it going|how is your day|how was your day|what's up|whats up)\??[!. ]*$",
+            re.IGNORECASE,
+        ),
+    )
+    SMALL_TALK_GRATITUDE_PATTERNS = (
+        re.compile(
+            r"^(thanks|thank you|thx|thanks a lot|thank you so much|appreciate it)[!. ]*$",
+            re.IGNORECASE,
+        ),
+    )
+
     STRICT_GROUNDING_REFUSAL = "I do not know from the available records."
     LATEST_DOCUMENT_UNAVAILABLE = (
         "I could not summarize the latest document because no completed "
@@ -316,6 +335,124 @@ Questions/Unclear:
             )
         return text
 
+    def _is_apple_health_question(
+        self,
+        *,
+        question: str,
+        query_analysis=None,
+    ) -> bool:
+        """Return True when the user is asking about Apple Health steps/activity."""
+        source_hints = getattr(query_analysis, "data_sources", []) or []
+        if any(
+            getattr(source, "value", source) == "apple_health"
+            for source in source_hints
+        ):
+            return True
+
+        question_lower = (question or "").lower()
+        has_provider = any(
+            token in question_lower
+            for token in (
+                "apple health",
+                "healthkit",
+                "health kit",
+                "mienenendo ya apple health",
+                "mwenendo wa apple health",
+            )
+        )
+        if has_provider:
+            return True
+
+        has_steps_metric = bool(
+            re.search(
+                r"\b(step count|step counts|daily steps|walking steps|hatua)\b",
+                question_lower,
+            )
+        )
+        has_time_or_trend = bool(
+            re.search(
+                r"\b(week|month|today|trend|activity|mwenendo|mabadiliko)\b",
+                question_lower,
+            )
+        )
+        return has_steps_metric and has_time_or_trend
+
+    def _build_no_evidence_answer(
+        self,
+        *,
+        question: str,
+        context_result,
+        total_chunks: int,
+        indexed_chunks: int,
+        retrieval_results_count: int = 0,
+        max_similarity: float = 0.0,
+        clinician_mode: bool,
+    ) -> str:
+        """Build a patient-friendly no-evidence answer without weakening grounding."""
+        query_analysis = getattr(context_result, "query_analysis", None)
+        if self._is_apple_health_question(
+            question=question,
+            query_analysis=query_analysis,
+        ):
+            if clinician_mode:
+                return (
+                    "No Apple Health step data matched this request. If the patient "
+                    "recently synced Apple Health, retry after the sync completes."
+                )
+            return (
+                "I couldn't find Apple Health step data that answers that yet. "
+                "If you expected steps or activity here, try syncing Apple Health "
+                "again and ask me about your last week of steps or recent activity trend."
+            )
+
+        if total_chunks == 0:
+            if clinician_mode:
+                return (
+                    "No matching information was found. This patient does not have "
+                    "processed document chunks or matching structured data yet."
+                )
+            return (
+                "I couldn't find matching information in your records yet. "
+                "There are no processed document chunks or matching structured records "
+                "for this question right now."
+            )
+
+        if indexed_chunks == 0:
+            if clinician_mode:
+                return (
+                    "No relevant information could be retrieved. The patient has "
+                    f"{total_chunks} document chunks, but none are indexed for semantic search. "
+                    "Reprocess the patient's documents or retry indexing."
+                )
+            return (
+                "I found records for you, but they are not indexed for search yet. "
+                f"There are {total_chunks} document chunks available, and indexing likely "
+                "failed or has not finished yet. Reprocessing the documents should fix that."
+            )
+
+        if retrieval_results_count > 0 and max_similarity > 0:
+            if clinician_mode:
+                return (
+                    f"Found {retrieval_results_count} low-similarity candidates, but none met "
+                    f"the threshold (top similarity {max_similarity:.2f})."
+                )
+            return (
+                "I found a few possible matches, but none were close enough to answer "
+                f"confidently (top similarity {max_similarity:.2f}). "
+                "Try rephrasing with simpler words or ask for a summary of the related record."
+            )
+
+        if clinician_mode:
+            return (
+                "No relevant information matching this question was found in the patient's "
+                f"indexed records (about {indexed_chunks} chunks)."
+            )
+        return (
+            "I couldn't find a clear match for that in your indexed records "
+            f"(about {indexed_chunks} searchable chunks right now). "
+            "Try asking with different wording or ask me to summarize the related record."
+        )
+
     def _is_strict_grounding_intent(self, context_result) -> bool:
         """Return True when query intent requires strict factual evidence."""
         intent = getattr(
@@ -364,6 +501,104 @@ Questions/Unclear:
             "(low-confidence inference from available records)."
         )
 
+    def _is_summary_like_question(self, question: str) -> bool:
+        """Heuristic to identify summary/overview prompts suitable for softer fallback."""
+        q = (question or "").lower()
+        return any(
+            keyword in q
+            for keyword in [
+                "summarize",
+                "summary",
+                "overview",
+                "findings",
+                "key information",
+                "what information",
+                "most recent document",
+                "latest document",
+            ]
+        )
+
+    def _is_latest_document_summary_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        return any(
+            phrase in q
+            for phrase in [
+                "most recent document",
+                "latest document",
+                "most recent file",
+                "latest file",
+                "most recent upload",
+                "latest upload",
+            ]
+        )
+
+    def _should_use_summary_best_effort_fallback(
+        self,
+        *,
+        question: str,
+        clinician_mode: bool,
+    ) -> bool:
+        """Allow softer, ungrounded fallback only for patient-facing summary prompts."""
+        return (
+            settings.llm_summary_best_effort_fallback
+            and not clinician_mode
+            and self._is_summary_like_question(question)
+            and not self._is_latest_document_summary_question(question)
+        )
+
+    async def _generate_summary_best_effort_fallback(
+        self,
+        *,
+        question: str,
+    ) -> LLMResponse:
+        """Generate a best-effort summary answer when no reliable record context is available.
+
+        This intentionally relaxes grounding for summary-style prompts to reduce dead-end UX
+        during iterative testing. It should not be used for factual value/list/status queries.
+        """
+        prompt = (
+            "The user's records could not be retrieved or did not contain enough text for a "
+            "record-grounded summary. Give a short, friendly best-effort response anyway.\n"
+            "Important:\n"
+            "- Do not claim you saw their record values.\n"
+            "- Say you may be missing details.\n"
+            "- Keep it concise (3-5 short sentences).\n"
+            "- Suggest the user ask about a specific report, date, or lab once available.\n\n"
+            f"User request: {question}"
+        )
+        llm_response = await self.llm_service.generate(
+            prompt=prompt,
+            system_prompt=None,
+            max_new_tokens=min(settings.llm_max_new_tokens, 220),
+            do_sample=False,
+        )
+        fallback_text = (llm_response.text or "").strip()
+        if not fallback_text:
+            fallback_text = (
+                "I may be missing some record details right now. I can give a general summary, "
+                "but it will be better if you upload or finish processing the document and then ask "
+                "about a specific report, date, or lab value."
+            )
+        # Avoid triggering the frontend's hard-refusal badge wording.
+        for phrase in [
+            self.STRICT_GROUNDING_REFUSAL,
+            self.LATEST_DOCUMENT_UNAVAILABLE,
+            "The document does not explain this topic.",
+        ]:
+            fallback_text = fallback_text.replace(
+                phrase,
+                "I may be missing some record details right now.",
+            )
+        if not fallback_text.lower().startswith("i may be missing some record details"):
+            fallback_text = f"I may be missing some record details right now. {fallback_text}"
+        return LLMResponse(
+            text=fallback_text,
+            tokens_generated=llm_response.tokens_generated,
+            tokens_input=llm_response.tokens_input,
+            generation_time_ms=llm_response.generation_time_ms,
+            finish_reason="summary_best_effort_fallback",
+        )
+
     def _enforce_numeric_grounding(
         self, response_text: str, context_text: str, question: str
     ) -> str:
@@ -398,6 +633,60 @@ Questions/Unclear:
         return (
             "clinical assistant supporting a clinician" in prompt
             or "cite sources" in prompt
+        )
+
+    async def _get_patient_first_name(self, patient_id: int) -> str | None:
+        """Fetch the patient's first name when available."""
+        if self.db is None:
+            return None
+        patient_result = await self.db.execute(
+            select(Patient).where(Patient.id == patient_id)
+        )
+        patient = patient_result.scalar_one_or_none()
+        return patient.first_name if patient else None
+
+    def _small_talk_response_kind(self, question: str) -> str | None:
+        """Classify casual social chat that should bypass retrieval."""
+        normalized = re.sub(r"\s+", " ", (question or "").strip())
+        if not normalized:
+            return None
+        if any(pattern.fullmatch(normalized) for pattern in self.SMALL_TALK_GRATITUDE_PATTERNS):
+            return "gratitude"
+        if any(pattern.fullmatch(normalized) for pattern in self.SMALL_TALK_WELLBEING_PATTERNS):
+            return "wellbeing"
+        if any(pattern.fullmatch(normalized) for pattern in self.SMALL_TALK_GREETING_PATTERNS):
+            return "greeting"
+        return None
+
+    def _build_small_talk_response(
+        self,
+        *,
+        question: str,
+        patient_first_name: str | None,
+        clinician_mode: bool,
+    ) -> str | None:
+        """Return a warm direct response for casual patient chat."""
+        if clinician_mode:
+            return None
+
+        kind = self._small_talk_response_kind(question)
+        if kind is None:
+            return None
+
+        greeting = f"Hi {patient_first_name}!" if patient_first_name else "Hi!"
+        if kind == "gratitude":
+            return (
+                "You're very welcome. I'm glad to help, and I'm here whenever you want "
+                "to go over your records, lab results, medications, or a document."
+            )
+        if kind == "wellbeing":
+            return (
+                f"{greeting} I'm doing well, thanks for asking. I'm here and ready to "
+                "help with anything in your records, from lab results to medications or document summaries."
+            )
+        return (
+            f"{greeting} It's nice to hear from you. I'm here in a good mood and ready "
+            "to help with your records, medications, lab results, or anything you'd like explained."
         )
 
     def _build_task_instruction(self, routing: RoutingResult) -> str:
@@ -835,13 +1124,7 @@ Questions/Unclear:
         self.logger.info("ASK start patient=%s conv=%s", patient_id, conversation_id)
 
         # Fetch patient information for personalized greeting
-        patient_first_name = None
-        if self.db is not None:
-            patient_result = await self.db.execute(
-                select(Patient).where(Patient.id == patient_id)
-            )
-            patient = patient_result.scalar_one_or_none()
-            patient_first_name = patient.first_name if patient else None
+        patient_first_name = await self._get_patient_first_name(patient_id)
 
         # Add user message
         await self.conversation_manager.add_message(
@@ -863,6 +1146,38 @@ Questions/Unclear:
             routing.confidence,
             routing.extracted_entities,
         )
+        clinician_mode = self._is_clinician_mode(system_prompt or self.DEFAULT_SYSTEM_PROMPT)
+        small_talk_response = self._build_small_talk_response(
+            question=question,
+            patient_first_name=patient_first_name,
+            clinician_mode=clinician_mode,
+        )
+        if routing.task == QueryTask.SMALL_TALK and small_talk_response:
+            self._record_guardrail_event("small_talk_direct", mode="ask")
+            assistant_message = await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=small_talk_response,
+            )
+            total_time = (time.time() - total_start) * 1000
+            return RAGResponse(
+                answer=small_talk_response,
+                llm_response=LLMResponse(
+                    text=small_talk_response,
+                    tokens_generated=0,
+                    tokens_input=0,
+                    generation_time_ms=0.0,
+                    finish_reason="small_talk_direct",
+                ),
+                context_used="",
+                num_sources=0,
+                sources_summary=[],
+                conversation_id=conversation_id,
+                message_id=assistant_message.message_id,
+                context_time_ms=0.0,
+                generation_time_ms=0.0,
+                total_time_ms=total_time,
+            )
         decoding_profile = self._decoding_profile_for_query(
             question=question,
             routing=routing,
@@ -939,16 +1254,8 @@ Questions/Unclear:
             clinician_mode=clinician_mode,
         )
 
-        wants_latest_doc_summary = is_summary_query and any(
-            phrase in question.lower()
-            for phrase in [
-                "most recent document",
-                "latest document",
-                "most recent file",
-                "latest file",
-                "most recent upload",
-                "latest upload",
-            ]
+        wants_latest_doc_summary = is_summary_query and self._is_latest_document_summary_question(
+            question
         )
 
         latest_doc: Document | None = None
@@ -1610,11 +1917,33 @@ Questions/Unclear:
             )
         else:
             if wants_latest_doc_summary:
-                answer = self.LATEST_DOCUMENT_UNAVAILABLE
-                self._record_guardrail_event(
-                    "latest_document_unavailable",
-                    mode="ask",
-                )
+                if self._should_use_summary_best_effort_fallback(
+                    question=question,
+                    clinician_mode=clinician_mode,
+                ):
+                    llm_response = await self._generate_summary_best_effort_fallback(
+                        question=question
+                    )
+                    answer = llm_response.text
+                    finish_reason = "summary_best_effort_no_document"
+                    self._record_guardrail_event(
+                        "summary_best_effort_no_document",
+                        mode="ask",
+                    )
+                else:
+                    answer = self.LATEST_DOCUMENT_UNAVAILABLE
+                    llm_response = LLMResponse(
+                        text=answer,
+                        tokens_generated=0,
+                        tokens_input=0,
+                        generation_time_ms=0.0,
+                        finish_reason="latest_document_unavailable",
+                    )
+                    finish_reason = "latest_document_unavailable"
+                    self._record_guardrail_event(
+                        "latest_document_unavailable",
+                        mode="ask",
+                    )
                 self.logger.warning(
                     "Latest-document summary unavailable: patient=%s question=%s",
                     patient_id,
@@ -1629,20 +1958,14 @@ Questions/Unclear:
                 total_time = (time.time() - total_start) * 1000
                 return RAGResponse(
                     answer=answer,
-                    llm_response=LLMResponse(
-                        text=answer,
-                        tokens_generated=0,
-                        tokens_input=0,
-                        generation_time_ms=0.0,
-                        finish_reason="latest_document_unavailable",
-                    ),
+                    llm_response=llm_response,
                     context_used="",
                     num_sources=0,
                     sources_summary=[],
                     conversation_id=conversation_id,
                     message_id=assistant_message.message_id,
                     context_time_ms=context_time,
-                    generation_time_ms=0.0,
+                    generation_time_ms=llm_response.generation_time_ms,
                     total_time_ms=total_time,
                 )
             context_result = await self.context_engine.get_context(
@@ -1670,6 +1993,7 @@ Questions/Unclear:
             strict_violation, top_score = self._strict_grounding_violation(
                 context_result
             )
+            fallback_generation_time_ms = 0.0
             if strict_violation:
                 if (
                     top_score >= settings.llm_low_confidence_floor
@@ -1682,12 +2006,27 @@ Questions/Unclear:
                         mode="ask",
                     )
                 else:
-                    answer = self.STRICT_GROUNDING_REFUSAL
-                    finish_reason = "strict_grounding_no_evidence"
-                    self._record_guardrail_event(
-                        "strict_grounding_no_evidence",
-                        mode="ask",
-                    )
+                    if self._should_use_summary_best_effort_fallback(
+                        question=question,
+                        clinician_mode=clinician_mode,
+                    ):
+                        llm_response = await self._generate_summary_best_effort_fallback(
+                            question=question
+                        )
+                        answer = llm_response.text
+                        fallback_generation_time_ms = llm_response.generation_time_ms
+                        finish_reason = "summary_best_effort_no_evidence"
+                        self._record_guardrail_event(
+                            "summary_best_effort_no_evidence",
+                            mode="ask",
+                        )
+                    else:
+                        answer = self.STRICT_GROUNDING_REFUSAL
+                        finish_reason = "strict_grounding_no_evidence"
+                        self._record_guardrail_event(
+                            "strict_grounding_no_evidence",
+                            mode="ask",
+                        )
                 self.logger.warning(
                     "Strict grounding refusal: patient=%s question=%s top_score=%.3f threshold=%.3f",
                     patient_id,
@@ -1709,7 +2048,7 @@ Questions/Unclear:
                         text=answer,
                         tokens_generated=0,
                         tokens_input=0,
-                        generation_time_ms=0.0,
+                        generation_time_ms=fallback_generation_time_ms,
                         finish_reason=finish_reason,
                     ),
                     context_used=context_result.synthesized_context.full_context,
@@ -1718,7 +2057,7 @@ Questions/Unclear:
                     conversation_id=conversation_id,
                     message_id=assistant_message.message_id,
                     context_time_ms=context_time,
-                    generation_time_ms=0.0,
+                    generation_time_ms=fallback_generation_time_ms,
                     total_time_ms=(time.time() - total_start) * 1000,
                 )
 
@@ -1893,34 +2232,15 @@ Questions/Unclear:
                     (r.final_score for r in context_result.ranked_results), default=0.0
                 )
 
-            if total_chunks == 0:
-                answer = (
-                    "No relevant information could be retrieved because this patient "
-                    "has no processed records or document chunks yet. "
-                    "Upload and process documents or add structured data first."
-                )
-            elif indexed_chunks == 0:
-                answer = (
-                    "No relevant information could be retrieved. This patient has "
-                    f"{total_chunks} document chunks, but none are indexed for semantic search. "
-                    "This usually means embedding generation or indexing failed. "
-                    "Reprocess the patient's documents or retry indexing."
-                )
-            elif retrieval_results_count > 0 and max_similarity > 0:
-                answer = (
-                    f"Found {retrieval_results_count} potentially relevant chunks, but the similarity "
-                    f"score ({max_similarity:.2f}) was below the threshold. "
-                    "The question might not match the document content semantically. "
-                    "Try asking more general questions like 'What information is in the document?' "
-                    "or 'Summarize the document contents.'"
-                )
-            else:
-                answer = (
-                    "No relevant information matching this question was found in the "
-                    f"patient's indexed records (about {indexed_chunks} chunks). "
-                    "Try rephrasing the question using different words, or ask more general questions "
-                    "like 'What does the document say?' or 'Summarize the document.'"
-                )
+            answer = self._build_no_evidence_answer(
+                question=question,
+                context_result=context_result,
+                total_chunks=total_chunks,
+                indexed_chunks=indexed_chunks,
+                retrieval_results_count=retrieval_results_count,
+                max_similarity=max_similarity,
+                clinician_mode=clinician_mode,
+            )
 
             assistant_message = await self.conversation_manager.add_message(
                 conversation_id=conversation_id,
@@ -2345,13 +2665,7 @@ Questions/Unclear:
         self._set_stream_metadata()
 
         # Fetch patient information for personalized greeting
-        patient_first_name = None
-        if self.db is not None:
-            patient_result = await self.db.execute(
-                select(Patient).where(Patient.id == patient_id)
-            )
-            patient = patient_result.scalar_one_or_none()
-            patient_first_name = patient.first_name if patient else None
+        patient_first_name = await self._get_patient_first_name(patient_id)
 
         # Get or create conversation
         if conversation_id:
@@ -2380,6 +2694,22 @@ Questions/Unclear:
             routing.confidence,
             routing.extracted_entities,
         )
+        clinician_mode = self._is_clinician_mode(system_prompt or self.DEFAULT_SYSTEM_PROMPT)
+        small_talk_response = self._build_small_talk_response(
+            question=question,
+            patient_first_name=patient_first_name,
+            clinician_mode=clinician_mode,
+        )
+        if routing.task == QueryTask.SMALL_TALK and small_talk_response:
+            self._record_guardrail_event("small_talk_direct", mode="stream")
+            self._set_stream_metadata(num_sources=0, sources_summary=[])
+            yield small_talk_response
+            await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=small_talk_response,
+            )
+            return
         decoding_profile = self._decoding_profile_for_query(
             question=question,
             routing=routing,
@@ -2468,16 +2798,8 @@ Questions/Unclear:
 
         # Special case (streaming): summaries of the "most recent/latest document" should be grounded
         # in the actual latest processed document text (not just vector retrieval), to avoid generic output.
-        wants_latest_doc_summary = is_summary_query and any(
-            phrase in question.lower()
-            for phrase in [
-                "most recent document",
-                "latest document",
-                "most recent file",
-                "latest file",
-                "most recent upload",
-                "latest upload",
-            ]
+        wants_latest_doc_summary = is_summary_query and self._is_latest_document_summary_question(
+            question
         )
         if wants_latest_doc_summary and self.db is not None:
             latest_doc_result = await self.db.execute(
@@ -2803,11 +3125,24 @@ Questions/Unclear:
                     return
 
         if wants_latest_doc_summary:
-            answer = self.LATEST_DOCUMENT_UNAVAILABLE
-            self._record_guardrail_event(
-                "latest_document_unavailable",
-                mode="stream",
-            )
+            if self._should_use_summary_best_effort_fallback(
+                question=question,
+                clinician_mode=clinician_mode,
+            ):
+                llm_response = await self._generate_summary_best_effort_fallback(
+                    question=question
+                )
+                answer = llm_response.text
+                self._record_guardrail_event(
+                    "summary_best_effort_no_document",
+                    mode="stream",
+                )
+            else:
+                answer = self.LATEST_DOCUMENT_UNAVAILABLE
+                self._record_guardrail_event(
+                    "latest_document_unavailable",
+                    mode="stream",
+                )
             self._set_stream_metadata(num_sources=0, sources_summary=[])
             self.logger.warning(
                 "Latest-document summary unavailable (stream): patient=%s question=%s",
@@ -2851,11 +3186,24 @@ Questions/Unclear:
                     mode="stream",
                 )
             else:
-                answer = self.STRICT_GROUNDING_REFUSAL
-                self._record_guardrail_event(
-                    "strict_grounding_no_evidence",
-                    mode="stream",
-                )
+                if self._should_use_summary_best_effort_fallback(
+                    question=question,
+                    clinician_mode=clinician_mode,
+                ):
+                    llm_response = await self._generate_summary_best_effort_fallback(
+                        question=question
+                    )
+                    answer = llm_response.text
+                    self._record_guardrail_event(
+                        "summary_best_effort_no_evidence",
+                        mode="stream",
+                    )
+                else:
+                    answer = self.STRICT_GROUNDING_REFUSAL
+                    self._record_guardrail_event(
+                        "strict_grounding_no_evidence",
+                        mode="stream",
+                    )
             sources_summary = self._build_sources_summary(context_result.ranked_results)
             self._set_stream_metadata(
                 num_sources=context_result.synthesized_context.total_chunks_used,
@@ -2954,26 +3302,29 @@ Questions/Unclear:
             )
             indexed_chunks = result.scalar() or 0
 
-            if total_chunks == 0:
-                answer = (
-                    "No relevant information could be retrieved because this patient "
-                    "has no processed records or document chunks yet. "
-                    "Upload and process documents or add structured data first."
+            retrieval_results_count = (
+                len(context_result.ranked_results)
+                if hasattr(context_result, "ranked_results")
+                else 0
+            )
+            max_similarity = 0.0
+            if (
+                hasattr(context_result, "ranked_results")
+                and context_result.ranked_results
+            ):
+                max_similarity = max(
+                    (r.final_score for r in context_result.ranked_results), default=0.0
                 )
-            elif indexed_chunks == 0:
-                answer = (
-                    "No relevant information could be retrieved. This patient has "
-                    f"{total_chunks} document chunks, but none are indexed for semantic search. "
-                    "This usually means embedding generation or indexing failed. "
-                    "Reprocess the patient's documents or retry indexing."
-                )
-            else:
-                answer = (
-                    "No relevant information matching this question was found in the "
-                    f"patient's indexed records (about {indexed_chunks} chunks). "
-                    "Try rephrasing the question or checking that the relevant documents "
-                    "have been uploaded and processed."
-                )
+
+            answer = self._build_no_evidence_answer(
+                question=question,
+                context_result=context_result,
+                total_chunks=total_chunks,
+                indexed_chunks=indexed_chunks,
+                retrieval_results_count=retrieval_results_count,
+                max_similarity=max_similarity,
+                clinician_mode=clinician_mode,
+            )
 
             yield answer
             await self.conversation_manager.add_message(
@@ -3343,10 +3694,47 @@ Questions/Unclear:
         routing = self.query_router.route(question)
         wants_latest_doc = (
             routing.task == QueryTask.DOC_SUMMARY
-            and routing.temporal_intent == "latest"
+            and (
+                routing.temporal_intent == "latest"
+                or self._is_latest_document_summary_question(question)
+            )
         )
         resolved_system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         clinician_mode = self._is_clinician_mode(resolved_system_prompt)
+        small_talk_response = self._build_small_talk_response(
+            question=question,
+            patient_first_name=await self._get_patient_first_name(patient_id),
+            clinician_mode=clinician_mode,
+        )
+        if routing.task == QueryTask.SMALL_TALK and small_talk_response:
+            self._record_guardrail_event("small_talk_direct", mode="structured")
+            assistant_message = await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=small_talk_response,
+            )
+            total_time = (time.time() - total_start) * 1000
+            return (
+                RAGResponse(
+                    answer=small_talk_response,
+                    llm_response=LLMResponse(
+                        text=small_talk_response,
+                        tokens_generated=0,
+                        tokens_input=0,
+                        generation_time_ms=0.0,
+                        finish_reason="small_talk_direct",
+                    ),
+                    context_used="",
+                    num_sources=0,
+                    sources_summary=[],
+                    conversation_id=conversation_id,
+                    message_id=assistant_message.message_id,
+                    context_time_ms=0.0,
+                    generation_time_ms=0.0,
+                    total_time_ms=total_time,
+                ),
+                None,
+            )
         effective_system_prompt = self._apply_prompt_profile(
             system_prompt=resolved_system_prompt,
             clinician_mode=clinician_mode,
@@ -3467,6 +3855,71 @@ Questions/Unclear:
                 )
 
         context_time_ms = (time.time() - context_start) * 1000
+
+        direct_structured_answer = (
+            self._build_direct_structured_answer(
+                question=question,
+                context_result=context_result,
+            )
+            if context_result is not None
+            else None
+        )
+        direct_structured_payload = (
+            self._build_direct_structured_payload(
+                question=question,
+                context_result=context_result,
+                sources_summary=sources_summary,
+            )
+            if context_result is not None
+            else None
+        )
+        if direct_structured_answer:
+            self.logger.info(
+                "Using deterministic structured answer for question=%s", question
+            )
+            direct_structured_answer = self._append_numeric_claim_citations(
+                response_text=direct_structured_answer,
+                sources_summary=sources_summary,
+            )
+            direct_structured_answer = self._apply_tone_guardrails(
+                response_text=direct_structured_answer,
+                clinician_mode=clinician_mode,
+            )
+            self._record_guardrail_event("structured_direct", mode="structured")
+            assistant_message = await self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=direct_structured_answer,
+                structured_data=(
+                    direct_structured_payload.model_dump()
+                    if direct_structured_payload is not None
+                    else None
+                ),
+            )
+            total_time = (time.time() - total_start) * 1000
+            return (
+                RAGResponse(
+                    answer=direct_structured_answer,
+                    llm_response=LLMResponse(
+                        text=direct_structured_answer,
+                        tokens_generated=0,
+                        tokens_input=0,
+                        generation_time_ms=0.0,
+                        finish_reason="structured_direct",
+                    ),
+                    context_used=context_text[:500] + "..."
+                    if len(context_text) > 500
+                    else context_text,
+                    num_sources=len(sources_summary),
+                    sources_summary=sources_summary,
+                    conversation_id=conversation_id,
+                    message_id=assistant_message.message_id,
+                    context_time_ms=context_time_ms,
+                    generation_time_ms=0.0,
+                    total_time_ms=total_time,
+                ),
+                direct_structured_payload,
+            )
 
         # Build JSON prompt with grounded evidence context
 
@@ -3630,6 +4083,7 @@ Questions/Unclear:
             conversation_id=conversation_id,
             role="assistant",
             content=friendly_text,
+            structured_data=structured.model_dump(),
         )
 
         total_time = (time.time() - total_start) * 1000
@@ -3665,6 +4119,10 @@ Questions/Unclear:
         query_analysis = getattr(context_result, "query_analysis", None)
         intent = getattr(query_analysis, "intent", None)
         question_lower = question.lower()
+        apple_health_query = self._is_apple_health_question(
+            question=question,
+            query_analysis=query_analysis,
+        )
         question_terms = {
             token
             for token in re.findall(r"\b[a-zA-Z][a-zA-Z0-9_]+\b", question_lower)
@@ -3705,10 +4163,22 @@ Questions/Unclear:
                 ]
             ) or bool(requested_tests)
 
+        ranked_results = getattr(context_result, "ranked_results", []) or []
+        apple_health_results = [
+            r
+            for r in ranked_results
+            if getattr(r.result, "source_type", None)
+            in {"apple_health", "apple_health_status"}
+        ]
+        if apple_health_query and apple_health_results:
+            return self._build_direct_apple_health_answer(
+                question=question,
+                structured_results=apple_health_results,
+            )
+
         if not is_simple_fact_query:
             return None
 
-        ranked_results = getattr(context_result, "ranked_results", []) or []
         structured_results = [
             r
             for r in ranked_results
@@ -3818,6 +4288,322 @@ Questions/Unclear:
             return f"From your records: {fact_lines[0]}"
         bullets = "\n".join(f"- {line}" for line in fact_lines[:8])
         return f"From your records:\n{bullets}"
+
+    def _build_direct_structured_payload(
+        self,
+        *,
+        question: str,
+        context_result,
+        sources_summary: list[dict],
+    ) -> StructuredSummaryResponse | None:
+        """Build a structured payload for deterministic direct-answer paths."""
+        query_analysis = getattr(context_result, "query_analysis", None)
+        if not self._is_apple_health_question(
+            question=question,
+            query_analysis=query_analysis,
+        ):
+            return None
+
+        ranked_results = getattr(context_result, "ranked_results", []) or []
+        apple_health_results = [
+            ranked
+            for ranked in ranked_results
+            if getattr(ranked.result, "source_type", None)
+            in {"apple_health", "apple_health_status"}
+        ]
+        if not apple_health_results:
+            return None
+
+        return self._build_direct_apple_health_structured_summary(
+            question=question,
+            structured_results=apple_health_results,
+            sources_summary=sources_summary,
+        )
+
+    def _collect_direct_apple_health_snapshot(
+        self,
+        *,
+        structured_results: list,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        """Parse deterministic Apple Health retrieval hits into reusable stats."""
+        step_points: list[dict[str, object]] = []
+        status_payload: dict[str, object] = {}
+
+        for ranked in structured_results:
+            result = getattr(ranked, "result", None)
+            if result is None:
+                continue
+
+            source_type = getattr(result, "source_type", None)
+            content = (getattr(result, "content", "") or "").strip()
+            if source_type == "apple_health":
+                match = re.search(
+                    r"Apple Health daily steps:\s*(?P<steps>\d+)\s+steps",
+                    content,
+                    re.IGNORECASE,
+                )
+                context_date = getattr(result, "context_date", None)
+                if not match or context_date is None:
+                    continue
+                step_points.append(
+                    {
+                        "steps": int(match.group("steps")),
+                        "date": context_date,
+                        "source_snippet": content,
+                    }
+                )
+                continue
+
+            if source_type != "apple_health_status":
+                continue
+
+            status_match = re.search(
+                r"Apple Health sync status:\s*(?P<status>[A-Za-z_ -]+)\.",
+                content,
+                re.IGNORECASE,
+            )
+            synced_days_match = re.search(
+                r"Total synced days:\s*(?P<days>\d+)",
+                content,
+                re.IGNORECASE,
+            )
+            range_match = re.search(
+                r"Synced range:\s*(?P<start>\d{4}-\d{2}-\d{2})\s+to\s+(?P<end>\d{4}-\d{2}-\d{2})",
+                content,
+                re.IGNORECASE,
+            )
+            last_sync_match = re.search(
+                r"Last sync:\s*(?P<last_sync>[0-9T:+.-]+)",
+                content,
+                re.IGNORECASE,
+            )
+            if status_match:
+                status_payload["status"] = status_match.group("status").strip()
+            if synced_days_match:
+                status_payload["total_synced_days"] = int(
+                    synced_days_match.group("days")
+                )
+            if range_match:
+                status_payload["synced_range"] = (
+                    range_match.group("start"),
+                    range_match.group("end"),
+                )
+            if last_sync_match:
+                status_payload["last_sync"] = last_sync_match.group("last_sync")
+            if content:
+                status_payload["source_snippet"] = content
+
+        step_points.sort(key=lambda point: point["date"])
+        return step_points, status_payload
+
+    def _build_direct_apple_health_answer(
+        self,
+        *,
+        question: str,
+        structured_results: list,
+    ) -> str | None:
+        """Build a deterministic Apple Health response from structured step data."""
+        question_lower = (question or "").lower()
+        wants_trend = any(
+            token in question_lower
+            for token in ("trend", "changed", "change", "mwenendo", "mabadiliko")
+        )
+        step_points, status_payload = self._collect_direct_apple_health_snapshot(
+            structured_results=structured_results
+        )
+
+        if not step_points:
+            total_synced_days = status_payload.get("total_synced_days")
+            last_sync = status_payload.get("last_sync")
+            if total_synced_days:
+                answer = (
+                    "I can see Apple Health is connected, but I do not have daily step "
+                    "totals for the period you asked about yet."
+                )
+                if last_sync:
+                    answer += f" The last sync I can see was {last_sync}."
+                return answer
+            return None
+
+        total_steps = sum(point["steps"] for point in step_points)
+        average_steps = total_steps / len(step_points)
+        first_point = step_points[0]
+        last_point = step_points[-1]
+        start_date = self._format_context_date(first_point["date"])
+        end_date = self._format_context_date(last_point["date"])
+
+        answer_parts = [
+            "Here's a quick Apple Health update: "
+            f"from {start_date} to {end_date}, you logged {total_steps:,} steps "
+            f"across {len(step_points)} day(s), averaging about {round(average_steps):,} steps a day.",
+            f"Your latest recorded day was {end_date} with {last_point['steps']:,} steps.",
+        ]
+
+        if wants_trend and len(step_points) >= 2:
+            delta = last_point["steps"] - first_point["steps"]
+            first_date = self._format_context_date(first_point["date"])
+            if delta == 0:
+                answer_parts.append(
+                    f"Your daily steps stayed about the same between {first_date} and {end_date}."
+                )
+            else:
+                direction = "increased" if delta > 0 else "decreased"
+                answer_parts.append(
+                    f"Across that span, your daily steps {direction} by {abs(delta):,} "
+                    f"compared with {first_date}."
+                )
+
+        total_synced_days = status_payload.get("total_synced_days")
+        if total_synced_days:
+            answer_parts.append(
+                f"Apple Health is connected, with {int(total_synced_days):,} synced day(s) overall."
+            )
+
+        return " ".join(answer_parts)
+
+    def _build_direct_apple_health_structured_summary(
+        self,
+        *,
+        question: str,
+        structured_results: list,
+        sources_summary: list[dict],
+    ) -> StructuredSummaryResponse | None:
+        """Build a lightweight structured Apple Health summary for coaching cards."""
+        step_points, status_payload = self._collect_direct_apple_health_snapshot(
+            structured_results=structured_results
+        )
+        total_synced_days = status_payload.get("total_synced_days")
+        last_sync = status_payload.get("last_sync")
+        status_snippet = str(status_payload.get("source_snippet") or "").strip()
+
+        if not step_points:
+            if not total_synced_days:
+                return None
+            overview = (
+                "Apple Health is connected, but there are no daily step totals "
+                "available for this question yet."
+            )
+            why_it_matters = [
+                f"Apple Health shows {int(total_synced_days):,} synced day(s) overall."
+            ]
+            if last_sync:
+                why_it_matters.append(f"Last sync on record: {last_sync}.")
+            structured = StructuredSummaryResponse(
+                overview=overview,
+                follow_ups=[
+                    "Sync Apple Health again, then ask about your last week of steps if you expected activity data here."
+                ],
+                why_it_matters=why_it_matters,
+                suggested_next_discussion_points=[
+                    "Ask for a fresh Apple Health step summary after the next sync."
+                ],
+                extraction_date=str(last_sync)[:10] if last_sync else None,
+            )
+            return self._attach_structured_section_sources(
+                structured=structured,
+                sources_summary=sources_summary,
+            )
+
+        total_steps = sum(int(point["steps"]) for point in step_points)
+        average_steps = total_steps / len(step_points)
+        rounded_average = round(average_steps)
+        first_point = step_points[0]
+        last_point = step_points[-1]
+        start_date = self._format_context_date(first_point["date"])
+        end_date = self._format_context_date(last_point["date"])
+        span_snippet = "\n".join(
+            str(point.get("source_snippet") or "").strip()
+            for point in step_points[:3]
+            if str(point.get("source_snippet") or "").strip()
+        ).strip()
+        latest_snippet = str(last_point.get("source_snippet") or span_snippet).strip()
+
+        key_results = [
+            {
+                "name": f"Total steps ({start_date} to {end_date})",
+                "value": f"{total_steps:,}",
+                "unit": "steps",
+                "date": end_date,
+                "is_normal": None,
+                "source_snippet": span_snippet or latest_snippet,
+            },
+            {
+                "name": "Average daily steps",
+                "value": f"{rounded_average:,}",
+                "unit": "steps/day",
+                "date": end_date,
+                "is_normal": None,
+                "source_snippet": span_snippet or latest_snippet,
+            },
+            {
+                "name": f"Latest daily steps ({end_date})",
+                "value": f"{int(last_point['steps']):,}",
+                "unit": "steps",
+                "date": end_date,
+                "is_normal": None,
+                "source_snippet": latest_snippet,
+            },
+        ]
+        if total_synced_days:
+            key_results.append(
+                {
+                    "name": "Synced days overall",
+                    "value": f"{int(total_synced_days):,}",
+                    "unit": "days",
+                    "date": end_date,
+                    "is_normal": None,
+                    "source_snippet": status_snippet or span_snippet or latest_snippet,
+                }
+            )
+
+        trend_statement = None
+        if len(step_points) >= 2:
+            delta = int(last_point["steps"]) - int(first_point["steps"])
+            first_date = self._format_context_date(first_point["date"])
+            if delta == 0:
+                trend_statement = (
+                    f"Daily steps stayed about the same between {first_date} and {end_date}."
+                )
+            else:
+                direction = "increased" if delta > 0 else "decreased"
+                trend_statement = (
+                    f"Daily steps {direction} by {abs(delta):,} between {first_date} and {end_date}."
+                )
+
+        overview = (
+            f"Apple Health logged {total_steps:,} steps from {start_date} to {end_date}, "
+            f"averaging about {rounded_average:,} steps a day."
+        )
+        why_it_matters = [
+            f"This summary is based on {len(step_points):,} day(s) with synced step totals."
+        ]
+        if total_synced_days:
+            why_it_matters.append(
+                f"Apple Health is connected with {int(total_synced_days):,} synced day(s) overall."
+            )
+
+        suggested_next_points = [
+            "Ask me to compare this span with the previous week if you want a broader activity trend."
+        ]
+        follow_ups: list[str] = []
+        if int(last_point["steps"]) == 0:
+            follow_ups.append(
+                f"If {end_date} showing 0 steps looks incomplete, sync Apple Health again and ask me to refresh this summary."
+            )
+
+        structured = StructuredSummaryResponse(
+            overview=overview,
+            key_results=key_results,
+            follow_ups=follow_ups,
+            what_changed=[trend_statement] if trend_statement else [],
+            why_it_matters=why_it_matters,
+            suggested_next_discussion_points=suggested_next_points,
+            extraction_date=end_date,
+        )
+        return self._attach_structured_section_sources(
+            structured=structured,
+            sources_summary=sources_summary,
+        )
 
     def _build_direct_trend_answer(
         self,

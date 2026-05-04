@@ -131,13 +131,27 @@ def main() -> None:
         timeout=args.timeout_seconds,
     )
 
+    patient_signup_status, patient_signup_payload = call_json(
+        session,
+        method="POST",
+        url=f"{base_url}/api/v1/auth/signup",
+        step="patient signup",
+        timeout=args.timeout_seconds,
+        allowed_statuses={400, 429},
+        json={
+            "email": args.patient_email,
+            "password": args.patient_password,
+            "full_name": os.getenv("E2E_FULL_NAME", "Demo User"),
+        },
+    )
+
     signup_status, signup_payload = call_json(
         session,
         method="POST",
         url=f"{base_url}/api/v1/clinician/signup",
         step="clinician signup",
         timeout=args.timeout_seconds,
-        allowed_statuses={400, 409},
+        allowed_statuses={400, 409, 429},
         json={
             "email": args.clinician_email,
             "password": args.clinician_password,
@@ -183,7 +197,32 @@ def main() -> None:
         headers={"Authorization": f"Bearer {patient_token}"},
     )
     if not isinstance(patients_payload, list) or not patients_payload:
-        raise RuntimeError("No patient available for clinician copilot smoke test")
+        _, created_patient_payload = call_json(
+            session,
+            method="POST",
+            url=f"{base_url}/api/v1/patients/",
+            step="create patient",
+            timeout=args.timeout_seconds,
+            headers={"Authorization": f"Bearer {patient_token}"},
+            json={
+                "first_name": os.getenv("E2E_PATIENT_FIRST_NAME", "Demo"),
+                "last_name": os.getenv("E2E_PATIENT_LAST_NAME", "Patient"),
+                "date_of_birth": os.getenv("E2E_PATIENT_DOB", "1990-01-01"),
+                "email": args.patient_email,
+            },
+        )
+        _, patients_payload = call_json(
+            session,
+            method="GET",
+            url=f"{base_url}/api/v1/patients/?limit=100",
+            step="list patients after create",
+            timeout=args.timeout_seconds,
+            headers={"Authorization": f"Bearer {patient_token}"},
+        )
+        if not isinstance(patients_payload, list) or not patients_payload:
+            raise RuntimeError("No patient available for clinician copilot smoke test")
+    else:
+        created_patient_payload = None
     patient_id = args.patient_id or int(patients_payload[0]["id"])
 
     access_request_status, access_request_payload = call_json(
@@ -273,8 +312,11 @@ def main() -> None:
     summary = {
         "base_url": base_url,
         "health": health,
+        "patient_signup_status": patient_signup_status,
+        "patient_signup_payload": patient_signup_payload,
         "signup_status": signup_status,
         "signup_payload": signup_payload,
+        "created_patient_payload": created_patient_payload,
         "patient_id": patient_id,
         "access_request_status": access_request_status,
         "access_request_payload": access_request_payload,

@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Response
 
 from app.schemas.chat import LLMInfoResponse
+from app.services.observability import ObservabilityRegistry
 from app.services.llm import LLMService
 from app.services.llm.rag import RAGService
+from app.services.speech.synthesis_boundary import SpeechSynthesisBoundary
+from app.services.speech.transcribe import SpeechTranscriptionService
 
 router = APIRouter(tags=["Health"])
 
@@ -40,19 +43,21 @@ async def llm_health():
     return {"ok": True, "llm": info}
 
 
+@router.get("/health/speech")
+async def speech_health():
+    """Lightweight speech readiness endpoint for frontend checks."""
+    return {
+        "ok": True,
+        "transcription": await SpeechTranscriptionService.get_instance().readiness_status(),
+        "synthesis": await SpeechSynthesisBoundary.get_instance().readiness_status(),
+    }
+
+
 @router.get("/metrics")
 async def metrics():
     """Prometheus-style metrics endpoint."""
     counters = RAGService.get_global_guardrail_counters()
-    lines = [
-        "# HELP medmemory_guardrail_events_total Count of guardrail events.",
-        "# TYPE medmemory_guardrail_events_total counter",
-    ]
-    if counters:
-        for event in sorted(counters):
-            value = counters[event]
-            lines.append(f'medmemory_guardrail_events_total{{event="{event}"}} {value}')
-    else:
-        lines.append('medmemory_guardrail_events_total{event="none"} 0')
-    body = "\n".join(lines) + "\n"
+    body = ObservabilityRegistry.get_instance().render_prometheus(
+        guardrail_counters=counters,
+    )
     return Response(body, media_type="text/plain; version=0.0.4")

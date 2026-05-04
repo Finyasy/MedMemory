@@ -270,18 +270,7 @@ const parseJson = async (res: Response) => {
 
 const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {
   try {
-    // Use path as-is (it should already include API_BASE or be an absolute URL)
-    const fullUrl = path.startsWith('http') ? path : `${window.location.origin}${path}`;
-    console.log(`[API] Making request to: ${fullUrl}`);
-    console.log(`[API] Request options:`, { 
-      method: options.method || 'GET',
-      hasAuth: !!(options.headers as Record<string, string>)?.Authorization,
-      headers: Object.keys(options.headers || {})
-    });
-    
     const res = await fetch(path, options);
-    console.log(`[API] Response status: ${res.status} ${res.statusText} for ${fullUrl}`);
-    
     const data = await parseJson(res);
 
     if (!res.ok) {
@@ -290,27 +279,19 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
         data?.detail ||
         res.statusText ||
         'Unexpected API error';
-      console.error(`[API] Request failed: ${res.status} - ${message}`);
       throw new ApiError(res.status, message);
     }
 
-    console.log(`[API] Request successful: ${fullUrl}`);
     return data as T;
   } catch (error) {
-    // Re-throw ApiError as-is
     if (error instanceof ApiError) {
       throw error;
     }
-    // Handle network errors with more helpful message
     if (error instanceof TypeError && error.message.includes('fetch')) {
       const errorMessage = error.message;
       const fullUrl = path.startsWith('http') ? path : `${window.location.origin}${path}`;
-      console.error(`[API] Network error for ${fullUrl}:`, errorMessage);
-      console.error(`[API] Current origin: ${window.location.origin}`);
-      console.error(`[API] API_BASE: ${API_BASE}`);
       throw new ApiError(0, `Network error: Unable to reach the API server at ${fullUrl}. Please check if the backend is running on port 8000 and the Vite dev server proxy is configured correctly. Error: ${errorMessage}`);
     }
-    // Re-throw other errors
     throw error;
   }
 };

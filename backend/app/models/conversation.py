@@ -51,6 +51,11 @@ class ConversationMessage(Base, TimestampMixin):
         String(20), nullable=False, comment="user, assistant, system"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_data_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="JSON object for structured context-card payloads",
+    )
 
     context_chunks: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="JSON array of memory chunk IDs used for context"

@@ -42,6 +42,15 @@ Date: 2026-03-10
 - Local demo tooling should prefer an explicit loopback host when needed. If `localhost` resolves to IPv6 on the machine but the backend is bound to IPv4, rerun the demo gate with `--backend-url http://127.0.0.1:8000`.
 - Repeated provider names across `Connections` and `Recent sync activity` need explicit accessible labels on each list. Without that, browser tests drift into brittle text-only selectors once the same provider appears in both places.
 - Demo gates should validate the frontend shell before opening a browser test. If the local UI is stale or down, the runbook should offer one explicit recovery flag such as `--restart-frontend` instead of failing deep inside Playwright.
+- Production readiness should be phased, not implied. A passing demo gate is necessary but not sufficient; staging, secret management, observability, rollback, and live integration hardening need their own written gates and owners.
+- If a smoke gate is supposed to become a release control, it needs its own dedicated CI workflow, not just a local script. For MedMemory, the in-repo workflow is `/Users/bryan.bosire/anaconda_projects/MedMemory/.github/workflows/clinician-copilot-demo-gate.yml`.
+- A “required CI check” is only partially implemented in code. The workflow must still be marked required in GitHub branch protection, otherwise the repo is only running the check, not enforcing it.
+- Fresh CI/staging databases should not depend on manually pre-created demo patients. The smoke path must provision the demo patient account and first patient record automatically.
+- Early production observability should start with cheap in-process counters and best-effort audit writes, but those still need explicit follow-on work for external dashboards, alerts, and backup drills.
+- When an external platform setting cannot be versioned in the repo, add a short runbook beside the code change. Branch protection and observability wiring both need explicit operator steps, not just implementation notes.
+- Local staging scripts should not assume the runtime container carries migration tooling. In this repo, staging migrations are more reliable from the local backend Alembic environment than from the slim production image.
+- A staging database should start from Alembic, not from local dev bootstrap SQL plus Alembic on top. Mixing both caused duplicate-column failures in the fresh staging bootstrap.
+- Dedicated staging compose stacks need their own project name. Without that, `docker compose down` can collide with other local MedMemory compose stacks and stop the wrong containers.
 - The v1 boundary remains important:
   - bounded orchestration
   - typed read-only tools

@@ -6,6 +6,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -289,3 +290,210 @@ async def test_profile_access_control_patient_id(client: AsyncClient):
         json={"blood_type": "A-"},
     )
     assert update.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_profile_prefers_oldest_primary_patient_when_duplicates_exist(
+    client: AsyncClient,
+    async_session_maker,
+    caplog: pytest.LogCaptureFixture,
+):
+    async with async_session_maker() as session:
+        session.add(
+            Patient(
+                id=3,
+                user_id=1,
+                first_name="Backup",
+                last_name="Profile",
+                is_dependent=False,
+            )
+        )
+        await session.commit()
+
+    with caplog.at_level("WARNING"):
+        response = await client.get("/api/v1/profile")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 1
+    assert "Multiple primary patient rows found for user_id=1" in caplog.text
+
+
+def test_calculate_profile_completion_marks_completed_sections():
+    profile_module = _load_module("medmemory_profile_helpers", API_DIR / "profile.py")
+    patient = Patient(
+        id=99,
+        user_id=1,
+        first_name="Test",
+        last_name="Patient",
+        date_of_birth=date(1992, 4, 5),
+        sex="female",
+        blood_type="O+",
+        height_cm=165,
+        weight_kg=62,
+        is_dependent=False,
+    )
+    patient.emergency_info = object()
+    patient.emergency_contacts = [object()]
+    patient.allergies_list = [object()]
+    patient.conditions_list = [object()]
+    patient.family_history_list = [object()]
+    patient.providers = [object()]
+    patient.lifestyle = SimpleNamespace(
+        smoking_status="never",
+        alcohol_use="never",
+        exercise_frequency="active",
+        sleep_hours=8,
+    )
+
+    completion = profile_module.calculate_profile_completion(patient)
+
+    assert completion.overall_percentage == 100
+    assert completion.sections["basic_info"]["complete"] is True
+    assert completion.sections["emergency"]["percentage"] == 100
+    assert completion.sections["medical_history"]["complete"] is True
+    assert completion.sections["providers"]["complete"] is True
+    assert completion.sections["lifestyle"]["complete"] is True
+
+
+@pytest.mark.anyio
+async def test_condition_and_provider_crud(client: AsyncClient):
+    lifestyle = await client.get("/api/v1/profile/lifestyle")
+    assert lifestyle.status_code == 200
+    assert lifestyle.json() is None
+
+    create_condition = await client.post(
+        "/api/v1/profile/conditions",
+        json={
+            "condition_name": "Hypertension",
+            "status": "active",
+            "severity": "moderate",
+        },
+    )
+    assert create_condition.status_code == 201
+    condition_id = create_condition.json()["id"]
+
+    listed_conditions = await client.get("/api/v1/profile/conditions")
+    assert listed_conditions.status_code == 200
+    assert listed_conditions.json()[0]["condition_name"] == "Hypertension"
+
+    updated_condition = await client.put(
+        f"/api/v1/profile/conditions/{condition_id}",
+        json={"status": "resolved", "notes": "Symptoms improved"},
+    )
+    assert updated_condition.status_code == 200
+    assert updated_condition.json()["status"] == "resolved"
+
+    deleted_condition = await client.delete(
+        f"/api/v1/profile/conditions/{condition_id}"
+    )
+    assert deleted_condition.status_code == 204
+
+    create_provider = await client.post(
+        "/api/v1/profile/providers",
+        json={
+            "provider_type": "pcp",
+            "name": "Dr. Maina",
+            "clinic_name": "Westlands Clinic",
+            "phone": "555-1111",
+        },
+    )
+    assert create_provider.status_code == 201
+    provider_id = create_provider.json()["id"]
+
+    listed_providers = await client.get("/api/v1/profile/providers")
+    assert listed_providers.status_code == 200
+    assert listed_providers.json()[0]["name"] == "Dr. Maina"
+
+    updated_provider = await client.put(
+        f"/api/v1/profile/providers/{provider_id}",
+        json={"is_primary": True, "notes": "Quarterly follow-up"},
+    )
+    assert updated_provider.status_code == 200
+    assert updated_provider.json()["is_primary"] is True
+
+    deleted_provider = await client.delete(f"/api/v1/profile/providers/{provider_id}")
+    assert deleted_provider.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_insurance_family_history_vaccination_and_growth_crud(client: AsyncClient):
+    create_insurance = await client.post(
+        "/api/v1/profile/insurance",
+        json={
+            "provider_name": "AAR",
+            "policy_number": "POL-123",
+            "subscriber_name": "User One",
+        },
+    )
+    assert create_insurance.status_code == 201
+    insurance_id = create_insurance.json()["id"]
+
+    list_insurance = await client.get("/api/v1/profile/insurance")
+    assert list_insurance.status_code == 200
+    assert list_insurance.json()[0]["provider_name"] == "AAR"
+
+    delete_insurance = await client.delete(
+        f"/api/v1/profile/insurance/{insurance_id}"
+    )
+    assert delete_insurance.status_code == 204
+
+    create_history = await client.post(
+        "/api/v1/profile/family-history",
+        json={
+            "relation": "mother",
+            "condition": "Diabetes",
+            "age_of_onset": 52,
+        },
+    )
+    assert create_history.status_code == 201
+    history_id = create_history.json()["id"]
+
+    list_history = await client.get("/api/v1/profile/family-history")
+    assert list_history.status_code == 200
+    assert list_history.json()[0]["condition"] == "Diabetes"
+
+    delete_history = await client.delete(
+        f"/api/v1/profile/family-history/{history_id}"
+    )
+    assert delete_history.status_code == 204
+
+    create_vaccination = await client.post(
+        "/api/v1/profile/vaccinations",
+        json={
+            "vaccine_name": "Influenza",
+            "dose_number": 1,
+            "date_administered": "2025-10-01",
+        },
+    )
+    assert create_vaccination.status_code == 201
+    vaccination_id = create_vaccination.json()["id"]
+
+    list_vaccinations = await client.get("/api/v1/profile/vaccinations")
+    assert list_vaccinations.status_code == 200
+    assert list_vaccinations.json()[0]["vaccine_name"] == "Influenza"
+
+    delete_vaccination = await client.delete(
+        f"/api/v1/profile/vaccinations/{vaccination_id}"
+    )
+    assert delete_vaccination.status_code == 204
+
+    create_growth = await client.post(
+        "/api/v1/profile/growth",
+        json={
+            "measurement_date": "2026-03-01",
+            "age_months": 24,
+            "height_cm": 90.5,
+            "weight_kg": 13.2,
+        },
+    )
+    assert create_growth.status_code == 201
+    measurement_id = create_growth.json()["id"]
+
+    list_growth = await client.get("/api/v1/profile/growth")
+    assert list_growth.status_code == 200
+    assert list_growth.json()[0]["age_months"] == 24
+
+    delete_growth = await client.delete(
+        f"/api/v1/profile/growth/{measurement_id}"
+    )
+    assert delete_growth.status_code == 204

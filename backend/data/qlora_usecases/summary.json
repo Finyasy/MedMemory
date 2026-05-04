@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-02-10T05:31:26.846952+00:00",
+  "num_available_pairs": 111,
+  "num_selected_examples": 100,
+  "num_train_examples": 80,
+  "num_eval_examples": 20,
+  "filters": {
+    "min_prompt_chars": 20,
+    "min_answer_chars": 40,
+    "require_feedback": false,
+    "min_feedback_rating": null,
+    "deidentify": true
+  },
+  "output_dir": "data/qlora_usecases"
+}

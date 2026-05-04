@@ -9,6 +9,13 @@ from app.schemas.context import (
     SimpleContextRequest,
     SimpleContextResponse,
 )
+from app.schemas.clinician import (
+    ClinicianAgentRunCreate,
+    ClinicianAgentRunResponse,
+    ClinicianAgentRunSummaryResponse,
+    ClinicianAgentStepResponse,
+    ClinicianAgentSuggestionResponse,
+)
 from app.schemas.dashboard import (
     AlertsEvaluateResponse,
     DashboardHighlightsResponse,
@@ -145,4 +152,9 @@ __all__ = [
     "WatchMetricResponse",
     "MetricAlertResponse",
     "AlertsEvaluateResponse",
+    "ClinicianAgentRunCreate",
+    "ClinicianAgentRunResponse",
+    "ClinicianAgentRunSummaryResponse",
+    "ClinicianAgentStepResponse",
+    "ClinicianAgentSuggestionResponse",
 ]

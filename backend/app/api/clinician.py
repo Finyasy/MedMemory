@@ -45,7 +45,9 @@ from app.schemas.clinician import (
 )
 from app.schemas.document import DocumentResponse
 from app.schemas.records import RecordResponse
+from app.services.audit import record_access_audit
 from app.services.clinician_copilot import ClinicianCopilotService
+from app.services.observability import ObservabilityRegistry
 from app.services.records import SQLRecordRepository
 
 logger = logging.getLogger("medmemory")
@@ -302,6 +304,17 @@ async def request_patient_access(
     db.add(grant)
     await db.commit()
     await db.refresh(grant)
+    await record_access_audit(
+        db,
+        actor_user_id=current_user.id,
+        patient_id=data.patient_id,
+        action="request_patient_access",
+        metadata={
+            "grant_id": grant.id,
+            "scopes": scopes,
+            "status": grant.status,
+        },
+    )
     return AccessGrantResponse.model_validate(grant)
 
 
@@ -454,6 +467,17 @@ async def list_clinician_patient_documents(
     query = query.order_by(Document.received_date.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     documents = result.scalars().all()
+    await record_access_audit(
+        db,
+        actor_user_id=current_user.id,
+        patient_id=patient_id,
+        action="view_patient_documents",
+        metadata={
+            "document_type": document_type,
+            "processed_only": processed_only,
+            "returned_count": len(documents),
+        },
+    )
     return [DocumentResponse.model_validate(d) for d in documents]
 
 
@@ -481,6 +505,16 @@ async def list_clinician_patient_records(
         skip=skip,
         limit=limit,
     )
+    await record_access_audit(
+        db,
+        actor_user_id=current_user.id,
+        patient_id=patient_id,
+        action="view_patient_records",
+        metadata={
+            "record_type": record_type,
+            "returned_count": len(records_list),
+        },
+    )
     return [RecordResponse.model_validate(r) for r in records_list]
 
 
@@ -498,13 +532,29 @@ async def create_clinician_agent_run(
         scope="chat",
     )
     service = ClinicianCopilotService(db)
-    return await service.create_run(
+    run = await service.create_run(
         patient_id=data.patient_id,
         clinician_user_id=current_user.id,
         prompt=data.prompt,
         template=data.template,
         conversation_id=str(data.conversation_id) if data.conversation_id else None,
     )
+    ObservabilityRegistry.get_instance().record_copilot_run(
+        template=run.template,
+        status=run.status,
+    )
+    await record_access_audit(
+        db,
+        actor_user_id=current_user.id,
+        patient_id=data.patient_id,
+        action="create_copilot_run",
+        metadata={
+            "run_id": run.id,
+            "template": run.template,
+            "status": run.status,
+        },
+    )
+    return run
 
 
 @router.get("/agent/runs/{run_id}", response_model=ClinicianAgentRunResponse)
@@ -526,7 +576,19 @@ async def get_clinician_agent_run(
             current_user=current_user,
             scope="chat",
         )
-        return await service.get_run(run_id, clinician_user_id=current_user.id)
+        run = await service.get_run(run_id, clinician_user_id=current_user.id)
+        await record_access_audit(
+            db,
+            actor_user_id=current_user.id,
+            patient_id=patient_id,
+            action="view_copilot_run",
+            metadata={
+                "run_id": run_id,
+                "template": run.template,
+                "status": run.status,
+            },
+        )
+        return run
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -549,8 +611,19 @@ async def list_clinician_agent_runs(
         scope="chat",
     )
     service = ClinicianCopilotService(db)
-    return await service.list_runs(
+    runs = await service.list_runs(
         clinician_user_id=current_user.id,
         patient_id=patient_id,
         limit=limit,
     )
+    await record_access_audit(
+        db,
+        actor_user_id=current_user.id,
+        patient_id=patient_id,
+        action="list_copilot_runs",
+        metadata={
+            "limit": limit,
+            "returned_count": len(runs),
+        },
+    )
+    return runs

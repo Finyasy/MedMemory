@@ -55,6 +55,7 @@ export default function ClinicianPatientView({ patientId, patientName, onBack }:
     setQuestion,
     isStreaming,
     send,
+    sendVoiceTranscript,
   } = useChat({
     patientId,
     onError: handleError,
@@ -128,6 +129,10 @@ export default function ClinicianPatientView({ patientId, patientName, onBack }:
             isDisabled={false}
             selectedPatient={{ id: patientId, full_name: patientName }}
             showHeader={false}
+            clinicianMode={true}
+            voiceInputEnabled={true}
+            onVoiceSubmit={sendVoiceTranscript}
+            onError={handleError}
             onQuestionChange={setQuestion}
             onSend={send}
           />

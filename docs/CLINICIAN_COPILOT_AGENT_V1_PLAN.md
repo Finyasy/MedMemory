@@ -250,6 +250,7 @@ Operational references:
 
 - `/Users/bryan.bosire/anaconda_projects/MedMemory/docs/DEMO_CHECKLIST.md`
 - `/Users/bryan.bosire/anaconda_projects/MedMemory/docs/LESSONS_LEARNED.md`
+- `/Users/bryan.bosire/anaconda_projects/MedMemory/docs/PRODUCTION_READINESS_PLAN_MAR_2026.md`
 
 ## Assumptions
 

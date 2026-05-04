@@ -84,10 +84,26 @@ def test_build_suggestions_surfaces_lab_and_sync_attention():
 
 @pytest.mark.anyio
 async def test_create_clinician_agent_run_endpoint_returns_service_payload(monkeypatch):
+    audit_calls: list[dict[str, object]] = []
+    metric_calls: list[tuple[str, str]] = []
+
+    async def _record_access_audit(_db, **kwargs):
+        audit_calls.append(kwargs)
+
     async def _allow_access(**_kwargs):
         return SimpleNamespace(id=5, user_id=5)
 
     monkeypatch.setattr(clinician_api, "get_authorized_patient", _allow_access)
+    monkeypatch.setattr(clinician_api, "record_access_audit", _record_access_audit)
+    monkeypatch.setattr(
+        clinician_api,
+        "ObservabilityRegistry",
+        SimpleNamespace(
+            get_instance=lambda: SimpleNamespace(
+                record_copilot_run=lambda *, template, status: metric_calls.append((template, status))
+            )
+        ),
+    )
 
     expected = ClinicianAgentRunResponse(
         id=1,
@@ -133,6 +149,19 @@ async def test_create_clinician_agent_run_endpoint_returns_service_payload(monke
     )
 
     assert response == expected
+    assert metric_calls == [("chart_review", "completed")]
+    assert audit_calls == [
+        {
+            "actor_user_id": 9,
+            "patient_id": 5,
+            "action": "create_copilot_run",
+            "metadata": {
+                "run_id": 1,
+                "template": "chart_review",
+                "status": "completed",
+            },
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -166,12 +195,17 @@ async def test_get_clinician_agent_run_endpoint_maps_missing_to_404(monkeypatch)
 @pytest.mark.anyio
 async def test_get_clinician_agent_run_endpoint_rechecks_patient_access(monkeypatch):
     calls: list[tuple[int, int, str | None]] = []
+    audit_calls: list[dict[str, object]] = []
+
+    async def _record_access_audit(_db, **kwargs):
+        audit_calls.append(kwargs)
 
     async def _allow_access(*, patient_id, db, current_user, scope=None):
         calls.append((patient_id, current_user.id, scope))
         return SimpleNamespace(id=patient_id, user_id=patient_id)
 
     monkeypatch.setattr(clinician_api, "get_authorized_patient", _allow_access)
+    monkeypatch.setattr(clinician_api, "record_access_audit", _record_access_audit)
 
     expected = ClinicianAgentRunResponse(
         id=11,
@@ -211,6 +245,18 @@ async def test_get_clinician_agent_run_endpoint_rechecks_patient_access(monkeypa
 
     assert response == expected
     assert calls == [(5, 9, "chat")]
+    assert audit_calls == [
+        {
+            "actor_user_id": 9,
+            "patient_id": 5,
+            "action": "view_copilot_run",
+            "metadata": {
+                "run_id": 11,
+                "template": "chart_review",
+                "status": "completed",
+            },
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -246,10 +292,16 @@ async def test_get_clinician_agent_run_endpoint_blocks_revoked_access(monkeypatc
 
 @pytest.mark.anyio
 async def test_list_clinician_agent_runs_endpoint_returns_summaries(monkeypatch):
+    audit_calls: list[dict[str, object]] = []
+
+    async def _record_access_audit(_db, **kwargs):
+        audit_calls.append(kwargs)
+
     async def _allow_access(**_kwargs):
         return SimpleNamespace(id=5, user_id=5)
 
     monkeypatch.setattr(clinician_api, "get_authorized_patient", _allow_access)
+    monkeypatch.setattr(clinician_api, "record_access_audit", _record_access_audit)
 
     expected = [
         ClinicianAgentRunSummaryResponse(
@@ -284,3 +336,14 @@ async def test_list_clinician_agent_runs_endpoint_returns_summaries(monkeypatch)
     )
 
     assert response == expected
+    assert audit_calls == [
+        {
+            "actor_user_id": 9,
+            "patient_id": 5,
+            "action": "list_copilot_runs",
+            "metadata": {
+                "limit": 10,
+                "returned_count": 1,
+            },
+        }
+    ]
