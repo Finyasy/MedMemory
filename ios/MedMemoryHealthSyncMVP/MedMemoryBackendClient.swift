@@ -86,6 +86,151 @@ final class MedMemoryBackendClient {
         )
     }
 
+    func fetchFullProfile(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil
+    ) async throws -> FullPatientProfileDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        return try await fetch(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))]
+        )
+    }
+
+    func updateBasicProfile(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: BasicProfileUpdatePayload
+    ) async throws -> FullPatientProfileDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "basic"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "PUT",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
+    func addEmergencyContact(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: EmergencyContactCreatePayload
+    ) async throws -> EmergencyContactDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "emergency-contacts"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "POST",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
+    func deleteEmergencyContact(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        contactID: Int
+    ) async throws {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "emergency-contacts", String(contactID)],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "DELETE"
+        )
+        try await performEmpty(request)
+    }
+
+    func addAllergy(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: AllergyCreatePayload
+    ) async throws -> AllergyDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "allergies"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "POST",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
+    func deleteAllergy(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        allergyID: Int
+    ) async throws {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "allergies", String(allergyID)],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "DELETE"
+        )
+        try await performEmpty(request)
+    }
+
+    func addCondition(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: ConditionCreatePayload
+    ) async throws -> ConditionDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "conditions"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "POST",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
+    func deleteCondition(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        conditionID: Int
+    ) async throws {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "conditions", String(conditionID)],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "DELETE"
+        )
+        try await performEmpty(request)
+    }
+
     func syncDailySteps(
         config: SyncConfig,
         samples: [DailyStepSample],
@@ -314,6 +459,17 @@ final class MedMemoryBackendClient {
             return try decoder.decode(T.self, from: data)
         } catch {
             throw HealthSyncError.decodingError(error.localizedDescription)
+        }
+    }
+
+    private func performEmpty(_ request: URLRequest) async throws {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw HealthSyncError.invalidConfig("Invalid backend response.")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw HealthSyncError.httpError(http.statusCode, message)
         }
     }
 

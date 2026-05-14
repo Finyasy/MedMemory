@@ -21,6 +21,12 @@ final class HealthSyncViewModel: ObservableObject {
     @Published var isLoadingPatientData = false
     @Published var patientDataError: String?
     @Published var profileSummary: PatientProfileSummaryDTO?
+    @Published var fullProfile: FullPatientProfileDTO?
+    @Published var isLoadingFullProfile = false
+    @Published var profileError: String?
+    @Published var profileStatusMessage: String?
+    @Published var isSavingProfile = false
+    @Published var isMutatingProfileCollection = false
     @Published var dashboardHighlights: DashboardHighlightsResponseDTO?
     @Published var recentRecords: [MedicalRecordDTO] = []
     @Published var recentDocuments: [DocumentItemDTO] = []
@@ -209,8 +215,178 @@ final class HealthSyncViewModel: ObservableObject {
             appleHealthStatus = snapshot.appleHealthStatus
             appleHealthTrend = snapshot.appleHealthTrend
             hasLoadedPatientData = true
+            await loadFullProfile(force: true)
         } catch {
             patientDataError = error.localizedDescription
+        }
+    }
+
+    func loadFullProfile(force: Bool = false) async {
+        if isLoadingFullProfile { return }
+        if fullProfile != nil && !force { return }
+
+        isLoadingFullProfile = true
+        profileError = nil
+        persistConfig()
+        defer { isLoadingFullProfile = false }
+
+        do {
+            fullProfile = try await runWithAutoRefresh {
+                try await backendClient.fetchFullProfile(
+                    config: self.effectiveConfig,
+                    accessTokenOverride: self.effectiveAccessToken
+                )
+            }
+        } catch {
+            profileError = error.localizedDescription
+        }
+    }
+
+    func saveBasicProfile(
+        firstName: String,
+        lastName: String,
+        dateOfBirth: String,
+        sex: String,
+        bloodType: String,
+        heightCM: String,
+        weightKG: String,
+        phone: String,
+        email: String,
+        address: String,
+        preferredLanguage: String
+    ) async {
+        isSavingProfile = true
+        profileError = nil
+        profileStatusMessage = nil
+        defer { isSavingProfile = false }
+
+        let payload = BasicProfileUpdatePayload(
+            first_name: nilIfBlank(firstName),
+            last_name: nilIfBlank(lastName),
+            date_of_birth: nilIfBlank(dateOfBirth),
+            sex: nilIfBlank(sex),
+            blood_type: nilIfBlank(bloodType),
+            height_cm: Double(heightCM.trimmingCharacters(in: .whitespacesAndNewlines)),
+            weight_kg: Double(weightKG.trimmingCharacters(in: .whitespacesAndNewlines)),
+            phone: nilIfBlank(phone),
+            email: nilIfBlank(email),
+            address: nilIfBlank(address),
+            preferred_language: nilIfBlank(preferredLanguage),
+            timezone: TimeZone.current.identifier
+        )
+
+        do {
+            fullProfile = try await runWithAutoRefresh {
+                try await backendClient.updateBasicProfile(
+                    config: self.effectiveConfig,
+                    accessTokenOverride: self.effectiveAccessToken,
+                    payload: payload
+                )
+            }
+            if let profile = fullProfile {
+                profileSummary = PatientProfileSummaryDTO(
+                    id: profile.id,
+                    full_name: profile.full_name,
+                    age: profile.age,
+                    date_of_birth: profile.date_of_birth
+                )
+            }
+            profileStatusMessage = "Profile updated."
+        } catch {
+            profileError = error.localizedDescription
+        }
+    }
+
+    func addEmergencyContact(
+        name: String,
+        relationship: String,
+        phone: String,
+        email: String,
+        isPrimary: Bool
+    ) async {
+        let payload = EmergencyContactCreatePayload(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            relationship: relationship.trimmingCharacters(in: .whitespacesAndNewlines),
+            phone: phone.trimmingCharacters(in: .whitespacesAndNewlines),
+            email: nilIfBlank(email),
+            is_primary: isPrimary
+        )
+        await mutateProfileCollection(successMessage: "Emergency contact added.") {
+            _ = try await self.backendClient.addEmergencyContact(
+                config: self.effectiveConfig,
+                accessTokenOverride: self.effectiveAccessToken,
+                payload: payload
+            )
+        }
+    }
+
+    func deleteEmergencyContact(_ contact: EmergencyContactDTO) async {
+        await mutateProfileCollection(successMessage: "Emergency contact removed.") {
+            try await self.backendClient.deleteEmergencyContact(
+                config: self.effectiveConfig,
+                accessTokenOverride: self.effectiveAccessToken,
+                contactID: contact.id
+            )
+        }
+    }
+
+    func addAllergy(
+        allergen: String,
+        allergyType: String,
+        severity: String,
+        reaction: String
+    ) async {
+        let payload = AllergyCreatePayload(
+            allergen: allergen.trimmingCharacters(in: .whitespacesAndNewlines),
+            allergy_type: allergyType,
+            severity: severity,
+            reaction: nilIfBlank(reaction)
+        )
+        await mutateProfileCollection(successMessage: "Allergy added.") {
+            _ = try await self.backendClient.addAllergy(
+                config: self.effectiveConfig,
+                accessTokenOverride: self.effectiveAccessToken,
+                payload: payload
+            )
+        }
+    }
+
+    func deleteAllergy(_ allergy: AllergyDTO) async {
+        await mutateProfileCollection(successMessage: "Allergy removed.") {
+            try await self.backendClient.deleteAllergy(
+                config: self.effectiveConfig,
+                accessTokenOverride: self.effectiveAccessToken,
+                allergyID: allergy.id
+            )
+        }
+    }
+
+    func addCondition(
+        name: String,
+        status: String,
+        diagnosedDate: String
+    ) async {
+        let payload = ConditionCreatePayload(
+            condition_name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            status: status,
+            diagnosed_date: nilIfBlank(diagnosedDate)
+        )
+        await mutateProfileCollection(successMessage: "Condition added.") {
+            _ = try await self.backendClient.addCondition(
+                config: self.effectiveConfig,
+                accessTokenOverride: self.effectiveAccessToken,
+                payload: payload
+            )
+        }
+    }
+
+    func deleteCondition(_ condition: ConditionDTO) async {
+        await mutateProfileCollection(successMessage: "Condition removed.") {
+            try await self.backendClient.deleteCondition(
+                config: self.effectiveConfig,
+                accessTokenOverride: self.effectiveAccessToken,
+                conditionID: condition.id
+            )
         }
     }
 
@@ -407,6 +583,24 @@ final class HealthSyncViewModel: ObservableObject {
         defaults.set(response.scopes, forKey: mobileTokenScopesKey)
     }
 
+    private func mutateProfileCollection(
+        successMessage: String,
+        operation: () async throws -> Void
+    ) async {
+        isMutatingProfileCollection = true
+        profileError = nil
+        profileStatusMessage = nil
+        defer { isMutatingProfileCollection = false }
+
+        do {
+            try await runWithAutoRefresh(operation)
+            profileStatusMessage = successMessage
+            await loadFullProfile(force: true)
+        } catch {
+            profileError = error.localizedDescription
+        }
+    }
+
     private func sanitizedToken(_ rawValue: String) -> String {
         var token = rawValue.filter { !$0.isWhitespace && !$0.isNewline }
         if token.hasPrefix("\""), token.hasSuffix("\""), token.count >= 2 {
@@ -414,5 +608,10 @@ final class HealthSyncViewModel: ObservableObject {
             token.removeLast()
         }
         return token
+    }
+
+    private func nilIfBlank(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

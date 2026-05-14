@@ -21,6 +21,11 @@ struct ContentView: View {
                         Label("Workspace", systemImage: "folder.fill")
                     }
 
+                PatientProfileView(viewModel: viewModel)
+                    .tabItem {
+                        Label("Profile", systemImage: "person.crop.circle.fill")
+                    }
+
                 SyncSettingsView(viewModel: viewModel)
                     .tabItem {
                         Label("Sync", systemImage: "heart.text.square.fill")
