@@ -1054,43 +1054,24 @@ export default function ClinicianDashboardPage() {
         </div>
       </header>
 
-      <section className="clinician-overview-strip" aria-label="Clinician dashboard overview">
-        <article className="clinician-overview-card" data-metric="active">
-          <span className="clinician-overview-label">Active links</span>
-          <strong className="clinician-overview-value">{activePatientCount}</strong>
-          <span className="clinician-overview-note">
-            {activePatientCount === 0 ? 'No approved patients yet' : 'Ready to open workspace'}
+      <section className="clinician-command-strip" aria-label="Clinician workspace command center">
+        <div className="clinician-task-focus">
+          <span className="clinician-task-kicker">Active clinical task</span>
+          <strong>{selectedPatientName || actionStripHeadline}</strong>
+          <span>
+            {selectedPatientId === null ? actionStripDetail : `Patient ID ${selectedPatientId} is open for chart review and cited chat.`}
           </span>
-        </article>
-        <article className="clinician-overview-card" data-metric="pending">
-          <span className="clinician-overview-label">Pending approvals</span>
-          <strong className="clinician-overview-value">{pendingPatientCount}</strong>
-          <span className="clinician-overview-note">
-            {pendingPatientCount === 0 ? 'Queue is clear' : 'Waiting on patient approval'}
+        </div>
+        <div className="clinician-command-metrics" aria-label="Clinician dashboard overview">
+          <span className="clinician-command-metric" data-tone="active">
+            <strong>{activePatientCount}</strong> active
           </span>
-        </article>
-        <article className="clinician-overview-card" data-metric="uploads">
-          <span className="clinician-overview-label">Uploads</span>
-          <strong className="clinician-overview-value">{uploads.length}</strong>
-          <span className="clinician-overview-note">
-            {uploads.length === 0 ? 'No documents received yet' : 'Recent files available'}
+          <span className="clinician-command-metric" data-tone="pending">
+            <strong>{pendingPatientCount}</strong> pending
           </span>
-        </article>
-        <article className="clinician-overview-card" data-metric="current">
-          <span className="clinician-overview-label">Current patient</span>
-          <strong className="clinician-overview-value">
-            {selectedPatientName || 'None selected'}
-          </strong>
-          <span className="clinician-overview-note">
-            {selectedPatientId === null ? 'Select from linked patients' : `Patient ID ${selectedPatientId}`}
+          <span className="clinician-command-metric" data-tone="uploads">
+            <strong>{uploads.length}</strong> uploads
           </span>
-        </article>
-      </section>
-
-      <section className="clinician-action-strip" aria-label="Clinician quick actions">
-        <div className="clinician-action-summary">
-          <strong>{actionStripHeadline}</strong>
-          <span>{actionStripDetail}</span>
         </div>
         <div className="clinician-action-toolbar">
           <div className="clinician-action-buttons clinician-action-buttons-secondary">

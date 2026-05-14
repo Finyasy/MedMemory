@@ -19,6 +19,7 @@ This must pass:
 
 ### Environment checks
 
+- Node.js 22.x is active for frontend commands, or `frontend/.nvmrc` resolves through the demo gate
 - backend is running on `http://localhost:8000`, or pass `--backend-url`
 - if `localhost` resolves incorrectly on this machine, use `--backend-url http://127.0.0.1:8000`
 - frontend is running on `http://localhost:5173`, or pass `--frontend-url`
