@@ -8,7 +8,14 @@ struct PatientDashboardView: View {
         let trackedMetrics = viewModel.dashboardHighlights?.summary.tracked_metrics ?? 0
         let syncedDays = viewModel.appleHealthStatus?.total_synced_days ?? 0
         let latestSteps = viewModel.appleHealthTrend?.latest_step_count ?? 0
+        let completion = viewModel.fullProfile?.profile_completion?.overall_percentage
         return [
+            DashboardSummaryCard(
+                title: "Profile",
+                value: completion.map { "\($0)%" } ?? "0%",
+                note: completion == nil ? "Connect profile data" : "Completion improves grounded answers",
+                symbolName: "person.crop.circle"
+            ),
             DashboardSummaryCard(
                 title: "Records",
                 value: "\(viewModel.recentRecords.count)",

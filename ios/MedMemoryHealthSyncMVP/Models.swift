@@ -101,6 +101,143 @@ struct PatientProfileSummaryDTO: Decodable {
     let date_of_birth: String?
 }
 
+struct ProfileCompletionDTO: Decodable {
+    let overall_percentage: Int
+}
+
+struct EmergencyContactDTO: Decodable, Identifiable {
+    let id: Int
+    let patient_id: Int
+    let name: String
+    let relationship: String
+    let phone: String
+    let email: String?
+    let is_primary: Bool
+}
+
+struct AllergyDTO: Decodable, Identifiable {
+    let id: Int
+    let patient_id: Int
+    let allergen: String
+    let allergy_type: String
+    let severity: String
+    let reaction: String?
+    let diagnosed_date: String?
+    let notes: String?
+}
+
+struct ConditionDTO: Decodable, Identifiable {
+    let id: Int
+    let patient_id: Int
+    let condition_name: String
+    let icd_code: String?
+    let diagnosed_date: String?
+    let status: String
+    let severity: String?
+    let treating_physician: String?
+    let notes: String?
+}
+
+struct FamilyHistoryDTO: Decodable, Identifiable {
+    let id: Int
+    let patient_id: Int
+    let relation: String
+    let condition: String
+    let age_of_onset: Int?
+    let is_deceased: Bool
+    let notes: String?
+}
+
+struct ProviderDTO: Decodable, Identifiable {
+    let id: Int
+    let patient_id: Int
+    let provider_type: String
+    let specialty: String?
+    let name: String
+    let clinic_name: String?
+    let phone: String?
+    let email: String?
+    let address: String?
+    let is_primary: Bool
+    let notes: String?
+}
+
+struct LifestyleDTO: Decodable {
+    let id: Int
+    let patient_id: Int
+    let smoking_status: String?
+    let smoking_frequency: String?
+    let alcohol_use: String?
+    let exercise_frequency: String?
+    let diet_type: String?
+    let sleep_hours: Double?
+    let occupation: String?
+    let stress_level: String?
+}
+
+struct FullPatientProfileDTO: Decodable {
+    let id: Int
+    let first_name: String
+    let last_name: String
+    let full_name: String
+    let date_of_birth: String?
+    let age: Int?
+    let sex: String?
+    let gender: String?
+    let blood_type: String?
+    let height_cm: Double?
+    let weight_kg: Double?
+    let phone: String?
+    let email: String?
+    let address: String?
+    let preferred_language: String?
+    let timezone: String?
+    let is_dependent: Bool
+    let emergency_contacts: [EmergencyContactDTO]
+    let allergies: [AllergyDTO]
+    let conditions: [ConditionDTO]
+    let providers: [ProviderDTO]
+    let lifestyle: LifestyleDTO?
+    let family_history: [FamilyHistoryDTO]
+    let profile_completion: ProfileCompletionDTO?
+}
+
+struct BasicProfileUpdatePayload: Encodable {
+    let first_name: String?
+    let last_name: String?
+    let date_of_birth: String?
+    let sex: String?
+    let blood_type: String?
+    let height_cm: Double?
+    let weight_kg: Double?
+    let phone: String?
+    let email: String?
+    let address: String?
+    let preferred_language: String?
+    let timezone: String?
+}
+
+struct EmergencyContactCreatePayload: Encodable {
+    let name: String
+    let relationship: String
+    let phone: String
+    let email: String?
+    let is_primary: Bool
+}
+
+struct AllergyCreatePayload: Encodable {
+    let allergen: String
+    let allergy_type: String
+    let severity: String
+    let reaction: String?
+}
+
+struct ConditionCreatePayload: Encodable {
+    let condition_name: String
+    let status: String
+    let diagnosed_date: String?
+}
+
 struct DashboardSummaryDTO: Decodable {
     let out_of_range: Int
     let in_range: Int
