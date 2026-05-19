@@ -17,31 +17,54 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _table_exists(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _columns(table: str) -> set[str]:
+    return {column["name"] for column in sa.inspect(op.get_bind()).get_columns(table)}
+
+
 def upgrade() -> None:
-    op.add_column(
-        "patient_metric_alerts",
-        sa.Column("previous_numeric_value", sa.Float(), nullable=True),
+    alert_columns = _columns("patient_metric_alerts")
+    if _table_exists("patient_connection_sync_events") and {
+        "previous_numeric_value",
+        "previous_value_text",
+        "trend_delta",
+        "alert_kind",
+        "previous_observed_at",
+    }.issubset(alert_columns):
+        return
+
+    op.execute(
+        sa.text(
+            "ALTER TABLE patient_metric_alerts ADD COLUMN IF NOT EXISTS "
+            "previous_numeric_value DOUBLE PRECISION"
+        )
     )
-    op.add_column(
-        "patient_metric_alerts",
-        sa.Column("previous_value_text", sa.String(length=100), nullable=True),
+    op.execute(
+        sa.text(
+            "ALTER TABLE patient_metric_alerts ADD COLUMN IF NOT EXISTS "
+            "previous_value_text VARCHAR(100)"
+        )
     )
-    op.add_column(
-        "patient_metric_alerts",
-        sa.Column("trend_delta", sa.Float(), nullable=True),
+    op.execute(
+        sa.text(
+            "ALTER TABLE patient_metric_alerts ADD COLUMN IF NOT EXISTS "
+            "trend_delta DOUBLE PRECISION"
+        )
     )
-    op.add_column(
-        "patient_metric_alerts",
-        sa.Column(
-            "alert_kind",
-            sa.String(length=32),
-            nullable=False,
-            server_default="threshold",
-        ),
+    op.execute(
+        sa.text(
+            "ALTER TABLE patient_metric_alerts ADD COLUMN IF NOT EXISTS "
+            "alert_kind VARCHAR(32) NOT NULL DEFAULT 'threshold'"
+        )
     )
-    op.add_column(
-        "patient_metric_alerts",
-        sa.Column("previous_observed_at", sa.DateTime(timezone=True), nullable=True),
+    op.execute(
+        sa.text(
+            "ALTER TABLE patient_metric_alerts ADD COLUMN IF NOT EXISTS "
+            "previous_observed_at TIMESTAMP WITH TIME ZONE"
+        )
     )
 
     op.create_table(

@@ -18,6 +18,7 @@ def get_record_repo(
     return SQLRecordRepository(db)
 
 
+@router.get("", response_model=list[RecordResponse], include_in_schema=False)
 @router.get("/", response_model=list[RecordResponse])
 async def list_records(
     patient_id: int | None = Query(None, description="Filter by patient ID"),
@@ -52,6 +53,7 @@ async def list_records(
     return response
 
 
+@router.post("", response_model=RecordResponse, status_code=201, include_in_schema=False)
 @router.post("/", response_model=RecordResponse, status_code=201)
 async def create_record(
     record: RecordCreate,

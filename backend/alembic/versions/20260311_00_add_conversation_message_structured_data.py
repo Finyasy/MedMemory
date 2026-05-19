@@ -18,14 +18,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "conversation_messages",
-        sa.Column(
-            "structured_data_json",
-            sa.Text(),
-            nullable=True,
-            comment="JSON object for structured context-card payloads",
-        ),
+    op.execute(
+        sa.text(
+            "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS "
+            "structured_data_json TEXT"
+        )
     )
 
 

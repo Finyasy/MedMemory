@@ -6,7 +6,6 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -15,6 +14,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import Patient, User
+from app.models.profile import (
+    EmergencyContact,
+    FamilyHistory,
+    PatientAllergy,
+    PatientCondition,
+    PatientEmergencyInfo,
+    PatientLifestyle,
+    PatientProvider,
+)
 from app.utils.cache import clear_cache
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
@@ -85,8 +93,8 @@ def async_session_maker(async_engine):
 async def clear_tables(async_engine):
     Base = _load_base()
     async with async_engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            await conn.execute(table.delete())
+        table_names = ", ".join(table.name for table in reversed(Base.metadata.sorted_tables))
+        await conn.execute(text(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE"))
     await clear_cache()
     yield
 
@@ -318,7 +326,8 @@ async def test_profile_prefers_oldest_primary_patient_when_duplicates_exist(
     assert "Multiple primary patient rows found for user_id=1" in caplog.text
 
 
-def test_calculate_profile_completion_marks_completed_sections():
+@pytest.mark.anyio
+async def test_calculate_profile_completion_marks_completed_sections():
     profile_module = _load_module("medmemory_profile_helpers", API_DIR / "profile.py")
     patient = Patient(
         id=99,
@@ -332,13 +341,34 @@ def test_calculate_profile_completion_marks_completed_sections():
         weight_kg=62,
         is_dependent=False,
     )
-    patient.emergency_info = object()
-    patient.emergency_contacts = [object()]
-    patient.allergies_list = [object()]
-    patient.conditions_list = [object()]
-    patient.family_history_list = [object()]
-    patient.providers = [object()]
-    patient.lifestyle = SimpleNamespace(
+    patient.emergency_info = PatientEmergencyInfo(patient_id=99)
+    patient.emergency_contacts = [
+        EmergencyContact(
+            patient_id=99,
+            name="Jane Doe",
+            contact_relationship="spouse",
+            phone="555-0101",
+        )
+    ]
+    patient.allergies_list = [
+        PatientAllergy(
+            patient_id=99,
+            allergen="Peanuts",
+            allergy_type="food",
+            severity="severe",
+        )
+    ]
+    patient.conditions_list = [
+        PatientCondition(patient_id=99, condition_name="Asthma", status="active")
+    ]
+    patient.family_history_list = [
+        FamilyHistory(patient_id=99, relation="mother", condition="Diabetes")
+    ]
+    patient.providers = [
+        PatientProvider(patient_id=99, provider_type="pcp", name="Dr. Maina")
+    ]
+    patient.lifestyle = PatientLifestyle(
+        patient_id=99,
         smoking_status="never",
         alcohol_use="never",
         exercise_frequency="active",

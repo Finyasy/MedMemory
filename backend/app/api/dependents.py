@@ -242,8 +242,7 @@ async def remove_dependent(
     if not rel:
         raise HTTPException(status_code=404, detail="Dependent not found")
 
-    # Note: db.delete() is synchronous in SQLAlchemy, commit handled by middleware
-    db.delete(rel)
+    await db.delete(rel)
 
 
 @router.get("/family/overview", response_model=FamilyOverviewResponse)

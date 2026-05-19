@@ -72,7 +72,7 @@ class FakeAsyncSession:
             self._next_id += 1
         self.added.append(obj)
 
-    def delete(self, obj):
+    async def delete(self, obj):
         self.deleted.append(obj)
 
     async def flush(self):

@@ -17,7 +17,21 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _table_exists(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
 def upgrade() -> None:
+    if all(
+        _table_exists(table_name)
+        for table_name in (
+            "clinician_agent_runs",
+            "clinician_agent_steps",
+            "clinician_agent_suggestions",
+        )
+    ):
+        return
+
     op.create_table(
         "clinician_agent_runs",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
