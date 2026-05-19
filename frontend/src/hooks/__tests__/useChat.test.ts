@@ -123,6 +123,52 @@ describe('useChat', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it('routes clinician record checks through the structured path', async () => {
+    chatAsk.mockResolvedValue({
+      answer: 'Found record details.',
+      conversation_id: 'conv-clinician-records',
+      structured_data: {
+        findings: ['Blood Group: O'],
+        questions: ['No vital signs listed in this section.'],
+      },
+      sources: [{ source_type: 'document', source_id: 20, relevance: 0.55 }],
+      num_sources: 1,
+      input_mode: 'text',
+      response_mode: 'text',
+      output_language: 'en',
+    });
+
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useChat({ patientId: 1, onError, language: 'en', clinicianMode: true }),
+    );
+
+    await act(async () => {
+      result.current.setQuestion('check patient records');
+    });
+
+    await act(async () => {
+      await result.current.send();
+    });
+
+    expect(chatAsk).toHaveBeenCalledWith(
+      1,
+      'check patient records',
+      expect.objectContaining({
+        structured: true,
+        clinicianMode: true,
+        use_conversation_history: false,
+      }),
+    );
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(result.current.messages.at(-1)?.structured_data).toEqual(
+      expect.objectContaining({
+        findings: ['Blood Group: O'],
+      }),
+    );
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('rehydrates the last stored conversation with structured cards on mount', async () => {
     window.localStorage.setItem('medmemory:conversation:patient:1', 'conv-existing');
     getConversation.mockResolvedValue({

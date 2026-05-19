@@ -96,6 +96,57 @@ it('renders Apple Health structured summary cards for assistant messages', () =>
   expect(screen.getByText('apple_health#107')).toBeInTheDocument();
 });
 
+it('renders clinician findings and record gaps from fenced JSON without duplicate source chips', () => {
+  render(
+    <ChatInterface
+      messages={[
+        {
+          role: 'assistant',
+          content: `\`\`\`json
+{
+  "findings": [
+    "Blood Group: O",
+    "Urineysis: Yellow (Clear)",
+    "TB Screening: Positive"
+  ],
+  "questions": [
+    "No vital signs listed in this section.",
+    "No diagnoses or conditions listed in this section.",
+    "No vital signs listed in this section."
+  ],
+}
+\`\`\`
+\`\`\`json
+Grounded
+Sources (2)
+document #20 55%
+document #20 53%
+\`\`\``,
+          sources: [
+            { source_type: 'document', source_id: 20, relevance: 0.55 },
+            { source_type: 'document', source_id: 20, relevance: 0.53 },
+          ],
+          num_sources: 2,
+        },
+      ]}
+      question=""
+      isStreaming={false}
+      onQuestionChange={vi.fn()}
+      onSend={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByText('Findings')).toBeInTheDocument();
+  expect(screen.getByText('Blood Group: O')).toBeInTheDocument();
+  expect(screen.getByText('TB Screening: Positive')).toBeInTheDocument();
+  expect(screen.getByText('Record Gaps')).toBeInTheDocument();
+  expect(screen.getAllByText('No vital signs listed in this section.')).toHaveLength(1);
+  expect(screen.getByText('Sources (1)')).toBeInTheDocument();
+  expect(screen.getByText('document #20 55%')).toBeInTheDocument();
+  expect(screen.queryByText('document #20 53%')).not.toBeInTheDocument();
+  expect(screen.queryByText(/"findings"/i)).not.toBeInTheDocument();
+});
+
 it('shows language controls and plays an assistant reply aloud', async () => {
   const user = userEvent.setup();
 

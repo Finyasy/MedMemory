@@ -165,7 +165,9 @@ const useChat = ({
       !clinicianMode && resolvedLanguage === 'sw' && speechOutputEnabled ? 'both' : 'text';
     const isSummaryPrompt = /most recent document|latest document|summarize|summary|overview|findings/i.test(prompt);
     const isCoachingPrompt = /how(?:'s|\s+is)\s+my|what changed|trend|reviewed .* levels|explain .* level|is this improving|apple health|daily steps|step count|steps?\s+(?:over|across|during|for|from|last|past)|activity\s+trend/i.test(prompt);
-    const useStructuredPath = isSummaryPrompt || isCoachingPrompt;
+    const isClinicianRecordReviewPrompt = /patient records?|medical records?|check .*records?|review .*records?|chart review|patient chart|document review|labs?|screening/i.test(prompt);
+    const useStructuredPath =
+      isSummaryPrompt || isCoachingPrompt || (Boolean(clinicianMode) && isClinicianRecordReviewPrompt);
     setQuestion('');
     setMessages((prev) => [
       ...prev,

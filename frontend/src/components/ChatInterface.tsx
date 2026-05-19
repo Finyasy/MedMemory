@@ -86,6 +86,25 @@ const formatSourceLabel = (source: ChatSource) => {
   return `${base} #${source.source_id}`;
 };
 
+const dedupeSources = (sources: ChatSource[] | undefined): ChatSource[] => {
+  if (!sources || sources.length === 0) return [];
+  const byKey = new Map<string, ChatSource>();
+
+  sources.forEach((source, index) => {
+    const key = `${source.source_type ?? 'source'}:${source.source_id ?? index}`;
+    const existing = byKey.get(key);
+    if (
+      !existing ||
+      (Number.isFinite(source.relevance) &&
+        (!Number.isFinite(existing.relevance) || source.relevance > existing.relevance))
+    ) {
+      byKey.set(key, source);
+    }
+  });
+
+  return Array.from(byKey.values());
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -100,6 +119,68 @@ const toStringList = (value: unknown): string[] => {
   return value
     .map((item) => toText(item))
     .filter((item): item is string => Boolean(item));
+};
+
+const uniqueStringList = (items: string[]): string[] => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const parseStructuredJsonBlock = (rawJson: string): Record<string, unknown> | null => {
+  const normalizedJson = rawJson
+    .trim()
+    .replace(/,\s*([}\]])/g, '$1');
+  try {
+    const parsed = JSON.parse(normalizedJson);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const hasRenderableStructuredData = (value: Record<string, unknown>) =>
+  Boolean(
+    toText(value.overview) ||
+      toStringList(value.findings).length > 0 ||
+      toStringList(value.questions).length > 0 ||
+      toStringList(value.follow_ups).length > 0 ||
+      toStringList(value.concerns).length > 0 ||
+      toStringList(value.what_changed).length > 0 ||
+      toStringList(value.why_it_matters).length > 0 ||
+      toStringList(value.suggested_next_discussion_points).length > 0 ||
+      Array.isArray(value.key_results) ||
+      Array.isArray(value.medications) ||
+      isRecord(value.vital_signs),
+  );
+
+const extractStructuredDataFromContent = (content: string): Record<string, unknown> | null => {
+  const matches = Array.from(content.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi));
+  for (const match of matches) {
+    const parsed = parseStructuredJsonBlock(match[1] ?? '');
+    if (parsed && hasRenderableStructuredData(parsed)) return parsed;
+  }
+  return null;
+};
+
+const cleanAssistantContent = (
+  content: string,
+  parsedStructuredData: Record<string, unknown> | null,
+) => {
+  if (!parsedStructuredData) return content;
+
+  return content
+    .replace(/```(?:json)?\s*([\s\S]*?)```/gi, (block, body) => {
+      const parsed = parseStructuredJsonBlock(body);
+      if (parsed && hasRenderableStructuredData(parsed)) return '';
+      if (/Grounded|Sources\s*\(/i.test(body)) return '';
+      return block;
+    })
+    .trim();
 };
 
 const toSectionSources = (value: unknown): Record<string, string[]> => {
@@ -200,6 +281,8 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
     : [];
   const followUps = toStringList(structuredData.follow_ups);
   const concerns = toStringList(structuredData.concerns);
+  const findings = uniqueStringList(toStringList(structuredData.findings));
+  const questions = uniqueStringList(toStringList(structuredData.questions));
   const whatChanged = toStringList(structuredData.what_changed);
   const whyItMatters = toStringList(structuredData.why_it_matters);
   const suggestedNext = toStringList(structuredData.suggested_next_discussion_points);
@@ -221,7 +304,8 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
 
   if (!overview && keyResults.length === 0 && medications.length === 0
     && vitalSigns.length === 0 && followUps.length === 0 && concerns.length === 0
-    && whatChanged.length === 0 && whyItMatters.length === 0 && suggestedNext.length === 0) {
+    && findings.length === 0 && questions.length === 0 && whatChanged.length === 0
+    && whyItMatters.length === 0 && suggestedNext.length === 0) {
     return null;
   }
 
@@ -244,6 +328,18 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
             ))}
           </ul>
           {renderSectionSources('key_results')}
+        </div>
+      ) : null}
+
+      {findings.length > 0 ? (
+        <div className="message-structured-section">
+          <span className="message-structured-heading">Findings</span>
+          <ul className="message-structured-list">
+            {findings.slice(0, 8).map((item, idx) => (
+              <li key={`finding-${idx}`}>{item}</li>
+            ))}
+          </ul>
+          {renderSectionSources('findings')}
         </div>
       ) : null}
 
@@ -292,6 +388,18 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
             ))}
           </ul>
           {renderSectionSources('concerns')}
+        </div>
+      ) : null}
+
+      {questions.length > 0 ? (
+        <div className="message-structured-section">
+          <span className="message-structured-heading">Record Gaps</span>
+          <ul className="message-structured-list">
+            {questions.slice(0, 6).map((item, idx) => (
+              <li key={`question-${idx}`}>{item}</li>
+            ))}
+          </ul>
+          {renderSectionSources('questions')}
         </div>
       ) : null}
 
@@ -736,7 +844,25 @@ const ChatInterface = ({
             </div>
           ) : (
             messages.map((message, index) => {
-              const guardrailBadges = buildGuardrailBadges(message);
+              const parsedStructuredData =
+                message.role === 'assistant' && message.content
+                  ? extractStructuredDataFromContent(message.content)
+                  : null;
+              const displayStructuredData = isRecord(message.structured_data)
+                ? message.structured_data
+                : parsedStructuredData;
+              const displayContent =
+                message.role === 'assistant'
+                  ? cleanAssistantContent(message.content, parsedStructuredData)
+                  : message.content;
+              const displaySources =
+                message.role === 'assistant' ? dedupeSources(message.sources) : [];
+              const guardrailBadges = buildGuardrailBadges({
+                ...message,
+                content: displayContent,
+                sources: displaySources,
+                structured_data: displayStructuredData,
+              });
               const messageLanguage = normalizePatientLanguage(message.output_language ?? resolvedLanguage);
               const generatedAudio = getGeneratedReplyAudio(index);
               const effectiveAudioAssetId = message.audio_asset_id ?? generatedAudio?.audio_asset_id ?? null;
@@ -760,7 +886,7 @@ const ChatInterface = ({
                     )}
                   </div>
                   <div className="message-content">
-                    {message.role === 'assistant' && replyAudioEnabled && message.content ? (
+                    {message.role === 'assistant' && replyAudioEnabled && displayContent ? (
                       <div className="message-toolbar">
                         <button
                           type="button"
@@ -790,9 +916,9 @@ const ChatInterface = ({
                       </div>
                     ) : null}
                     <div className="message-text">
-                      {message.role === 'assistant' && message.content ? (
-                        <FormattedMessage content={message.content} />
-                      ) : message.content || (isStreaming && message.role === 'assistant' && index === messages.length - 1 ? (
+                      {message.role === 'assistant' && displayContent ? (
+                        <FormattedMessage content={displayContent} />
+                      ) : displayContent || (isStreaming && message.role === 'assistant' && index === messages.length - 1 ? (
                         <span className="streaming-indicator">
                           <span></span>
                           <span></span>
@@ -812,13 +938,13 @@ const ChatInterface = ({
                         ))}
                       </div>
                     ) : null}
-                    {message.role === 'assistant' && message.sources && message.sources.length > 0 ? (
+                    {message.role === 'assistant' && displaySources.length > 0 ? (
                       <div className="message-sources">
                         <span className="message-sources-label">
-                          {strings.sourcesLabel} {typeof message.num_sources === 'number' ? `(${message.num_sources})` : ''}
+                          {strings.sourcesLabel} ({displaySources.length})
                         </span>
                         <div className="message-source-list">
-                          {message.sources.slice(0, 5).map((source, sourceIndex) => (
+                          {displaySources.slice(0, 5).map((source, sourceIndex) => (
                             <span className="message-source-chip" key={`${formatSourceLabel(source)}-${sourceIndex}`}>
                               {formatSourceLabel(source)}
                               {Number.isFinite(source.relevance)
@@ -829,8 +955,8 @@ const ChatInterface = ({
                         </div>
                       </div>
                     ) : null}
-                    {message.role === 'assistant' && isRecord(message.structured_data) ? (
-                      <StructuredDataView structuredData={message.structured_data} />
+                    {message.role === 'assistant' && displayStructuredData ? (
+                      <StructuredDataView structuredData={displayStructuredData} />
                     ) : null}
                   </div>
                 </div>
