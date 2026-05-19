@@ -69,6 +69,7 @@ export default function ClinicianCopilotPanel({
   const [history, setHistory] = useState<ClinicianAgentRunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<ClinicianAgentRun | null>(null);
   const [activeView, setActiveView] = useState<CopilotViewKey>('latest');
+  const [isPromptOpen, setIsPromptOpen] = useState(false);
 
   const selectedTemplateConfig = useMemo(
     () => TEMPLATE_OPTIONS.find((item) => item.key === selectedTemplate) ?? TEMPLATE_OPTIONS[0],
@@ -173,44 +174,54 @@ export default function ClinicianCopilotPanel({
         <span className="clinician-copilot-badge">{patientName}</span>
       </div>
 
-      <div className="clinician-copilot-template-grid">
-        {TEMPLATE_OPTIONS.map((option) => (
-          <button
-            key={option.key}
-            type="button"
-            className={`clinician-copilot-template ${selectedTemplate === option.key ? 'active' : ''}`}
-            onClick={() => setSelectedTemplate(option.key)}
-          >
-            <strong>{option.label}</strong>
-            <span>{option.description}</span>
-          </button>
-        ))}
-      </div>
-
-      <label className="clinician-copilot-input-label">
-        Scoped prompt
-        <textarea
-          className="clinician-copilot-textarea"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          rows={3}
-          placeholder={selectedTemplateConfig.prompt}
-        />
-      </label>
-
-      <div className="clinician-copilot-actions">
+      <div className="clinician-copilot-runbar">
+        <div className="clinician-copilot-template-grid" role="group" aria-label="Copilot workflow templates">
+          {TEMPLATE_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={`clinician-copilot-template ${selectedTemplate === option.key ? 'active' : ''}`}
+              onClick={() => setSelectedTemplate(option.key)}
+              aria-pressed={selectedTemplate === option.key}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
-          className="primary-button"
+          className="primary-button clinician-copilot-run-button"
           onClick={handleRun}
           disabled={isSubmitting || prompt.trim().length < 3}
         >
           {isSubmitting ? 'Running…' : `Run ${selectedTemplateConfig.label}`}
         </button>
-        <span className="clinician-copilot-hint">
-          Fixed tools only. Results are persisted with a step trace and citations.
-        </span>
       </div>
+
+      <div className="clinician-copilot-prompt-summary">
+        <span>{selectedTemplateConfig.description}</span>
+        <button
+          type="button"
+          className="ghost-button compact clinician-copilot-edit-prompt"
+          aria-expanded={isPromptOpen}
+          onClick={() => setIsPromptOpen((open) => !open)}
+        >
+          {isPromptOpen ? 'Hide prompt' : 'Edit prompt'}
+        </button>
+      </div>
+
+      {isPromptOpen && (
+        <label className="clinician-copilot-input-label">
+          Scoped prompt
+          <textarea
+            className="clinician-copilot-textarea"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            rows={3}
+            placeholder={selectedTemplateConfig.prompt}
+          />
+        </label>
+      )}
 
       <div className="clinician-copilot-tab-bar" role="tablist" aria-label="Clinician copilot views">
         <button

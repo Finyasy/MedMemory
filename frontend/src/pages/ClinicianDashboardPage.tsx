@@ -741,6 +741,7 @@ export default function ClinicianDashboardPage() {
     : uploads.length === 0
       ? 'No recent uploads'
       : `${uploads.length} upload${uploads.length === 1 ? '' : 's'} in queue`;
+  const primaryWorkspaceActionLabel = selectedPatientId === null ? 'Open first active patient' : 'Workspace open';
 
   const formatDate = (dateStr: string) =>
     new Date(dateStr).toLocaleDateString('en-US', {
@@ -1095,9 +1096,9 @@ export default function ClinicianDashboardPage() {
               type="button"
               className="primary-button clinician-action-btn clinician-action-btn-primary"
               onClick={handleSelectFirstActivePatient}
-              disabled={activePatients.length === 0}
+              disabled={selectedPatientId !== null || activePatients.length === 0}
             >
-              Open first active patient
+              {primaryWorkspaceActionLabel}
             </button>
           </div>
         </div>
@@ -1141,11 +1142,6 @@ export default function ClinicianDashboardPage() {
             <div className={`clinician-sidebar-intro ${mobileSection !== 'queue' ? 'clinician-mobile-collapsed' : ''}`}>
               <h2>Patient queue</h2>
               <p>{queueSummary}</p>
-              <div className="clinician-sidebar-summary-row" aria-label="Queue summary">
-                <span className="clinician-sidebar-summary-pill clinician-status-chip" data-tone="active">{activePatientCount} active</span>
-                <span className="clinician-sidebar-summary-pill clinician-status-chip" data-tone="pending">{pendingPatientCount} pending</span>
-                <span className="clinician-sidebar-summary-pill clinician-status-chip" data-tone="uploads">{uploads.length} uploads</span>
-              </div>
             </div>
             <section className={`clinician-section clinician-sidebar-card ${mobileSection !== 'queue' ? 'clinician-mobile-collapsed' : ''}`}>
               <div className="clinician-section-heading">

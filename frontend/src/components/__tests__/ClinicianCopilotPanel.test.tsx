@@ -110,5 +110,5 @@ it('runs a preset clinician copilot workflow and switches between latest run, hi
 
   await user.click(screen.getByRole('tab', { name: 'History' }));
   expect(screen.getByText('Recent runs')).toBeInTheDocument();
-  expect(screen.getByText('Review this chart and surface the most important evidence for a clinician handoff.')).toBeInTheDocument();
+  expect(screen.getByText(/Chart review completed\./)).toBeInTheDocument();
 });
