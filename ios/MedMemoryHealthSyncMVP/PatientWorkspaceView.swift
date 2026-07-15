@@ -5,6 +5,8 @@ struct PatientWorkspaceView: View {
     @ObservedObject var viewModel: HealthSyncViewModel
     @State private var isShowingFileImporter = false
     @State private var isShowingRecordSheet = false
+    @State private var selectedDocument: DocumentItemDTO?
+    @State private var selectedRecord: MedicalRecordDTO?
     @State private var recordTitle = ""
     @State private var recordContent = ""
     @State private var recordType = "general"
@@ -20,7 +22,7 @@ struct PatientWorkspaceView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 8)
-            .padding(.bottom, 32)
+            .padding(.bottom, 120)
         }
         .background(
             LinearGradient(
@@ -91,6 +93,16 @@ struct PatientWorkspaceView: View {
                 }
             }
         }
+        .sheet(item: $selectedDocument) { document in
+            NavigationStack {
+                DocumentDetailView(document: document)
+            }
+        }
+        .sheet(item: $selectedRecord) { record in
+            NavigationStack {
+                RecordDetailView(record: record)
+            }
+        }
     }
 
     private var workspaceHeader: some View {
@@ -138,32 +150,42 @@ struct PatientWorkspaceView: View {
                 emptyStateCard("No documents loaded yet. Connect the backend in the Sync tab, then refresh patient data.")
             } else {
                 ForEach(viewModel.recentDocuments.prefix(5)) { item in
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "doc.text.fill")
-                            .foregroundStyle(MedMemoryTheme.accent)
-                            .padding(10)
-                            .background(MedMemoryTheme.accentSoft)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    Button {
+                        selectedDocument = item
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "doc.text.fill")
+                                .foregroundStyle(MedMemoryTheme.accent)
+                                .padding(10)
+                                .background(MedMemoryTheme.accentSoft)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.title ?? item.original_filename)
-                                .font(.subheadline.weight(.semibold))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.title ?? item.original_filename)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(MedMemoryTheme.textPrimary)
+                                Text(documentSubtitle(for: item))
+                                    .font(.caption)
+                                    .foregroundStyle(MedMemoryTheme.textSecondary)
+                            }
+
+                            Spacer()
+
+                            Text(documentStatus(for: item))
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(MedMemoryTheme.textPrimary)
-                            Text(documentSubtitle(for: item))
-                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.78))
+                                .clipShape(Capsule())
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
                                 .foregroundStyle(MedMemoryTheme.textSecondary)
+                                .padding(.top, 6)
                         }
-
-                        Spacer()
-
-                        Text(documentStatus(for: item))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(MedMemoryTheme.textPrimary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.white.opacity(0.78))
-                            .clipShape(Capsule())
                     }
+                    .buttonStyle(.plain)
                     .padding(14)
                     .background(Color.white.opacity(0.72))
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -184,23 +206,31 @@ struct PatientWorkspaceView: View {
                 emptyStateCard("No clinical notes loaded yet. Once patient data is connected, recent notes will appear here.")
             } else {
                 ForEach(viewModel.recentRecords.prefix(5)) { record in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(record.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(MedMemoryTheme.textPrimary)
-                            Spacer()
-                            Text(record.record_type ?? "general")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(MedMemoryTheme.textSecondary)
-                                .textCase(.uppercase)
-                        }
+                    Button {
+                        selectedRecord = record
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(record.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(MedMemoryTheme.textPrimary)
+                                Spacer()
+                                Text(record.record_type ?? "general")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(MedMemoryTheme.textSecondary)
+                                    .textCase(.uppercase)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(MedMemoryTheme.textSecondary)
+                            }
 
-                        Text(record.content)
-                            .font(.caption)
-                            .foregroundStyle(MedMemoryTheme.textSecondary)
-                            .lineLimit(3)
+                            Text(record.content)
+                                .font(.caption)
+                                .foregroundStyle(MedMemoryTheme.textSecondary)
+                                .lineLimit(3)
+                        }
                     }
+                    .buttonStyle(.plain)
                     .padding(14)
                     .background(Color.white.opacity(0.72))
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -255,6 +285,72 @@ struct PatientWorkspaceView: View {
             .padding(14)
             .background(Color.white.opacity(0.72))
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct DocumentDetailView: View {
+    let document: DocumentItemDTO
+
+    var body: some View {
+        List {
+            Section("Document") {
+                detailRow("Title", document.title ?? document.original_filename)
+                detailRow("File", document.original_filename)
+                detailRow("Type", document.document_type.replacingOccurrences(of: "_", with: " ").capitalized)
+                detailRow("Status", document.is_processed ? "Ready" : document.processing_status.replacingOccurrences(of: "_", with: " ").capitalized)
+                detailRow("Pages", document.page_count.map(String.init) ?? "Unknown")
+            }
+
+            if let description = document.description, !description.isEmpty {
+                Section("Description") {
+                    Text(description)
+                }
+            }
+        }
+        .navigationTitle("Document")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 18)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct RecordDetailView: View {
+    let record: MedicalRecordDTO
+
+    var body: some View {
+        List {
+            Section("Record") {
+                detailRow("Title", record.title)
+                detailRow("Type", (record.record_type ?? "general").replacingOccurrences(of: "_", with: " ").capitalized)
+                if let createdAt = record.created_at {
+                    detailRow("Created", createdAt)
+                }
+            }
+
+            Section("Content") {
+                Text(record.content)
+            }
+        }
+        .navigationTitle("Clinical note")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 18)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
     }
 }
 

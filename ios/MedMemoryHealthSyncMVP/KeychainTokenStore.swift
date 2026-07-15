@@ -17,6 +17,7 @@ enum KeychainTokenStoreError: LocalizedError {
 
 final class KeychainTokenStore {
     private let service = "com.medmemory.patientapp"
+    private let fallbackPrefix = "keychainFallback.com.medmemory.patientapp."
 
     func saveToken(_ token: String, account: String) throws {
         let data = Data(token.utf8)
@@ -37,9 +38,17 @@ final class KeychainTokenStore {
             insertQuery[kSecValueData as String] = data
             insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
             let addStatus = SecItemAdd(insertQuery as CFDictionary, nil)
+            if shouldUseFallback(for: addStatus) {
+                saveFallbackToken(token, account: account)
+                return
+            }
             guard addStatus == errSecSuccess else {
                 throw KeychainTokenStoreError.unexpectedStatus(addStatus)
             }
+            return
+        }
+        if shouldUseFallback(for: updateStatus) {
+            saveFallbackToken(token, account: account)
             return
         }
         guard updateStatus == errSecSuccess else {
@@ -59,7 +68,10 @@ final class KeychainTokenStore {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound {
-            return nil
+            return readFallbackToken(account: account)
+        }
+        if shouldUseFallback(for: status) {
+            return readFallbackToken(account: account)
         }
         guard status == errSecSuccess else {
             throw KeychainTokenStoreError.unexpectedStatus(status)
@@ -77,8 +89,32 @@ final class KeychainTokenStore {
             kSecAttrAccount as String: account,
         ]
         let status = SecItemDelete(query as CFDictionary)
+        deleteFallbackToken(account: account)
         if status != errSecSuccess && status != errSecItemNotFound {
+            if shouldUseFallback(for: status) {
+                return
+            }
             throw KeychainTokenStoreError.unexpectedStatus(status)
         }
+    }
+
+    private func shouldUseFallback(for status: OSStatus) -> Bool {
+        #if targetEnvironment(simulator)
+        return status == errSecMissingEntitlement
+        #else
+        return false
+        #endif
+    }
+
+    private func saveFallbackToken(_ token: String, account: String) {
+        UserDefaults.standard.set(token, forKey: fallbackPrefix + account)
+    }
+
+    private func readFallbackToken(account: String) -> String? {
+        UserDefaults.standard.string(forKey: fallbackPrefix + account)
+    }
+
+    private func deleteFallbackToken(account: String) {
+        UserDefaults.standard.removeObject(forKey: fallbackPrefix + account)
     }
 }

@@ -5,6 +5,25 @@ struct SyncSettingsView: View {
 
     var body: some View {
         Form {
+            Section("Account") {
+                if let user = viewModel.currentUser {
+                    LabeledContent("Signed in") {
+                        Text(user.email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Signed in with stored patient session.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Sign out") {
+                    viewModel.signOut()
+                }
+                .buttonStyle(MedMemorySecondaryButtonStyle())
+            }
+
             Section("MedMemory backend") {
                 TextField("Backend URL (use LAN IP)", text: $viewModel.config.baseURL)
                     .textInputAutocapitalization(.never)
@@ -178,5 +197,8 @@ struct SyncSettingsView: View {
         }
         .navigationTitle("Sync")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: 76)
+        }
     }
 }

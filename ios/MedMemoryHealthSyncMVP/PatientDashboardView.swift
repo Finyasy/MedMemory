@@ -8,7 +8,14 @@ struct PatientDashboardView: View {
         let trackedMetrics = viewModel.dashboardHighlights?.summary.tracked_metrics ?? 0
         let syncedDays = viewModel.appleHealthStatus?.total_synced_days ?? 0
         let latestSteps = viewModel.appleHealthTrend?.latest_step_count ?? 0
+        let completion = viewModel.fullProfile?.profile_completion?.overall_percentage
         return [
+            DashboardSummaryCard(
+                title: "Profile",
+                value: completion.map { "\($0)%" } ?? "0%",
+                note: completion == nil ? "Connect profile data" : "Completion improves grounded answers",
+                symbolName: "person.crop.circle"
+            ),
             DashboardSummaryCard(
                 title: "Records",
                 value: "\(viewModel.recentRecords.count)",
@@ -47,7 +54,7 @@ struct PatientDashboardView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 8)
-            .padding(.bottom, 32)
+            .padding(.bottom, 120)
         }
         .background(
             LinearGradient(
@@ -117,6 +124,7 @@ struct PatientDashboardView: View {
             }
 
             appleHealthCard
+            profileSnapshotCard
             highlightsCard
         }
     }
@@ -194,6 +202,37 @@ struct PatientDashboardView: View {
         .medMemoryCard()
     }
 
+    private var profileSnapshotCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Profile snapshot")
+                        .font(.headline)
+                        .foregroundStyle(MedMemoryTheme.textPrimary)
+                    Text("Critical context for care handoff")
+                        .font(.caption)
+                        .foregroundStyle(MedMemoryTheme.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "person.text.rectangle")
+                    .foregroundStyle(MedMemoryTheme.accent)
+            }
+
+            if let profile = viewModel.fullProfile {
+                VStack(spacing: 10) {
+                    highlightRow("Emergency contact", emergencyContactSummary(from: profile))
+                    highlightRow("Allergy watch", allergySummary(from: profile))
+                    highlightRow("Active conditions", conditionSummary(from: profile))
+                }
+            } else {
+                Text("Complete the Profile tab to bring emergency contacts, allergies, active conditions, providers, and family history into the native dashboard.")
+                    .font(.subheadline)
+                    .foregroundStyle(MedMemoryTheme.textSecondary)
+            }
+        }
+        .medMemoryCard()
+    }
+
     private var highlightsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Highlights")
@@ -255,6 +294,32 @@ struct PatientDashboardView: View {
                 .foregroundStyle(MedMemoryTheme.textSecondary)
         }
         .medMemoryCard()
+    }
+
+    private func emergencyContactSummary(from profile: FullPatientProfileDTO) -> String {
+        guard let contact = profile.emergency_contacts.first(where: { $0.is_primary }) ?? profile.emergency_contacts.first else {
+            return "No emergency contact on profile."
+        }
+        return "\(contact.name), \(contact.relationship) · \(contact.phone)"
+    }
+
+    private func allergySummary(from profile: FullPatientProfileDTO) -> String {
+        let priorityAllergy = profile.allergies.first { allergy in
+            allergy.severity == "severe" || allergy.severity == "life_threatening"
+        } ?? profile.allergies.first
+        guard let allergy = priorityAllergy else {
+            return "No allergies recorded."
+        }
+        let severity = allergy.severity.replacingOccurrences(of: "_", with: " ").capitalized
+        return "\(allergy.allergen) · \(severity)"
+    }
+
+    private func conditionSummary(from profile: FullPatientProfileDTO) -> String {
+        let activeCount = profile.conditions.filter { $0.status == "active" }.count
+        if activeCount > 0 {
+            return "\(activeCount) active condition(s) recorded for chat and handoff context."
+        }
+        return profile.conditions.isEmpty ? "No conditions recorded." : "\(profile.conditions.count) historical condition(s) recorded."
     }
 
     private func highlightBody(for item: HighlightItemDTO) -> String {
