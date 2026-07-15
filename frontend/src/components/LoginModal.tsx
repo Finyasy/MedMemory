@@ -53,7 +53,7 @@ const LoginModal = ({
 
     try {
       const response = await api.login(email, password);
-      setTokens(response.access_token, response.refresh_token, response.expires_in);
+      setTokens(response.access_token, response.expires_in);
       
       const user = await api.getCurrentUser();
       setUser(user);

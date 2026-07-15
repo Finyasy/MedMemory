@@ -6,6 +6,9 @@ type AuthStorageKeys = {
   expiresAt: string;
 };
 
+// The refresh token itself lives in an httpOnly cookie set by the backend;
+// only the short-lived access token and its expiry are kept in localStorage.
+// refreshToken keys remain solely to migrate/clear tokens stored by older builds.
 const PATIENT_KEYS: AuthStorageKeys = {
   accessToken: 'medmemory_access_token',
   refreshToken: 'medmemory_refresh_token',
@@ -35,10 +38,16 @@ export const readActiveAccessToken = (): string | null => {
   return window.localStorage.getItem(keys.accessToken);
 };
 
-export const readActiveRefreshToken = (): string | null => {
+export const readLegacyRefreshToken = (): string | null => {
   if (typeof window === 'undefined') return null;
   const keys = getAuthStorageKeys();
   return window.localStorage.getItem(keys.refreshToken);
+};
+
+export const clearLegacyRefreshToken = (): void => {
+  if (typeof window === 'undefined') return;
+  const keys = getAuthStorageKeys();
+  window.localStorage.removeItem(keys.refreshToken);
 };
 
 export const readActiveTokenExpiresAt = (): number | null => {
@@ -50,14 +59,13 @@ export const readActiveTokenExpiresAt = (): number | null => {
 
 export const writeActiveAuthTokens = (
   accessToken: string,
-  refreshToken: string,
   expiresAt: number,
 ): void => {
   if (typeof window === 'undefined') return;
   const keys = getAuthStorageKeys();
   window.localStorage.setItem(keys.accessToken, accessToken);
-  window.localStorage.setItem(keys.refreshToken, refreshToken);
   window.localStorage.setItem(keys.expiresAt, String(expiresAt));
+  window.localStorage.removeItem(keys.refreshToken);
 };
 
 export const writeActiveAccessToken = (token: string): void => {

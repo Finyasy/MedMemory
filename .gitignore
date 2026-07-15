@@ -14,6 +14,9 @@ playwright-screenshots/
 screenshots/
 frontend/coverage/
 backend/.coverage
+backend/coverage/
+.codex-gh-config/
+.claude/settings.local.json
 xcuserdata/
 backend/sh-thd-*
 

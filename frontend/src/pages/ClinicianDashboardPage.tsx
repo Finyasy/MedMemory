@@ -276,7 +276,7 @@ export default function ClinicianDashboardPage() {
     setAuthLoading(true);
     try {
       const res = await api.clinicianLogin(email.trim(), password);
-      useAppStore.getState().setTokens(res.access_token, res.refresh_token, res.expires_in);
+      useAppStore.getState().setTokens(res.access_token, res.expires_in);
       setClinician(true);
       const profile = await api.getClinicianProfile();
       setUser({
@@ -315,7 +315,7 @@ export default function ClinicianDashboardPage() {
         full_name: fullName.trim(),
         registration_number: registrationNumber.trim(),
       });
-      useAppStore.getState().setTokens(res.access_token, res.refresh_token, res.expires_in);
+      useAppStore.getState().setTokens(res.access_token, res.expires_in);
       setClinician(true);
       setUser({
         id: res.user_id,

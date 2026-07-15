@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -24,7 +26,13 @@ class TokenResponse(BaseModel):
     """Schema for authentication token response."""
 
     access_token: str = Field(..., description="JWT access token")
-    refresh_token: str = Field(..., description="JWT refresh token")
+    refresh_token: str | None = Field(
+        default=None,
+        description=(
+            "JWT refresh token. Omitted when the refresh token is delivered via an "
+            "httpOnly cookie instead (browser clients)."
+        ),
+    )
     token_type: str = Field(default="bearer", description="Token type")
     expires_in: int = Field(..., description="Access token expiry in seconds")
     user_id: int = Field(..., description="User ID")
@@ -55,7 +63,17 @@ class MobileTokenResponse(BaseModel):
 class RefreshTokenRequest(BaseModel):
     """Schema for refresh token request."""
 
-    refresh_token: str = Field(..., description="Refresh token")
+    refresh_token: str | None = Field(
+        default=None,
+        description=(
+            "Refresh token. Browser clients may omit this and rely on the "
+            "httpOnly refresh cookie instead."
+        ),
+    )
+    portal: Literal["patient", "clinician"] = Field(
+        default="patient",
+        description="Which portal session to refresh when using cookie-based refresh.",
+    )
 
 
 class UserResponse(BaseModel):

@@ -23,7 +23,6 @@ describe('useAppStore', () => {
     localStorage.setItem('medmemory_api_key', 'api-key-1');
     localStorage.setItem('medmemory_clinician', '1');
     localStorage.setItem('medmemory_clinician_access_token', 'clinician-access');
-    localStorage.setItem('medmemory_clinician_refresh_token', 'clinician-refresh');
     localStorage.setItem('medmemory_theme', 'dark');
     window.history.pushState({}, '', '/clinician');
 
@@ -32,7 +31,6 @@ describe('useAppStore', () => {
 
     expect(state.apiKey).toBe('api-key-1');
     expect(state.accessToken).toBe('clinician-access');
-    expect(state.refreshToken).toBe('clinician-refresh');
     expect(state.isAuthenticated).toBe(true);
     expect(state.isClinician).toBe(true);
     expect(state.theme).toBe('dark');
@@ -53,13 +51,12 @@ describe('useAppStore', () => {
       },
       isAuthenticated: false,
       accessToken: null,
-      refreshToken: null,
       tokenExpiresAt: null,
     });
-    useAppStore.getState().setTokens('patient-access', 'patient-refresh', 60);
+    useAppStore.getState().setTokens('patient-access', 60);
 
     expect(localStorage.getItem('medmemory_access_token')).toBe('patient-access');
-    expect(localStorage.getItem('medmemory_refresh_token')).toBe('patient-refresh');
+    expect(localStorage.getItem('medmemory_refresh_token')).toBeNull();
     expect(localStorage.getItem('medmemory_token_expires_at')).toBe('61000');
     expect(useAppStore.getState().tokenExpiresAt).toBe(61_000);
     expect(useAppStore.getState().isAuthenticated).toBe(true);
@@ -67,7 +64,6 @@ describe('useAppStore', () => {
     useAppStore.getState().setAccessToken(null);
 
     expect(useAppStore.getState().accessToken).toBeNull();
-    expect(useAppStore.getState().refreshToken).toBeNull();
     expect(useAppStore.getState().patientId).toBe(0);
     expect(useAppStore.getState().patientSearch).toBe('');
     expect(useAppStore.getState().user).toBeNull();
@@ -94,7 +90,6 @@ describe('useAppStore', () => {
       patientId: 5,
       patientSearch: 'jamie',
       accessToken: 'token-1',
-      refreshToken: 'refresh-1',
       tokenExpiresAt: 123,
       isAuthenticated: true,
       isClinician: false,
@@ -117,7 +112,6 @@ describe('useAppStore', () => {
     useAppStore.getState().logout();
 
     expect(useAppStore.getState().accessToken).toBeNull();
-    expect(useAppStore.getState().refreshToken).toBeNull();
     expect(useAppStore.getState().user).toBeNull();
     expect(useAppStore.getState().isClinician).toBe(false);
     expect(useAppStore.getState().isAuthenticated).toBe(false);

@@ -3,7 +3,7 @@
 import logging
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from app.api.auth import (
     create_access_token,
     create_refresh_token,
     get_password_hash,
+    set_refresh_cookie,
     verify_password,
 )
 from app.api.deps import (
@@ -63,7 +64,7 @@ def _normalized_role(value: object, default: str = "patient") -> str:
     return role or default
 
 
-def _tokens_for_user(user: User) -> TokenResponse:
+def _tokens_for_user(user: User, response: Response | None = None) -> TokenResponse:
     role = _normalized_role(getattr(user, "role", "patient"))
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
     access_token = create_access_token(
@@ -71,6 +72,8 @@ def _tokens_for_user(user: User) -> TokenResponse:
         expires_delta=access_token_expires,
     )
     refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    if response is not None:
+        set_refresh_cookie(response, refresh_token, portal="clinician")
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -89,6 +92,7 @@ def _tokens_for_user(user: User) -> TokenResponse:
 )
 async def clinician_signup(
     data: ClinicianSignUp,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a clinician account (user with role=clinician + optional profile)."""
@@ -141,7 +145,7 @@ async def clinician_signup(
                 "Run: cd backend && alembic upgrade head"
             ),
         ) from e
-    return _tokens_for_user(user)
+    return _tokens_for_user(user, response)
 
 
 @router.post(
@@ -151,6 +155,7 @@ async def clinician_signup(
 )
 async def clinician_login(
     credentials: ClinicianLogin,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate clinician; returns tokens only if user has role=clinician."""
@@ -172,7 +177,7 @@ async def clinician_login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a clinician account. Use the regular login for patient accounts.",
         )
-    return _tokens_for_user(user)
+    return _tokens_for_user(user, response)
 
 
 @router.get("/profile", response_model=ClinicianProfileResponse)

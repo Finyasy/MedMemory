@@ -41,9 +41,11 @@ import {
 } from './api/generated';
 import {
   clearActiveAuthTokens,
+  clearLegacyRefreshToken,
+  getActivePortalAuthContext,
   readActiveAccessToken,
-  readActiveRefreshToken,
   readActiveTokenExpiresAt,
+  readLegacyRefreshToken,
   writeActiveAuthTokens,
 } from './utils/authStorage';
 import type {
@@ -113,10 +115,6 @@ const getAccessToken = () => {
   return readActiveAccessToken();
 };
 
-const getRefreshToken = () => {
-  return readActiveRefreshToken();
-};
-
 const getTokenExpiresAt = () => {
   return readActiveTokenExpiresAt();
 };
@@ -131,28 +129,32 @@ const getApiKey = () => {
 let refreshPromise: Promise<string | null> | null = null;
 
 const refreshAccessToken = async (): Promise<string | null> => {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return null;
-  
   if (refreshPromise) return refreshPromise;
-  
+
   refreshPromise = (async () => {
     try {
+      // Sessions from older builds kept the refresh token in localStorage;
+      // send it once so the backend can move it into the httpOnly cookie.
+      const legacyRefreshToken = readLegacyRefreshToken();
       const urls = resolveAuthRecoveryUrls('/auth/refresh');
       for (const url of urls) {
         try {
           const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refresh_token: refreshToken }),
+            credentials: 'include',
+            body: JSON.stringify({
+              refresh_token: legacyRefreshToken ?? null,
+              portal: getActivePortalAuthContext(),
+            }),
           });
           if (res.ok) {
             const data = await res.json();
             writeActiveAuthTokens(
               data.access_token,
-              data.refresh_token,
               Date.now() + data.expires_in * 1000,
             );
+            clearLegacyRefreshToken();
             return data.access_token;
           }
           if (res.status === 401) {
@@ -168,7 +170,7 @@ const refreshAccessToken = async (): Promise<string | null> => {
       refreshPromise = null;
     }
   })();
-  
+
   return refreshPromise;
 };
 
@@ -207,6 +209,9 @@ const withAuthHeaders = async (headers: Record<string, string> = {}) => {
 
 OpenAPI.BASE = API_ORIGIN;
 OpenAPI.HEADERS = async () => getAuthHeaders();
+// Send/receive the httpOnly refresh cookie on auth endpoints (login, signup, refresh).
+OpenAPI.WITH_CREDENTIALS = true;
+OpenAPI.CREDENTIALS = 'include';
 
 export class ApiError extends Error {
   status: number;
@@ -431,6 +436,7 @@ export const api = {
         await fetch(url, {
           method: 'POST',
           headers,
+          credentials: 'include',
         });
         return;
       } catch {
@@ -1180,6 +1186,7 @@ export const api = {
     }>(`${base}/clinician/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(payload),
     });
   },
@@ -1196,6 +1203,7 @@ export const api = {
     }>(`${base}/clinician/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ email, password }),
     });
   },

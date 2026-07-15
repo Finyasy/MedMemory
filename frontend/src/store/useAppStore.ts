@@ -2,17 +2,12 @@ import { create } from 'zustand';
 import {
   clearActiveAuthTokens,
   readActiveAccessToken,
-  readActiveRefreshToken,
   writeActiveAccessToken,
   writeActiveAuthTokens,
 } from '../utils/authStorage';
 
 const getInitialToken = () => {
   return readActiveAccessToken();
-};
-
-const getInitialRefreshToken = () => {
-  return readActiveRefreshToken();
 };
 
 const getInitialApiKey = () => {
@@ -37,7 +32,6 @@ type AppState = {
   patientSearch: string;
   apiKey: string;
   accessToken: string | null;
-  refreshToken: string | null;
   tokenExpiresAt: number | null;
   user: User;
   isAuthenticated: boolean;
@@ -46,7 +40,7 @@ type AppState = {
   setPatientId: (value: number) => void;
   setPatientSearch: (value: string) => void;
   setApiKey: (value: string) => void;
-  setTokens: (accessToken: string, refreshToken: string, expiresIn: number) => void;
+  setTokens: (accessToken: string, expiresIn: number) => void;
   setAccessToken: (token: string | null) => void;
   setUser: (user: User) => void;
   setClinician: (value: boolean) => void;
@@ -59,7 +53,6 @@ const useAppStore = create<AppState>((set) => ({
   patientSearch: '',
   apiKey: getInitialApiKey(),
   accessToken: getInitialToken(),
-  refreshToken: getInitialRefreshToken(),
   tokenExpiresAt: null,
   user: null,
   isAuthenticated: !!getInitialToken(),
@@ -77,12 +70,11 @@ const useAppStore = create<AppState>((set) => ({
     }
     set({ apiKey: value });
   },
-  setTokens: (accessToken, refreshToken, expiresIn) => {
+  setTokens: (accessToken, expiresIn) => {
     const expiresAt = Date.now() + expiresIn * 1000;
-    writeActiveAuthTokens(accessToken, refreshToken, expiresAt);
+    writeActiveAuthTokens(accessToken, expiresAt);
     set({
       accessToken,
-      refreshToken,
       tokenExpiresAt: expiresAt,
       isAuthenticated: true,
     });
@@ -93,7 +85,6 @@ const useAppStore = create<AppState>((set) => ({
     if (!token) {
       set({
         accessToken: null,
-        refreshToken: null,
         tokenExpiresAt: null,
         isAuthenticated: false,
         user: null,
@@ -130,7 +121,6 @@ const useAppStore = create<AppState>((set) => ({
     if (typeof window !== 'undefined') window.localStorage.removeItem('medmemory_clinician');
     set({
       accessToken: null,
-      refreshToken: null,
       tokenExpiresAt: null,
       user: null,
       isAuthenticated: false,
