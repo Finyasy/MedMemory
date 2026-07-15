@@ -36,6 +36,11 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+set -a
+source "${ENV_FILE}"
+set +a
+SPEECH_BACKEND_MODE="$(printf '%s' "${SPEECH_SYNTHESIS_BACKEND:-in_process}" | tr '[:upper:]' '[:lower:]')"
+
 is_truthy() {
   local value="$1"
   value="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
@@ -92,11 +97,24 @@ if has_running_backend_container; then
   exit 1
 fi
 
-docker compose -f "${COMPOSE_FILE}" up -d
+COMPOSE_SERVICES=(db frontend)
+if [[ "${SPEECH_BACKEND_MODE}" == "http" ]]; then
+  COMPOSE_SERVICES+=(speech-service)
+fi
+
+docker compose -f "${COMPOSE_FILE}" up -d "${COMPOSE_SERVICES[@]}"
 if ! wait_for_service_ready "db" "${DB_READY_TIMEOUT_SECONDS}"; then
   echo "Database service did not become ready within ${DB_READY_TIMEOUT_SECONDS}s."
   echo "Check: docker compose -f ${COMPOSE_FILE} ps"
   exit 1
+fi
+
+if [[ "${SPEECH_BACKEND_MODE}" == "http" ]]; then
+  if ! wait_for_service_ready "speech-service" "${BACKEND_READY_TIMEOUT_SECONDS}"; then
+    echo "Speech service did not become ready within ${BACKEND_READY_TIMEOUT_SECONDS}s."
+    echo "Check: docker compose -f ${COMPOSE_FILE} ps"
+    exit 1
+  fi
 fi
 
 if [[ -f "${PID_FILE}" ]]; then
@@ -197,4 +215,7 @@ fi
 echo "Hybrid stack running."
 echo "Frontend: http://localhost:5173"
 echo "Backend:  http://localhost:8000"
+if [[ "${SPEECH_BACKEND_MODE}" == "http" ]]; then
+  echo "Speech:   http://localhost:8010"
+fi
 echo "Logs:     ${LOG_FILE}"

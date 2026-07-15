@@ -64,7 +64,7 @@ const SignUpModal = ({
 
     try {
       const response = await api.signup(email.trim(), password, fullName.trim());
-      setTokens(response.access_token, response.refresh_token, response.expires_in);
+      setTokens(response.access_token, response.expires_in);
       
       const user = await api.getCurrentUser();
       setUser(user);

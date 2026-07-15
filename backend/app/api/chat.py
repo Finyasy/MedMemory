@@ -1,5 +1,6 @@
 """Chat API endpoints for medical Q&A."""
 
+import asyncio
 import logging
 import re
 from uuid import UUID
@@ -42,6 +43,9 @@ from app.services.imaging import (
 )
 from app.services.llm import LLMService, RAGService
 from app.services.llm.conversation import ConversationManager
+from app.services.llm.multilingual import MultilingualChatService
+from app.services.speech import SpeechSynthesisBoundary
+from app.services.speech.validators import validate_input_mode, validate_response_mode
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -137,6 +141,81 @@ def _chat_system_prompt(
     return None
 
 
+async def _maybe_attach_speech(
+    *,
+    answer: str,
+    output_language: str,
+    response_mode: str,
+    patient_id: int,
+    conversation_id: UUID,
+    message_id: int | None,
+) -> dict[str, str | int | None]:
+    if response_mode not in {"speech", "both"}:
+        return {
+            "response_mode": response_mode,
+            "audio_asset_id": None,
+            "audio_url": None,
+            "audio_duration_ms": None,
+        }
+    if output_language != "sw":
+        return {
+            "response_mode": "text",
+            "audio_asset_id": None,
+            "audio_url": None,
+            "audio_duration_ms": None,
+        }
+    try:
+        synthesis = await SpeechSynthesisBoundary.get_instance().synthesize(
+            text=answer,
+            output_language=output_language,
+            response_mode=response_mode,
+            patient_id=patient_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        return {
+            "response_mode": response_mode,
+            "audio_asset_id": synthesis.audio_asset_id,
+            "audio_url": synthesis.audio_url,
+            "audio_duration_ms": synthesis.audio_duration_ms,
+        }
+    except Exception:
+        logging.getLogger("medmemory").exception(
+            "Speech synthesis attachment failed patient_id=%s conversation_id=%s message_id=%s",
+            patient_id,
+            conversation_id,
+            message_id,
+        )
+        return {
+            "response_mode": "text",
+            "audio_asset_id": None,
+            "audio_url": None,
+            "audio_duration_ms": None,
+        }
+
+
+async def _resolve_multilingual_inputs(
+    *,
+    patient,
+    question: str,
+    input_language: str | None,
+    output_language: str | None,
+    clinician_mode: bool,
+) -> tuple[MultilingualChatService, object, str]:
+    multilingual = MultilingualChatService()
+    language_context = multilingual.resolve_context(
+        input_language=input_language,
+        output_language=output_language,
+        preferred_language=getattr(patient, "preferred_language", None),
+        clinician_mode=clinician_mode,
+    )
+    translated_question = await multilingual.translate_question_to_english(
+        question,
+        source_language=language_context.input_language,
+    )
+    return multilingual, language_context, translated_question
+
+
 @router.post("/ask", response_model=ChatResponse)
 async def ask_question(
     request: ChatRequest,
@@ -170,7 +249,7 @@ async def ask_question(
         structured: If True, returns structured JSON response with parsed data
         clinician_mode: If True, use clinician system prompt and allow clinician access via grant
     """
-    await get_authorized_patient(
+    patient = await get_authorized_patient(
         patient_id=request.patient_id,
         db=db,
         current_user=current_user,
@@ -179,24 +258,63 @@ async def ask_question(
 
     system_prompt = _chat_system_prompt(clinician_mode, request.system_prompt)
     rag_service = RAGService(db)
+    multilingual, language_context, translated_question = (
+        await _resolve_multilingual_inputs(
+            patient=patient,
+            question=request.question,
+            input_language=request.input_language,
+            output_language=request.output_language,
+            clinician_mode=clinician_mode,
+        )
+    )
 
     structured_enabled = bool(structured) if isinstance(structured, bool) else False
     coaching_enabled = bool(coaching_mode) if isinstance(coaching_mode, bool) else False
 
     if structured_enabled or coaching_enabled:
         rag_response, structured_data = await rag_service.ask_structured(
-            question=request.question,
+            question=translated_question,
             patient_id=request.patient_id,
             conversation_id=request.conversation_id,
             system_prompt=system_prompt,
             max_context_tokens=request.max_context_tokens,
             use_conversation_history=request.use_conversation_history,
         )
-        return ChatResponse(
-            answer=rag_response.answer,
-            structured_data=structured_data.model_dump() if structured_data else None,
+        structured_payload = structured_data.model_dump() if structured_data else None
+        translated_answer = await multilingual.translate_answer_from_english(
+            rag_response.answer,
+            target_language=language_context.output_language,
+        )
+        translated_structured = await multilingual.translate_structured_payload(
+            structured_payload,
+            target_language=language_context.output_language,
+        )
+        speech_payload = await _maybe_attach_speech(
+            answer=translated_answer,
+            output_language=language_context.output_language,
+            response_mode=request.response_mode,
+            patient_id=request.patient_id,
             conversation_id=rag_response.conversation_id,
             message_id=rag_response.message_id,
+        )
+        return ChatResponse(
+            answer=translated_answer,
+            structured_data=translated_structured,
+            conversation_id=rag_response.conversation_id,
+            message_id=rag_response.message_id,
+            input_mode=request.input_mode,
+            response_mode=str(speech_payload["response_mode"]),
+            detected_language=language_context.detected_language,
+            input_language=language_context.input_language,
+            output_language=language_context.output_language,
+            translated_question=(
+                translated_question if translated_question != request.question else None
+            ),
+            translation_applied=language_context.translation_applied,
+            speech_locale=language_context.speech_locale,
+            audio_asset_id=speech_payload["audio_asset_id"],
+            audio_url=speech_payload["audio_url"],
+            audio_duration_ms=speech_payload["audio_duration_ms"],
             num_sources=rag_response.num_sources,
             sources=[
                 SourceInfo(
@@ -215,18 +333,43 @@ async def ask_question(
         )
     else:
         rag_response = await rag_service.ask(
-            question=request.question,
+            question=translated_question,
             patient_id=request.patient_id,
             conversation_id=request.conversation_id,
             system_prompt=system_prompt,
             max_context_tokens=request.max_context_tokens,
             use_conversation_history=request.use_conversation_history,
         )
-
-        return ChatResponse(
-            answer=rag_response.answer,
+        translated_answer = await multilingual.translate_answer_from_english(
+            rag_response.answer,
+            target_language=language_context.output_language,
+        )
+        speech_payload = await _maybe_attach_speech(
+            answer=translated_answer,
+            output_language=language_context.output_language,
+            response_mode=request.response_mode,
+            patient_id=request.patient_id,
             conversation_id=rag_response.conversation_id,
             message_id=rag_response.message_id,
+        )
+
+        return ChatResponse(
+            answer=translated_answer,
+            conversation_id=rag_response.conversation_id,
+            message_id=rag_response.message_id,
+            input_mode=request.input_mode,
+            response_mode=str(speech_payload["response_mode"]),
+            detected_language=language_context.detected_language,
+            input_language=language_context.input_language,
+            output_language=language_context.output_language,
+            translated_question=(
+                translated_question if translated_question != request.question else None
+            ),
+            translation_applied=language_context.translation_applied,
+            speech_locale=language_context.speech_locale,
+            audio_asset_id=speech_payload["audio_asset_id"],
+            audio_url=speech_payload["audio_url"],
+            audio_duration_ms=speech_payload["audio_duration_ms"],
             num_sources=rag_response.num_sources,
             sources=[
                 SourceInfo(
@@ -250,6 +393,10 @@ async def stream_ask(
     question: str = Query(..., min_length=1, max_length=2000),
     patient_id: int = Query(...),
     conversation_id: UUID | None = Query(None),
+    input_mode: str = Query("text"),
+    response_mode: str = Query("text"),
+    input_language: str | None = Query(None),
+    output_language: str | None = Query(None),
     clinician_mode: bool = Query(
         False, description="Use clinician-oriented prompt and citations"
     ),
@@ -262,7 +409,7 @@ async def stream_ask(
     the answer as it's being generated. Use clinician_mode=true for clinician output.
     Access: owner or clinician with active grant including "chat" scope.
     """
-    await get_authorized_patient(
+    patient = await get_authorized_patient(
         patient_id=patient_id,
         db=db,
         current_user=current_user,
@@ -270,6 +417,20 @@ async def stream_ask(
     )
 
     system_prompt = _chat_system_prompt(clinician_mode, None)
+    multilingual, language_context, translated_question = (
+        await _resolve_multilingual_inputs(
+            patient=patient,
+            question=question,
+            input_language=input_language,
+            output_language=output_language,
+            clinician_mode=clinician_mode,
+        )
+    )
+    try:
+        normalized_input_mode = validate_input_mode(input_mode)
+        normalized_response_mode = validate_response_mode(response_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     manager = ConversationManager(db)
     conversation_uuid = conversation_id
     if conversation_uuid is None:
@@ -282,14 +443,131 @@ async def stream_ask(
         import logging
 
         logger = logging.getLogger("medmemory")
+        if language_context.output_language != "en":
+            try:
+                rag_response = await rag_service.ask(
+                    question=translated_question,
+                    patient_id=patient_id,
+                    conversation_id=conversation_uuid,
+                    system_prompt=system_prompt,
+                )
+                localized_answer = await multilingual.translate_answer_from_english(
+                    rag_response.answer,
+                    target_language=language_context.output_language,
+                )
+                speech_task = asyncio.create_task(
+                    _maybe_attach_speech(
+                        answer=localized_answer,
+                        output_language=language_context.output_language,
+                        response_mode=normalized_response_mode,
+                        patient_id=patient_id,
+                        conversation_id=rag_response.conversation_id,
+                        message_id=rag_response.message_id,
+                    )
+                )
+                for piece in multilingual.split_for_streaming(localized_answer):
+                    yield (
+                        "data: "
+                    + StreamChatChunk(
+                        chunk=piece,
+                        conversation_id=rag_response.conversation_id,
+                        is_complete=False,
+                        input_mode=normalized_input_mode,
+                        response_mode=normalized_response_mode,
+                    ).model_dump_json()
+                        + "\n\n"
+                    )
+                speech_payload = await speech_task
+                final_sources = [
+                    SourceInfo(
+                        source_type=s["source_type"],
+                        source_id=s["source_id"],
+                        relevance=s["relevance"],
+                    )
+                    for s in rag_response.sources_summary
+                ]
+                yield (
+                    "data: "
+                    + StreamChatChunk(
+                        chunk="",
+                        conversation_id=rag_response.conversation_id,
+                        is_complete=True,
+                        message_id=rag_response.message_id,
+                        input_mode=normalized_input_mode,
+                        detected_language=language_context.detected_language,
+                        input_language=language_context.input_language,
+                        output_language=language_context.output_language,
+                        translated_question=(
+                            translated_question if translated_question != question else None
+                        ),
+                        translation_applied=language_context.translation_applied,
+                        speech_locale=language_context.speech_locale,
+                        audio_asset_id=speech_payload["audio_asset_id"],
+                        audio_url=speech_payload["audio_url"],
+                        audio_duration_ms=speech_payload["audio_duration_ms"],
+                        num_sources=rag_response.num_sources,
+                        sources=final_sources,
+                        response_mode=str(speech_payload["response_mode"]),
+                    ).model_dump_json()
+                    + "\n\n"
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "Localized chat stream failed patient_id=%s conv=%s",
+                    patient_id,
+                    conversation_uuid,
+                )
+                err_msg = "Chat failed due to a server error. Please try again."
+                yield (
+                    "data: "
+                    + StreamChatChunk(
+                        chunk=err_msg,
+                        conversation_id=conversation_uuid,
+                        is_complete=False,
+                        input_mode=normalized_input_mode,
+                        response_mode=normalized_response_mode,
+                    ).model_dump_json()
+                    + "\n\n"
+                )
+                yield (
+                    "data: "
+                    + StreamChatChunk(
+                        chunk="",
+                        conversation_id=conversation_uuid,
+                        is_complete=True,
+                        input_mode=normalized_input_mode,
+                        response_mode=normalized_response_mode,
+                        detected_language=language_context.detected_language,
+                        input_language=language_context.input_language,
+                        output_language=language_context.output_language,
+                        translated_question=(
+                            translated_question if translated_question != question else None
+                        ),
+                        translation_applied=language_context.translation_applied,
+                        speech_locale=language_context.speech_locale,
+                    ).model_dump_json()
+                    + "\n\n"
+                )
+                return
         try:
             async for chunk in rag_service.stream_ask(
-                question=question,
+                question=translated_question,
                 patient_id=patient_id,
                 conversation_id=conversation_uuid,
                 system_prompt=system_prompt,
             ):
-                yield f"data: {StreamChatChunk(chunk=chunk, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
+                yield (
+                    "data: "
+                    + StreamChatChunk(
+                        chunk=chunk,
+                        conversation_id=conversation_uuid,
+                        is_complete=False,
+                        input_mode=normalized_input_mode,
+                        response_mode=normalized_response_mode,
+                    ).model_dump_json()
+                    + "\n\n"
+                )
         except Exception:
             # Ensure we log the traceback server-side and still close the SSE stream cleanly.
             logger.exception(
@@ -298,7 +576,17 @@ async def stream_ask(
                 conversation_uuid,
             )
             err_msg = "Chat failed due to a server error. Please try again."
-            yield f"data: {StreamChatChunk(chunk=err_msg, conversation_id=conversation_uuid, is_complete=False).model_dump_json()}\n\n"
+            yield (
+                "data: "
+                + StreamChatChunk(
+                    chunk=err_msg,
+                    conversation_id=conversation_uuid,
+                    is_complete=False,
+                    input_mode=normalized_input_mode,
+                    response_mode=normalized_response_mode,
+                ).model_dump_json()
+                + "\n\n"
+            )
         finally:
             # Send completion with conversation ID
             metadata = rag_service.get_last_stream_metadata()
@@ -310,12 +598,42 @@ async def stream_ask(
                 )
                 for s in metadata.get("sources_summary", [])
             ]
+            assistant_answer = (
+                metadata.get("full_response")
+                or metadata.get("answer")
+                or (
+                    rag_service.get_last_streamed_response()
+                    if hasattr(rag_service, "get_last_streamed_response")
+                    else ""
+                )
+            )
+            speech_payload = await _maybe_attach_speech(
+                answer=str(assistant_answer or ""),
+                output_language=language_context.output_language,
+                response_mode=normalized_response_mode,
+                patient_id=patient_id,
+                conversation_id=conversation_uuid,
+                message_id=metadata.get("message_id"),
+            )
             yield (
                 "data: "
                 + StreamChatChunk(
                     chunk="",
                     conversation_id=conversation_uuid,
                     is_complete=True,
+                    input_mode=normalized_input_mode,
+                    response_mode=str(speech_payload["response_mode"]),
+                    detected_language=language_context.detected_language,
+                    input_language=language_context.input_language,
+                    output_language=language_context.output_language,
+                    translated_question=(
+                        translated_question if translated_question != question else None
+                    ),
+                    translation_applied=language_context.translation_applied,
+                    speech_locale=language_context.speech_locale,
+                    audio_asset_id=speech_payload["audio_asset_id"],
+                    audio_url=speech_payload["audio_url"],
+                    audio_duration_ms=speech_payload["audio_duration_ms"],
                     num_sources=metadata.get("num_sources"),
                     sources=final_sources,
                     structured_data=metadata.get("structured_data"),
@@ -1133,6 +1451,7 @@ async def get_conversation(
                 content=msg.content,
                 timestamp=msg.timestamp,
                 message_id=msg.message_id,
+                structured_data=msg.structured_data,
             )
             for msg in conversation.messages
         ],

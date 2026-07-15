@@ -75,7 +75,12 @@ class FakeConversationManager:
     async def add_message(self, *args, **kwargs):
         role = kwargs.get("role") if "role" in kwargs else args[1]
         content = kwargs.get("content") if "content" in kwargs else args[2]
-        self._conversation.add_message(role, content)
+        structured_data = kwargs.get("structured_data")
+        self._conversation.add_message(
+            role,
+            content,
+            structured_data=structured_data,
+        )
         return SimpleNamespace(message_id=1)
 
 
@@ -213,6 +218,11 @@ class NeverCallLLMService(FakeLLMService):
         raise AssertionError("LLM generation should not be called in structured mode")
 
 
+class NeverCallContextEngine:
+    async def get_context(self, *args, **kwargs):
+        raise AssertionError("Context retrieval should not be called for small talk")
+
+
 @pytest.mark.anyio
 async def test_rag_service_ask():
     llm = FakeLLMService()
@@ -229,6 +239,78 @@ async def test_rag_service_ask():
     assert response.num_sources == 1
     assert llm.last_history
     assert llm.last_history[-1]["role"] == "user"
+
+
+@pytest.mark.anyio
+async def test_rag_small_talk_returns_warm_direct_response():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=NeverCallContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response = await rag.ask(question="hey how was your day?", patient_id=1)
+
+    assert "doing well" in response.answer.lower()
+    assert "records" in response.answer.lower()
+    assert response.num_sources == 0
+    assert response.llm_response.finish_reason == "small_talk_direct"
+
+
+@pytest.mark.anyio
+async def test_rag_stream_small_talk_returns_warm_direct_response():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=NeverCallContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    chunks = []
+    async for chunk in rag.stream_ask(question="hello", patient_id=1):
+        chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert "ready to help" in chunks[0].lower()
+    assert "lab results" in chunks[0].lower()
+
+
+@pytest.mark.anyio
+async def test_rag_ask_structured_small_talk_returns_text_without_structured_payload():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=NeverCallContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response, structured = await rag.ask_structured(
+        question="thank you",
+        patient_id=1,
+    )
+
+    assert structured is None
+    assert "welcome" in response.answer.lower()
+    assert response.llm_response.finish_reason == "small_talk_direct"
+
+
+@pytest.mark.anyio
+async def test_rag_greeting_plus_medical_question_still_uses_medical_path():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeStructuredContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response = await rag.ask(
+        question="hey, what medications am i currently taking?",
+        patient_id=1,
+    )
+
+    assert "Metformin" in response.answer
+    assert response.llm_response.finish_reason == "structured_direct"
 
 
 @pytest.mark.anyio
@@ -564,6 +646,80 @@ class FakeTrendPolarityContextEngine:
         )
 
 
+class FakeAppleHealthContextEngine:
+    async def get_context(
+        self,
+        query,
+        patient_id,
+        max_tokens=4000,
+        system_prompt=None,
+        min_score=None,
+        **_kwargs,
+    ):
+        return FakeContextResult(
+            prompt="PROMPT",
+            synthesized_context=SimpleNamespace(
+                full_context=(
+                    "Apple Health daily steps: 4200 steps on 2026-03-04.\n"
+                    "Apple Health daily steps: 5100 steps on 2026-03-06.\n"
+                    "Apple Health daily steps: 0 steps on 2026-03-10.\n"
+                    "Apple Health sync status: connected. Total synced days: 18. "
+                    "Synced range: 2026-02-25 to 2026-03-10. "
+                    "Last sync: 2026-03-10T18:32:00+00:00."
+                ),
+                total_chunks_used=4,
+            ),
+            ranked_results=[
+                SimpleNamespace(
+                    result=SimpleNamespace(
+                        source_type="apple_health",
+                        source_id=201,
+                        content="Apple Health daily steps: 4200 steps on 2026-03-04.",
+                        context_date=datetime(2026, 3, 4, tzinfo=UTC),
+                    ),
+                    final_score=0.96,
+                ),
+                SimpleNamespace(
+                    result=SimpleNamespace(
+                        source_type="apple_health",
+                        source_id=202,
+                        content="Apple Health daily steps: 5100 steps on 2026-03-06.",
+                        context_date=datetime(2026, 3, 6, tzinfo=UTC),
+                    ),
+                    final_score=0.95,
+                ),
+                SimpleNamespace(
+                    result=SimpleNamespace(
+                        source_type="apple_health",
+                        source_id=203,
+                        content="Apple Health daily steps: 0 steps on 2026-03-10.",
+                        context_date=datetime(2026, 3, 10, tzinfo=UTC),
+                    ),
+                    final_score=0.94,
+                ),
+                SimpleNamespace(
+                    result=SimpleNamespace(
+                        source_type="apple_health_status",
+                        source_id=301,
+                        content=(
+                            "Apple Health sync status: connected. Total synced days: 18. "
+                            "Synced range: 2026-02-25 to 2026-03-10. "
+                            "Last sync: 2026-03-10T18:32:00+00:00."
+                        ),
+                        context_date=datetime(2026, 3, 10, tzinfo=UTC),
+                    ),
+                    final_score=0.93,
+                ),
+            ],
+            query_analysis=SimpleNamespace(
+                intent=QueryIntent.TREND,
+                test_names=[],
+                medication_names=[],
+                data_sources=["apple_health"],
+            ),
+        )
+
+
 class FakeMedicationPanelContextEngine:
     async def get_context(
         self,
@@ -763,6 +919,81 @@ async def test_rag_service_direct_trend_handles_polarity_values():
 
     assert "HIV changed from Non-Reactive to Reactive" in response.answer
     assert "between 2025-01-10 and 2025-06-10" in response.answer
+
+
+@pytest.mark.anyio
+async def test_rag_service_uses_direct_apple_health_answer():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeAppleHealthContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response = await rag.ask(
+        question="Any Apple Health info across one week?",
+        patient_id=1,
+    )
+
+    assert "Apple Health update" in response.answer
+    assert "9,300 steps" in response.answer
+    assert "averaging about 3,100 steps a day" in response.answer
+    assert "latest recorded day was 2026-03-10 with 0 steps" in response.answer
+    assert "18 synced day(s) overall" in response.answer
+    assert response.llm_response.finish_reason == "structured_direct"
+
+
+@pytest.mark.anyio
+async def test_rag_service_recognizes_swahili_apple_health_question():
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeAppleHealthContextEngine(),
+        conversation_manager=FakeConversationManager(),
+    )
+
+    response = await rag.ask(
+        question="na mpangilio wa mienenendo ya apple health",
+        patient_id=1,
+    )
+
+    assert "Apple Health update" in response.answer
+    assert response.llm_response.finish_reason == "structured_direct"
+
+
+@pytest.mark.anyio
+async def test_rag_ask_structured_uses_direct_apple_health_answer():
+    conversation_manager = FakeConversationManager()
+    rag = RAGService(
+        db=None,
+        llm_service=NeverCallLLMService(),
+        context_engine=FakeAppleHealthContextEngine(),
+        conversation_manager=conversation_manager,
+    )
+
+    response, structured = await rag.ask_structured(
+        question="Any Apple Health info across one week?",
+        patient_id=1,
+    )
+
+    assert structured is not None
+    assert "Apple Health update" in response.answer
+    assert "9,300 steps" in response.answer
+    assert response.llm_response.finish_reason == "structured_direct"
+    assert structured.overview.startswith("Apple Health logged 9,300 steps")
+    assert [result.name for result in structured.key_results[:3]] == [
+        "Total steps (2026-03-04 to 2026-03-10)",
+        "Average daily steps",
+        "Latest daily steps (2026-03-10)",
+    ]
+    assert structured.key_results[0].value == "9,300"
+    assert "key_results" in structured.section_sources
+    assert rag.get_guardrail_counters().get("structured_direct") == 1
+    assert conversation_manager._conversation.messages[-1].structured_data is not None
+    assert (
+        conversation_manager._conversation.messages[-1].structured_data["overview"]
+        == structured.overview
+    )
 
 
 class FakeNoContextEngine:
@@ -1051,7 +1282,8 @@ async def test_rag_ask_structured_refuses_without_evidence():
 
 
 @pytest.mark.anyio
-async def test_rag_ask_structured_latest_document_unavailable_message():
+async def test_rag_ask_structured_latest_document_unavailable_message(monkeypatch):
+    monkeypatch.setattr(settings, "llm_summary_best_effort_fallback", True)
     rag = RAGService(
         db=None,
         llm_service=NeverCallLLMService(),
@@ -1168,7 +1400,8 @@ async def test_rag_strict_grounding_refuses_low_evidence_fact_query():
 
 
 @pytest.mark.anyio
-async def test_rag_ask_latest_document_summary_refuses_with_specific_message():
+async def test_rag_ask_latest_document_summary_refuses_with_specific_message(monkeypatch):
+    monkeypatch.setattr(settings, "llm_summary_best_effort_fallback", True)
     rag = RAGService(
         db=None,
         llm_service=NeverCallLLMService(),
@@ -1206,7 +1439,8 @@ async def test_rag_stream_strict_grounding_refuses_low_evidence_fact_query():
 
 
 @pytest.mark.anyio
-async def test_rag_stream_latest_document_summary_refuses_with_specific_message():
+async def test_rag_stream_latest_document_summary_refuses_with_specific_message(monkeypatch):
+    monkeypatch.setattr(settings, "llm_summary_best_effort_fallback", True)
     rag = RAGService(
         db=None,
         llm_service=NeverCallLLMService(),

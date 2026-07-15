@@ -18,27 +18,61 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _table_exists(conn, name: str) -> bool:
+    return sa.inspect(conn).has_table(name)
+
+
+def _columns(conn, table: str) -> set[str]:
+    return {column["name"] for column in sa.inspect(conn).get_columns(table)}
+
+
 def upgrade() -> None:
+    conn = op.get_bind()
+    patient_columns = _columns(conn, "patients")
+    if _table_exists(conn, "patient_relationships") and {
+        "sex",
+        "height_cm",
+        "weight_kg",
+        "preferred_language",
+        "timezone",
+        "profile_photo_url",
+        "is_dependent",
+        "profile_completed_at",
+    }.issubset(patient_columns):
+        return
+
     # Add new columns to patients table
-    op.add_column("patients", sa.Column("sex", sa.String(20), nullable=True))
-    op.add_column("patients", sa.Column("height_cm", sa.Numeric(5, 2), nullable=True))
-    op.add_column("patients", sa.Column("weight_kg", sa.Numeric(5, 2), nullable=True))
-    op.add_column(
-        "patients",
-        sa.Column(
-            "preferred_language", sa.String(10), server_default="en", nullable=True
-        ),
+    op.execute(sa.text("ALTER TABLE patients ADD COLUMN IF NOT EXISTS sex VARCHAR(20)"))
+    op.execute(
+        sa.text("ALTER TABLE patients ADD COLUMN IF NOT EXISTS height_cm NUMERIC(5, 2)")
     )
-    op.add_column("patients", sa.Column("timezone", sa.String(50), nullable=True))
-    op.add_column(
-        "patients", sa.Column("profile_photo_url", sa.String(500), nullable=True)
+    op.execute(
+        sa.text("ALTER TABLE patients ADD COLUMN IF NOT EXISTS weight_kg NUMERIC(5, 2)")
     )
-    op.add_column(
-        "patients",
-        sa.Column("is_dependent", sa.Boolean(), server_default="false", nullable=False),
+    op.execute(
+        sa.text(
+            "ALTER TABLE patients ADD COLUMN IF NOT EXISTS preferred_language "
+            "VARCHAR(10) DEFAULT 'en'"
+        )
     )
-    op.add_column(
-        "patients", sa.Column("profile_completed_at", sa.DateTime(), nullable=True)
+    op.execute(
+        sa.text("ALTER TABLE patients ADD COLUMN IF NOT EXISTS timezone VARCHAR(50)")
+    )
+    op.execute(
+        sa.text(
+            "ALTER TABLE patients ADD COLUMN IF NOT EXISTS profile_photo_url VARCHAR(500)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "ALTER TABLE patients ADD COLUMN IF NOT EXISTS is_dependent BOOLEAN "
+            "NOT NULL DEFAULT false"
+        )
+    )
+    op.execute(
+        sa.text(
+            "ALTER TABLE patients ADD COLUMN IF NOT EXISTS profile_completed_at TIMESTAMP"
+        )
     )
 
     # Emergency information table

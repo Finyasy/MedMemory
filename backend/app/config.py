@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,8 +74,47 @@ class Settings(BaseSettings):
 
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimension: int = 384
+    startup_require_embeddings: bool = Field(
+        default=True,
+        description=(
+            "Require embeddings to load successfully during API startup. "
+            "Set STARTUP_REQUIRE_EMBEDDINGS=0 for CI or staging scaffolds that do not "
+            "ship local embedding assets yet."
+        ),
+    )
 
     llm_model: str = "google/medgemma-1.5-4b-it"
+    llm_primary_provider: Literal["medgemma", "openai"] = Field(
+        default="medgemma",
+        description="Primary LLM provider. Set LLM_PRIMARY_PROVIDER=openai to prefer OpenAI when configured.",
+    )
+    llm_fallback_provider: Literal["none", "medgemma"] = Field(
+        default="medgemma",
+        description="Fallback LLM provider used when the primary provider is unavailable.",
+    )
+    openai_api_key: str | None = Field(
+        default=None,
+        description="OpenAI API key for Responses API calls. Keep backend-only.",
+    )
+    openai_model: str = Field(
+        default="gpt-5.2",
+        description="OpenAI model used when LLM_PRIMARY_PROVIDER=openai.",
+    )
+    openai_timeout_seconds: float = Field(
+        default=45.0,
+        ge=1.0,
+        description="Timeout for a single OpenAI Responses API request.",
+    )
+    openai_max_retries: int = Field(
+        default=0,
+        ge=0,
+        le=5,
+        description="Number of HTTP transport retries before falling back.",
+    )
+    openai_fallback_on_statuses: list[int] = Field(
+        default_factory=lambda: [401, 403, 408, 409, 429, 500, 502, 503, 504],
+        description="OpenAI HTTP statuses that trigger MedGemma fallback.",
+    )
     llm_model_path: Path | None = Field(
         default=None,
         description="Local path to model directory. If set, uses local model instead of downloading from HF.",
@@ -452,6 +491,54 @@ class Settings(BaseSettings):
         le=5.0,
         description="Word insertion bonus passed to the CTC beam-search decoder.",
     )
+    speech_synthesis_model: str = Field(
+        default="facebook/mms-tts-swh",
+        description="Model id used for Swahili speech synthesis.",
+    )
+    speech_synthesis_model_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional local path to a Swahili TTS checkpoint directory. When set, runtime "
+            "loads speech synthesis strictly from this path."
+        ),
+    )
+    speech_synthesis_timeout_seconds: int = Field(
+        default=90,
+        ge=5,
+        le=600,
+        description="Soft timeout budget for a single speech synthesis request.",
+    )
+    speech_synthesis_assets_dir: Path = Field(
+        default=Path("artifacts/speech/generated"),
+        description="Directory used to persist generated speech assets and metadata.",
+    )
+    speech_synthesis_backend: str = Field(
+        default="in_process",
+        description=(
+            "Swahili TTS backend mode. Use 'in_process' for the current backend process "
+            "or 'http' to call a dedicated speech service."
+        ),
+    )
+    speech_synthesis_service_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL for the dedicated speech synthesis service when "
+            "SPEECH_SYNTHESIS_BACKEND=http."
+        ),
+    )
+    speech_synthesis_service_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        description="HTTP timeout used when calling the dedicated speech synthesis service.",
+    )
+    speech_service_internal_api_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional shared secret sent to the dedicated speech service via "
+            "X-Speech-Service-Key."
+        ),
+    )
 
     api_key: str | None = None
     log_level: str = "INFO"
@@ -485,6 +572,33 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator(
+        "llm_model_path",
+        "llm_mlx_quantized_model_path",
+        "hf_cache_dir",
+        "speech_transcription_model_path",
+        "speech_transcription_lm_path",
+        "speech_synthesis_model_path",
+        mode="before",
+    )
+    @classmethod
+    def normalize_blank_optional_paths(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator(
+        "openai_api_key",
+        "speech_synthesis_service_base_url",
+        "speech_service_internal_api_key",
+        mode="before",
+    )
+    @classmethod
+    def normalize_blank_optional_strings(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_jwt_secret(self) -> "Settings":

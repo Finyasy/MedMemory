@@ -8,16 +8,19 @@ Implements multiple retrieval strategies:
 """
 
 import logging
+import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import (
     LabResult,
     Medication,
+    PatientAppleHealthStepDaily,
+    PatientDataConnection,
 )
 from app.services.context.analyzer import DataSource, QueryAnalysis, QueryIntent
 from app.services.context.cross_encoder_reranker import CrossEncoderReranker
@@ -82,6 +85,8 @@ class HybridRetriever:
         QueryIntent.VALUE,
         QueryIntent.STATUS,
     }
+    APPLE_HEALTH_SOURCE_TYPES = {"apple_health", "apple_health_status"}
+    APPLE_HEALTH_PROVIDER_SLUG = "apple_health"
 
     def __init__(
         self,
@@ -204,11 +209,12 @@ class HybridRetriever:
         # Direct structured queries for fact/list queries.
         # Keep this path broad so lab/medication data remains available even when
         # intent classification falls back to GENERAL.
+        apple_health_query = self._is_apple_health_query(query_analysis)
         should_use_structured = query_analysis.intent in {
             QueryIntent.LIST,
             QueryIntent.VALUE,
             QueryIntent.STATUS,
-        }
+        } or apple_health_query
         if not should_use_structured:
             source_hints = set(query_analysis.data_sources)
             should_use_structured = (
@@ -216,6 +222,7 @@ class HybridRetriever:
                 or bool(query_analysis.medication_names)
                 or DataSource.LAB_RESULT in source_hints
                 or DataSource.MEDICATION in source_hints
+                or DataSource.APPLE_HEALTH in source_hints
             )
 
         if should_use_structured:
@@ -271,7 +278,9 @@ class HybridRetriever:
         # Filter and sort
         has_semantic_hits = any(r.semantic_score > 0 for r in all_results)
         has_structured_hits = any(
-            r.source_type in {"lab_result", "medication"} for r in all_results
+            r.source_type
+            in {"lab_result", "medication", *self.APPLE_HEALTH_SOURCE_TYPES}
+            for r in all_results
         )
 
         if fallback_used:
@@ -680,5 +689,162 @@ class HybridRetriever:
                         context_date=med.prescribed_at,
                     )
                 )
+
+        if self._is_apple_health_query(query_analysis):
+            results.extend(
+                await self._structured_apple_health_search(
+                    query_analysis=query_analysis,
+                    patient_id=patient_id,
+                    limit=limit,
+                )
+            )
+
+        return results[:limit]
+
+    def _is_apple_health_query(self, query_analysis: QueryAnalysis) -> bool:
+        """Return True when the question is asking about Apple Health steps."""
+        if DataSource.APPLE_HEALTH in query_analysis.data_sources:
+            return True
+
+        normalized = (query_analysis.normalized_query or "").lower()
+        has_provider = any(
+            token in normalized
+            for token in ("apple health", "healthkit", "health kit")
+        )
+        if has_provider:
+            return True
+
+        has_steps_metric = bool(
+            re.search(r"\b(step count|step counts|daily steps|walking steps|hatua)\b", normalized)
+        )
+        has_time_or_trend = bool(
+            re.search(r"\b(week|month|today|trend|activity|mwenendo|mabadiliko)\b", normalized)
+        )
+        return has_steps_metric and has_time_or_trend
+
+    def _resolve_apple_health_window(
+        self,
+        query_analysis: QueryAnalysis,
+    ) -> tuple[date, date]:
+        """Resolve the step-summary window for Apple Health questions."""
+        temporal = query_analysis.temporal
+        today = datetime.now(UTC).date()
+
+        if temporal.date_from and temporal.date_to:
+            return temporal.date_from.date(), temporal.date_to.date()
+
+        normalized = (query_analysis.normalized_query or "").lower()
+        if "week" in normalized or "wiki" in normalized:
+            return today - timedelta(days=6), today
+
+        default_days = 14 if query_analysis.intent != QueryIntent.TREND else 30
+        return today - timedelta(days=default_days - 1), today
+
+    async def _structured_apple_health_search(
+        self,
+        *,
+        query_analysis: QueryAnalysis,
+        patient_id: int,
+        limit: int,
+    ) -> list[RetrievalResult]:
+        """Fetch Apple Health step summaries and sync metadata."""
+        start_date, end_date = self._resolve_apple_health_window(query_analysis)
+        points_limit = max(1, min(max(limit - 1, 1), 31))
+
+        points_result = await self.db.execute(
+            select(PatientAppleHealthStepDaily)
+            .where(
+                PatientAppleHealthStepDaily.patient_id == patient_id,
+                PatientAppleHealthStepDaily.sample_date >= start_date,
+                PatientAppleHealthStepDaily.sample_date <= end_date,
+            )
+            .order_by(PatientAppleHealthStepDaily.sample_date.asc())
+            .limit(points_limit)
+        )
+        points = list(points_result.scalars().all())
+
+        aggregates = await self.db.execute(
+            select(
+                func.count(PatientAppleHealthStepDaily.id),
+                func.min(PatientAppleHealthStepDaily.sample_date),
+                func.max(PatientAppleHealthStepDaily.sample_date),
+            ).where(PatientAppleHealthStepDaily.patient_id == patient_id)
+        )
+        total_synced_days, earliest_sample_date, latest_sample_date = aggregates.one()
+
+        connection_result = await self.db.execute(
+            select(PatientDataConnection).where(
+                PatientDataConnection.patient_id == patient_id,
+                PatientDataConnection.provider_slug == self.APPLE_HEALTH_PROVIDER_SLUG,
+            )
+        )
+        connection = connection_result.scalar_one_or_none()
+
+        results: list[RetrievalResult] = []
+        for point in points:
+            results.append(
+                RetrievalResult(
+                    id=point.id,
+                    content=(
+                        f"Apple Health daily steps: {int(point.step_count)} steps on "
+                        f"{point.sample_date.isoformat()}."
+                    ),
+                    source_type="apple_health",
+                    source_id=point.id,
+                    patient_id=patient_id,
+                    keyword_score=1.0,
+                    context_date=datetime.combine(
+                        point.sample_date,
+                        time.min,
+                        tzinfo=UTC,
+                    ),
+                )
+            )
+
+        has_connection_signal = bool(connection) or bool(total_synced_days)
+        if has_connection_signal:
+            synced_days = int(
+                connection.source_count
+                if connection and connection.source_count is not None
+                else total_synced_days or 0
+            )
+            status = connection.status if connection else "connected"
+            range_text = (
+                f"{earliest_sample_date.isoformat()} to {latest_sample_date.isoformat()}"
+                if earliest_sample_date and latest_sample_date
+                else "not available"
+            )
+            summary = (
+                f"Apple Health sync status: {status}. "
+                f"Total synced days: {synced_days}. "
+                f"Synced range: {range_text}."
+            )
+            if connection and connection.last_synced_at:
+                summary += (
+                    f" Last sync: {connection.last_synced_at.isoformat()}."
+                )
+            if not points:
+                summary += (
+                    f" No daily step totals were found between {start_date.isoformat()} "
+                    f"and {end_date.isoformat()}."
+                )
+
+            summary_date = None
+            if connection and connection.last_synced_at:
+                summary_date = connection.last_synced_at
+            elif latest_sample_date:
+                summary_date = datetime.combine(latest_sample_date, time.min, tzinfo=UTC)
+
+            results.append(
+                RetrievalResult(
+                    id=(connection.id if connection else 0) or 0,
+                    content=summary,
+                    source_type="apple_health_status",
+                    source_id=connection.id if connection else None,
+                    patient_id=patient_id,
+                    keyword_score=0.95,
+                    context_date=summary_date,
+                )
+            )
 
         return results[:limit]

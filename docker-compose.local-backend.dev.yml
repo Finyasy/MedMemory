@@ -52,6 +52,38 @@ services:
     networks:
       - medmemory-network
 
+  speech-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medmemory-speech-local-dev
+    working_dir: /app
+    env_file:
+      - ./backend/.env
+    environment:
+      SPEECH_SYNTHESIS_MODEL_PATH: /app/models/mms-tts-swh
+      SPEECH_SYNTHESIS_ASSETS_DIR: /app/artifacts/speech/generated
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./backend/models:/app/models:ro
+      - ./backend/artifacts:/app/artifacts
+    command: uvicorn app.speech_service:app --host 0.0.0.0 --port 8010
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; req = urllib.request.Request('http://localhost:8010/internal/v1/health', headers={'X-Speech-Service-Key': os.getenv('SPEECH_SERVICE_INTERNAL_API_KEY', '')}); urllib.request.urlopen(req)"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 10s
+    networks:
+      - medmemory-network
+
 volumes:
   postgres_data_local_dev:
     driver: local

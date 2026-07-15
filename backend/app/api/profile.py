@@ -449,7 +449,7 @@ async def delete_emergency_contact(
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    db.delete(contact)
+    await db.delete(contact)
 
 
 # === Allergies ===
@@ -532,7 +532,7 @@ async def delete_allergy(
     if not allergy:
         raise HTTPException(status_code=404, detail="Allergy not found")
 
-    db.delete(allergy)
+    await db.delete(allergy)
 
 
 # === Conditions ===
@@ -617,7 +617,7 @@ async def delete_condition(
     if not condition:
         raise HTTPException(status_code=404, detail="Condition not found")
 
-    db.delete(condition)
+    await db.delete(condition)
 
 
 # === Providers ===
@@ -700,7 +700,7 @@ async def delete_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
 
-    db.delete(provider)
+    await db.delete(provider)
 
 
 # === Lifestyle ===
@@ -802,7 +802,7 @@ async def delete_insurance(
     if not insurance:
         raise HTTPException(status_code=404, detail="Insurance not found")
 
-    db.delete(insurance)
+    await db.delete(insurance)
 
 
 # === Family History ===
@@ -857,7 +857,7 @@ async def delete_family_history(
     if not history:
         raise HTTPException(status_code=404, detail="Family history entry not found")
 
-    db.delete(history)
+    await db.delete(history)
 
 
 # === Vaccinations ===
@@ -915,7 +915,7 @@ async def delete_vaccination(
     if not vaccination:
         raise HTTPException(status_code=404, detail="Vaccination not found")
 
-    db.delete(vaccination)
+    await db.delete(vaccination)
 
 
 # === Growth Measurements ===
@@ -973,4 +973,4 @@ async def delete_growth_measurement(
     if not measurement:
         raise HTTPException(status_code=404, detail="Measurement not found")
 
-    db.delete(measurement)
+    await db.delete(measurement)

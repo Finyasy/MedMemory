@@ -34,7 +34,7 @@ def test_security_headers_are_set():
     assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
     assert (
         response.headers.get("Permissions-Policy")
-        == "geolocation=(), microphone=(), camera=()"
+        == "geolocation=(), microphone=(self), camera=()"
     )
     assert (
         response.headers.get("Content-Security-Policy")

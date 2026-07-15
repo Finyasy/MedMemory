@@ -39,11 +39,15 @@ class ContextRanker:
         QueryIntent.LIST: {
             "medication": 1.0,
             "lab_result": 0.8,
+            "apple_health": 0.9,
+            "apple_health_status": 0.8,
             "encounter": 0.6,
             "document": 0.5,
         },
         QueryIntent.VALUE: {
             "lab_result": 1.0,
+            "apple_health": 0.95,
+            "apple_health_status": 0.85,
             "medication": 0.6,
             "encounter": 0.7,
             "document": 0.5,
@@ -51,6 +55,8 @@ class ContextRanker:
         QueryIntent.STATUS: {
             "encounter": 1.0,
             "lab_result": 0.9,
+            "apple_health": 0.9,
+            "apple_health_status": 0.95,
             "medication": 0.7,
             "document": 0.6,
         },
@@ -58,11 +64,23 @@ class ContextRanker:
             "encounter": 1.0,
             "document": 0.9,
             "lab_result": 0.7,
+            "apple_health": 0.85,
+            "apple_health_status": 0.8,
             "medication": 0.6,
+        },
+        QueryIntent.TREND: {
+            "apple_health": 1.0,
+            "apple_health_status": 0.9,
+            "lab_result": 0.95,
+            "encounter": 0.7,
+            "medication": 0.6,
+            "document": 0.6,
         },
         QueryIntent.RECENT: {
             "encounter": 1.0,
             "lab_result": 1.0,
+            "apple_health": 1.0,
+            "apple_health_status": 0.9,
             "medication": 0.8,
             "document": 0.7,
         },
@@ -70,6 +88,8 @@ class ContextRanker:
             "encounter": 1.0,
             "medication": 0.9,
             "lab_result": 0.8,
+            "apple_health": 0.9,
+            "apple_health_status": 0.8,
             "document": 0.7,
         },
     }
@@ -172,7 +192,14 @@ class ContextRanker:
         # Apply source priority boost
         source_priorities = self.SOURCE_PRIORITIES.get(
             query_analysis.intent,
-            {"lab_result": 0.8, "medication": 0.8, "encounter": 0.8, "document": 0.7},
+            {
+                "lab_result": 0.8,
+                "medication": 0.8,
+                "apple_health": 0.85,
+                "apple_health_status": 0.75,
+                "encounter": 0.8,
+                "document": 0.7,
+            },
         )
         source_boost = source_priorities.get(result.source_type, 0.5)
         relevance *= source_boost

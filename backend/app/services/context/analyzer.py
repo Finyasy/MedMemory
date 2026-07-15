@@ -49,6 +49,7 @@ class DataSource(StrEnum):
     MEDICATION = "medication"
     ENCOUNTER = "encounter"
     DOCUMENT = "document"
+    APPLE_HEALTH = "apple_health"
     ALL = "all"
 
 
@@ -260,11 +261,27 @@ class QueryAnalyzer:
             "letter",
             "referral",
         ],
+        DataSource.APPLE_HEALTH: [
+            "apple health",
+            "healthkit",
+            "health kit",
+            "daily steps",
+            "step count",
+            "step counts",
+            "walking steps",
+            "hatua",
+            "mwenendo wa apple health",
+            "mienenendo ya apple health",
+        ],
     }
 
     # Temporal keywords
     TEMPORAL_PATTERNS = {
         "recent": (r"\brecent(ly)?\b|\blast\s*(few|couple)?\s*(days?|weeks?)\b", 14),
+        "last_week": (
+            r"\b(last|past)\s+week\b|\bover\s+(?:the\s+)?last\s+week\b|\bacross\s+one\s+week\b|\bone\s+week\b|\bwiki\s+moja\b|\bwiki\s+iliyopita\b",
+            7,
+        ),
         "last_month": (r"\blast month\b|\bpast month\b", 30),
         "last_3_months": (r"\blast (3|three) months?\b|\bpast (3|three) months?\b", 90),
         "last_6_months": (r"\blast (6|six) months?\b|\bpast (6|six) months?\b", 180),

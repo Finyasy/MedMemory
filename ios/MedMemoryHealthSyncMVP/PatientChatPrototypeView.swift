@@ -22,6 +22,33 @@ struct PatientChatView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(MedMemoryTheme.textSecondary)
                     Spacer()
+                    Text(languageLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(MedMemoryTheme.textPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(MedMemoryTheme.accentSoft)
+                        .clipShape(Capsule())
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(viewModel.suggestedChatPrompts, id: \.self) { prompt in
+                            Button {
+                                viewModel.useSuggestedPrompt(prompt)
+                            } label: {
+                                Text(prompt)
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                                    .foregroundStyle(MedMemoryTheme.textPrimary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color.white.opacity(0.86))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
 
                 HStack(spacing: 12) {
@@ -33,10 +60,11 @@ struct PatientChatView: View {
                     } label: {
                         Image(systemName: "paperplane.fill")
                             .foregroundStyle(.white)
-                            .padding(10)
+                            .frame(width: 48, height: 48)
                             .background(MedMemoryTheme.accent)
                             .clipShape(Circle())
                     }
+                    .buttonStyle(.plain)
                     .disabled(viewModel.isSendingChat || viewModel.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 14)
@@ -50,6 +78,17 @@ struct PatientChatView: View {
         .background(MedMemoryTheme.canvas.ignoresSafeArea())
         .navigationTitle("Chat")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var languageLabel: String {
+        switch viewModel.preferredChatLanguage {
+        case "sw":
+            return "Swahili"
+        case "sheng":
+            return "Sheng"
+        default:
+            return "English"
+        }
     }
 
     private func messageBubble(_ message: PatientChatMessage) -> some View {

@@ -37,7 +37,7 @@
 - [Docker](https://docs.docker.com/get-docker/) & Docker Compose
 - Or for local development:
   - [UV](https://docs.astral.sh/uv/) (Python package manager)
-  - [Node.js](https://nodejs.org/) 20+
+  - [Node.js](https://nodejs.org/) 22.x
 
 ### Option 1: Docker (Recommended)
 

@@ -66,12 +66,18 @@ struct PatientProfileView: View {
                         }
                     }
                     sectionCard(title: "Care Team", symbolName: "person.2.fill") {
+                        addButton("Add provider") {
+                            activeCollectionSheet = .provider
+                        }
                         if let profile = viewModel.fullProfile, !profile.providers.isEmpty {
                             ForEach(profile.providers) { provider in
                                 profileRow(
                                     title: provider.name,
                                     detail: [provider.clinic_name, provider.phone].compactMap { $0 }.joined(separator: " · "),
-                                    status: provider.is_primary ? "Primary" : formatValue(provider.provider_type)
+                                    status: provider.is_primary ? "Primary" : formatValue(provider.provider_type),
+                                    onDelete: {
+                                        Task { await viewModel.deleteProvider(provider) }
+                                    }
                                 )
                             }
                         } else {
@@ -79,12 +85,18 @@ struct PatientProfileView: View {
                         }
                     }
                     sectionCard(title: "Family History", symbolName: "figure.2.and.child.holdinghands") {
+                        addButton("Add family history") {
+                            activeCollectionSheet = .familyHistory
+                        }
                         if let profile = viewModel.fullProfile, !profile.family_history.isEmpty {
                             ForEach(profile.family_history) { item in
                                 profileRow(
                                     title: item.condition,
                                     detail: item.relation.capitalized,
-                                    status: item.age_of_onset.map { "Age \($0)" }
+                                    status: item.age_of_onset.map { "Age \($0)" },
+                                    onDelete: {
+                                        Task { await viewModel.deleteFamilyHistory(item) }
+                                    }
                                 )
                             }
                         } else {
@@ -92,6 +104,9 @@ struct PatientProfileView: View {
                         }
                     }
                     sectionCard(title: "Lifestyle", symbolName: "figure.walk") {
+                        addButton("Edit lifestyle") {
+                            activeCollectionSheet = .lifestyle
+                        }
                         if let lifestyle = viewModel.fullProfile?.lifestyle {
                             profileRow(title: "Exercise", detail: formatOptional(lifestyle.exercise_frequency), status: nil)
                             profileRow(title: "Sleep", detail: lifestyle.sleep_hours.map { "\($0) hours" } ?? "Not set", status: nil)
@@ -104,7 +119,7 @@ struct PatientProfileView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 8)
-                .padding(.bottom, 32)
+                .padding(.bottom, 120)
             }
             .background(
                 LinearGradient(
@@ -141,6 +156,12 @@ struct PatientProfileView: View {
                     AllergyEditView(viewModel: viewModel, activeSheet: $activeCollectionSheet)
                 case .condition:
                     ConditionEditView(viewModel: viewModel, activeSheet: $activeCollectionSheet)
+                case .provider:
+                    ProviderEditView(viewModel: viewModel, activeSheet: $activeCollectionSheet)
+                case .familyHistory:
+                    FamilyHistoryEditView(viewModel: viewModel, activeSheet: $activeCollectionSheet)
+                case .lifestyle:
+                    LifestyleEditView(viewModel: viewModel, activeSheet: $activeCollectionSheet)
                 }
             }
         }
@@ -148,7 +169,7 @@ struct PatientProfileView: View {
 
     private var profileHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(MedMemoryTheme.accent)
@@ -158,18 +179,19 @@ struct PatientProfileView: View {
                 }
                 .frame(width: 58, height: 58)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(viewModel.fullProfile?.full_name ?? viewModel.profileSummary?.full_name ?? "Health profile")
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(MedMemoryTheme.textPrimary)
-                    Text(profileMeta)
-                        .font(.subheadline)
-                        .foregroundStyle(MedMemoryTheme.textSecondary)
-                }
-
                 Spacer()
 
                 completionBadge
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(viewModel.fullProfile?.full_name ?? viewModel.profileSummary?.full_name ?? "Health profile")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(MedMemoryTheme.textPrimary)
+                Text(profileMeta)
+                    .font(.subheadline)
+                    .foregroundStyle(MedMemoryTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let profile = viewModel.fullProfile {
@@ -381,6 +403,9 @@ private enum ProfileCollectionSheet: String, Identifiable {
     case emergencyContact
     case allergy
     case condition
+    case provider
+    case familyHistory
+    case lifestyle
 
     var id: String { rawValue }
 }
@@ -689,6 +714,251 @@ private struct ConditionEditView: View {
 
     private func formatValue(_ value: String) -> String {
         value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private struct ProviderEditView: View {
+    @ObservedObject var viewModel: HealthSyncViewModel
+    @Binding var activeSheet: ProfileCollectionSheet?
+
+    @State private var name = ""
+    @State private var providerType = "pcp"
+    @State private var specialty = ""
+    @State private var clinicName = ""
+    @State private var phone = ""
+    @State private var email = ""
+    @State private var address = ""
+    @State private var isPrimary = false
+    @State private var notes = ""
+
+    private let providerTypes = ["pcp", "specialist", "dentist", "pharmacy", "hospital", "other"]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Provider") {
+                    TextField("Name", text: $name)
+                    Picker("Type", selection: $providerType) {
+                        ForEach(providerTypes, id: \.self) { option in
+                            Text(formatValue(option)).tag(option)
+                        }
+                    }
+                    TextField("Specialty", text: $specialty)
+                    TextField("Clinic", text: $clinicName)
+                    Toggle("Primary provider", isOn: $isPrimary)
+                }
+
+                Section("Contact") {
+                    TextField("Phone", text: $phone)
+                        .keyboardType(.phonePad)
+                    TextField("Email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                    TextField("Address", text: $address, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+
+                Section("Notes") {
+                    TextField("Notes", text: $notes, axis: .vertical)
+                        .lineLimit(2...5)
+                }
+            }
+            .navigationTitle("Add provider")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { activeSheet = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(viewModel.isMutatingProfileCollection ? "Saving..." : "Save") {
+                        Task {
+                            await viewModel.addProvider(
+                                name: name,
+                                providerType: providerType,
+                                specialty: specialty,
+                                clinicName: clinicName,
+                                phone: phone,
+                                email: email,
+                                address: address,
+                                isPrimary: isPrimary,
+                                notes: notes
+                            )
+                            if viewModel.profileError == nil {
+                                activeSheet = nil
+                            }
+                        }
+                    }
+                    .disabled(
+                        viewModel.isMutatingProfileCollection ||
+                        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            }
+        }
+    }
+
+    private func formatValue(_ value: String) -> String {
+        value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private struct FamilyHistoryEditView: View {
+    @ObservedObject var viewModel: HealthSyncViewModel
+    @Binding var activeSheet: ProfileCollectionSheet?
+
+    @State private var relation = "mother"
+    @State private var condition = ""
+    @State private var ageOfOnset = ""
+    @State private var isDeceased = false
+    @State private var notes = ""
+
+    private let relations = ["mother", "father", "sibling", "grandparent", "aunt", "uncle", "cousin", "other"]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Family history") {
+                    Picker("Relation", selection: $relation) {
+                        ForEach(relations, id: \.self) { option in
+                            Text(option.capitalized).tag(option)
+                        }
+                    }
+                    TextField("Condition", text: $condition)
+                    TextField("Age of onset", text: $ageOfOnset)
+                        .keyboardType(.numberPad)
+                    Toggle("Deceased", isOn: $isDeceased)
+                    TextField("Notes", text: $notes, axis: .vertical)
+                        .lineLimit(2...5)
+                }
+            }
+            .navigationTitle("Add history")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { activeSheet = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(viewModel.isMutatingProfileCollection ? "Saving..." : "Save") {
+                        Task {
+                            await viewModel.addFamilyHistory(
+                                relation: relation,
+                                condition: condition,
+                                ageOfOnset: ageOfOnset,
+                                isDeceased: isDeceased,
+                                notes: notes
+                            )
+                            if viewModel.profileError == nil {
+                                activeSheet = nil
+                            }
+                        }
+                    }
+                    .disabled(
+                        viewModel.isMutatingProfileCollection ||
+                        condition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct LifestyleEditView: View {
+    @ObservedObject var viewModel: HealthSyncViewModel
+    @Binding var activeSheet: ProfileCollectionSheet?
+
+    @State private var smokingStatus = ""
+    @State private var smokingFrequency = ""
+    @State private var alcoholUse = ""
+    @State private var exerciseFrequency = ""
+    @State private var dietType = ""
+    @State private var sleepHours = ""
+    @State private var occupation = ""
+    @State private var stressLevel = ""
+
+    private let smokingOptions = ["", "never", "former", "current"]
+    private let alcoholOptions = ["", "never", "occasional", "moderate", "heavy"]
+    private let exerciseOptions = ["", "none", "light", "moderate", "active"]
+    private let stressOptions = ["", "low", "moderate", "high"]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Habits") {
+                    Picker("Smoking", selection: $smokingStatus) {
+                        ForEach(smokingOptions, id: \.self) { option in
+                            Text(label(option)).tag(option)
+                        }
+                    }
+                    TextField("Smoking frequency", text: $smokingFrequency)
+                    Picker("Alcohol", selection: $alcoholUse) {
+                        ForEach(alcoholOptions, id: \.self) { option in
+                            Text(label(option)).tag(option)
+                        }
+                    }
+                }
+
+                Section("Daily life") {
+                    Picker("Exercise", selection: $exerciseFrequency) {
+                        ForEach(exerciseOptions, id: \.self) { option in
+                            Text(label(option)).tag(option)
+                        }
+                    }
+                    TextField("Diet type", text: $dietType)
+                    TextField("Sleep hours", text: $sleepHours)
+                        .keyboardType(.decimalPad)
+                    TextField("Occupation", text: $occupation)
+                    Picker("Stress", selection: $stressLevel) {
+                        ForEach(stressOptions, id: \.self) { option in
+                            Text(label(option)).tag(option)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Lifestyle")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { activeSheet = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(viewModel.isMutatingProfileCollection ? "Saving..." : "Save") {
+                        Task {
+                            await viewModel.saveLifestyle(
+                                smokingStatus: smokingStatus,
+                                smokingFrequency: smokingFrequency,
+                                alcoholUse: alcoholUse,
+                                exerciseFrequency: exerciseFrequency,
+                                dietType: dietType,
+                                sleepHours: sleepHours,
+                                occupation: occupation,
+                                stressLevel: stressLevel
+                            )
+                            if viewModel.profileError == nil {
+                                activeSheet = nil
+                            }
+                        }
+                    }
+                    .disabled(viewModel.isMutatingProfileCollection)
+                }
+            }
+            .onAppear(perform: hydrate)
+        }
+    }
+
+    private func hydrate() {
+        guard let lifestyle = viewModel.fullProfile?.lifestyle else { return }
+        smokingStatus = lifestyle.smoking_status ?? ""
+        smokingFrequency = lifestyle.smoking_frequency ?? ""
+        alcoholUse = lifestyle.alcohol_use ?? ""
+        exerciseFrequency = lifestyle.exercise_frequency ?? ""
+        dietType = lifestyle.diet_type ?? ""
+        sleepHours = lifestyle.sleep_hours.map { String($0) } ?? ""
+        occupation = lifestyle.occupation ?? ""
+        stressLevel = lifestyle.stress_level ?? ""
+    }
+
+    private func label(_ option: String) -> String {
+        option.isEmpty ? "Not set" : option.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 

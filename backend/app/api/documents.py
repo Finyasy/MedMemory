@@ -327,6 +327,7 @@ async def reprocess_document(
         await clear_cache(f"documents:{current_user.id}:")
 
 
+@router.get("", response_model=list[DocumentResponse], include_in_schema=False)
 @router.get("/", response_model=list[DocumentResponse])
 async def list_documents(
     patient_id: int | None = None,

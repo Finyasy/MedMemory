@@ -4,7 +4,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -36,6 +36,27 @@ security = HTTPBearer()
 
 _token_blacklist: set[str] = set()
 _blacklist_lock = asyncio.Lock()
+
+PATIENT_REFRESH_COOKIE = "medmemory_refresh_token"
+CLINICIAN_REFRESH_COOKIE = "medmemory_clinician_refresh_token"
+_REFRESH_COOKIE_PATH = f"{settings.api_prefix}/auth"
+
+
+def refresh_cookie_name(portal: str) -> str:
+    return CLINICIAN_REFRESH_COOKIE if portal == "clinician" else PATIENT_REFRESH_COOKIE
+
+
+def set_refresh_cookie(response: Response, token: str, *, portal: str = "patient") -> None:
+    """Store the refresh token in an httpOnly cookie so page scripts can't read it."""
+    response.set_cookie(
+        key=refresh_cookie_name(portal),
+        value=token,
+        max_age=settings.jwt_refresh_token_expire_days * 24 * 60 * 60,
+        path=_REFRESH_COOKIE_PATH,
+        httponly=True,
+        secure=not settings.debug,
+        samesite="lax",
+    )
 
 
 def _normalized_role(value: object, default: str = "patient") -> str:
@@ -237,7 +258,11 @@ async def get_current_user(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(rate_limit_auth)],
 )
-async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_db)]):
+async def signup(
+    user_data: UserSignUp,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     """Create a new user account."""
     result = await db.execute(select(User).where(User.email == user_data.email))
     existing_user = result.scalar_one_or_none()
@@ -263,6 +288,7 @@ async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_
         data={"sub": str(new_user.id), "role": role}, expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": str(new_user.id)})
+    set_refresh_cookie(response, refresh_token, portal="patient")
 
     return TokenResponse(
         access_token=access_token,
@@ -279,7 +305,11 @@ async def signup(user_data: UserSignUp, db: Annotated[AsyncSession, Depends(get_
     response_model=TokenResponse,
     dependencies=[Depends(rate_limit_auth)],
 )
-async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_db)]):
+async def login(
+    credentials: UserLogin,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     """Authenticate user and return access and refresh tokens."""
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
@@ -308,6 +338,7 @@ async def login(credentials: UserLogin, db: Annotated[AsyncSession, Depends(get_
         data={"sub": str(user.id), "role": role}, expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    set_refresh_cookie(response, refresh_token, portal="patient")
 
     return TokenResponse(
         access_token=access_token,
@@ -332,20 +363,28 @@ async def get_current_user_info(
     )
 
 
-@router.post("/auth/refresh", response_model=TokenResponse)
+@router.post("/auth/refresh", response_model=TokenResponse, response_model_exclude_none=True)
 async def refresh_access_token(
     payload: RefreshTokenRequest,
+    request: Request,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Get new access token using refresh token."""
+    """Get new access token using a refresh token (request body or httpOnly cookie)."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid refresh token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    token_from_body = bool(payload.refresh_token)
+    refresh_token_value = payload.refresh_token or request.cookies.get(
+        refresh_cookie_name(payload.portal)
+    )
+    if not refresh_token_value:
+        raise credentials_exception
     try:
         token_payload = jwt.decode(
-            payload.refresh_token,
+            refresh_token_value,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
         )
@@ -367,6 +406,10 @@ async def refresh_access_token(
     if not user or not user.is_active:
         raise credentials_exception
 
+    role = _normalized_role(getattr(user, "role", "patient"))
+    if payload.portal == "clinician" and role != "clinician":
+        raise credentials_exception
+
     if jti:
         await blacklist_token(
             jti,
@@ -376,15 +419,18 @@ async def refresh_access_token(
         )
 
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    role = _normalized_role(getattr(user, "role", "patient"))
     access_token = create_access_token(
         data={"sub": str(user.id), "role": role}, expires_delta=access_token_expires
     )
     new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    portal = "clinician" if role == "clinician" else "patient"
+    set_refresh_cookie(response, new_refresh_token, portal=portal)
 
     return TokenResponse(
         access_token=access_token,
-        refresh_token=new_refresh_token,
+        # Cookie-based callers get the rotated token only via Set-Cookie so an
+        # XSS payload can't read it from the response body.
+        refresh_token=new_refresh_token if token_from_body else None,
         token_type="bearer",
         expires_in=settings.jwt_access_token_expire_minutes * 60,
         user_id=user.id,
@@ -430,6 +476,8 @@ async def refresh_mobile_token(
         detail="Invalid mobile refresh token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if not payload.refresh_token:
+        raise credentials_exception
     try:
         token_payload = jwt.decode(
             payload.refresh_token,
@@ -497,25 +545,43 @@ async def refresh_mobile_token(
 @router.post("/auth/logout")
 async def logout(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+    request: Request,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Logout and invalidate tokens."""
+    """Logout and invalidate tokens, including this portal's refresh cookie."""
+    portal = "patient"
+    tokens = [credentials.credentials]
     try:
-        token = credentials.credentials
-        payload = jwt.decode(
-            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+        bearer_payload = jwt.decode(
+            credentials.credentials,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
         )
-        jti: str | None = payload.get("jti")
-        token_type: str = payload.get("type", "access")
-        if jti:
-            await blacklist_token(
-                jti,
-                db=db,
-                token_type=token_type,
-                expires_at=_coerce_exp_datetime(payload.get("exp")),
-            )
+        if _normalized_role(bearer_payload.get("role")) == "clinician":
+            portal = "clinician"
     except JWTError:
         pass
+    cookie_name = refresh_cookie_name(portal)
+    if cookie_token := request.cookies.get(cookie_name):
+        tokens.append(cookie_token)
+    for token in tokens:
+        try:
+            payload = jwt.decode(
+                token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+            )
+            jti: str | None = payload.get("jti")
+            token_type: str = payload.get("type", "access")
+            if jti:
+                await blacklist_token(
+                    jti,
+                    db=db,
+                    token_type=token_type,
+                    expires_at=_coerce_exp_datetime(payload.get("exp")),
+                )
+        except JWTError:
+            continue
+    response.delete_cookie(cookie_name, path=_REFRESH_COOKIE_PATH)
     return {"message": "Logged out successfully"}
 
 

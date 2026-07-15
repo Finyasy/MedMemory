@@ -3,8 +3,11 @@
 Manages conversation state and history for multi-turn dialogues.
 """
 
+import json
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -22,6 +25,7 @@ class Message:
     content: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     message_id: int | None = None
+    structured_data: dict[str, Any] | None = None
 
 
 @dataclass
@@ -35,9 +39,18 @@ class Conversation:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
-    def add_message(self, role: str, content: str) -> Message:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        structured_data: dict[str, Any] | None = None,
+    ) -> Message:
         """Add a message to the conversation."""
-        message = Message(role=role, content=content)
+        message = Message(
+            role=role,
+            content=content,
+            structured_data=structured_data,
+        )
         self.messages.append(message)
         self.updated_at = datetime.now(UTC)
         return message
@@ -68,6 +81,7 @@ class ConversationManager:
             db: Database session
         """
         self.db = db
+        self.logger = logging.getLogger("medmemory")
 
     async def create_conversation(
         self,
@@ -144,12 +158,24 @@ class ConversationManager:
 
         # Add messages
         for db_msg in db_messages:
+            structured_data = None
+            if db_msg.structured_data_json:
+                try:
+                    loaded = json.loads(db_msg.structured_data_json)
+                    if isinstance(loaded, dict):
+                        structured_data = loaded
+                except Exception:
+                    self.logger.warning(
+                        "Skipping invalid structured_data_json for message_id=%s",
+                        db_msg.id,
+                    )
             conversation.messages.append(
                 Message(
                     role=db_msg.role,
                     content=db_msg.content,
                     timestamp=db_msg.created_at,
                     message_id=db_msg.id,
+                    structured_data=structured_data,
                 )
             )
 
@@ -160,6 +186,7 @@ class ConversationManager:
         conversation_id: UUID,
         role: str,
         content: str,
+        structured_data: dict[str, Any] | None = None,
     ) -> Message:
         """Add a message to a conversation.
 
@@ -181,6 +208,11 @@ class ConversationManager:
             conversation_id=conversation_id,
             role=role,
             content=content,
+            structured_data_json=(
+                json.dumps(structured_data, ensure_ascii=False)
+                if structured_data is not None
+                else None
+            ),
         )
 
         self.db.add(db_message)
@@ -193,6 +225,7 @@ class ConversationManager:
             content=content,
             timestamp=db_message.created_at,
             message_id=db_message.id,
+            structured_data=structured_data,
         )
         conversation.messages.append(message)
         conversation.updated_at = datetime.now(UTC)

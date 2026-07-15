@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0975517198F4B9D02C4C8A5C /* MedMemoryHealthSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 242C3542636A53FF18452884 /* MedMemoryHealthSyncApp.swift */; };
+		1C5C8BACBDD1BFF950E6F6A8 /* PatientSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA418CD002AB9036F447DE9 /* PatientSignInView.swift */; };
 		386B996C8AE37B17B4930500 /* PatientDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB9CD6FB064A0D0F31A00B27 /* PatientDashboardView.swift */; };
 		39FE585A87945C69863CD083 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 544A13163F621F1E11747E6C /* HealthKitManager.swift */; };
 		57DE0219E7BCA622AAA75D1F /* PatientProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C448B4FB3455B882D76439A7 /* PatientProfileView.swift */; };
@@ -39,6 +40,7 @@
 		C9BFDB5E79F858CDBC0D37BF /* MedMemoryPatient.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MedMemoryPatient.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D923C320872CCD60874E2DE9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		EB9CD6FB064A0D0F31A00B27 /* PatientDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatientDashboardView.swift; sourceTree = "<group>"; };
+		EEA418CD002AB9036F447DE9 /* PatientSignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatientSignInView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -57,6 +59,7 @@
 				EB9CD6FB064A0D0F31A00B27 /* PatientDashboardView.swift */,
 				464563DB44E44D527E6B5E7A /* PatientExperienceModels.swift */,
 				C448B4FB3455B882D76439A7 /* PatientProfileView.swift */,
+				EEA418CD002AB9036F447DE9 /* PatientSignInView.swift */,
 				04DE9A350DEA9675EC11780E /* PatientWorkspaceView.swift */,
 				6A8E95C1346EE41030379183 /* SyncSettingsView.swift */,
 			);
@@ -155,6 +158,7 @@
 				386B996C8AE37B17B4930500 /* PatientDashboardView.swift in Sources */,
 				8DECDB2615D1A77263477B88 /* PatientExperienceModels.swift in Sources */,
 				57DE0219E7BCA622AAA75D1F /* PatientProfileView.swift in Sources */,
+				1C5C8BACBDD1BFF950E6F6A8 /* PatientSignInView.swift in Sources */,
 				A2AD9A5D375954FEC5DC14BA /* PatientWorkspaceView.swift in Sources */,
 				A9596C941A262CD03271327C /* SyncSettingsView.swift in Sources */,
 			);

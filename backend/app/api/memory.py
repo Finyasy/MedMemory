@@ -347,7 +347,7 @@ async def delete_memory_chunk(
     chunk = await _get_chunk_for_user(
         chunk_id=chunk_id, db=db, current_user=current_user
     )
-    db.delete(chunk)
+    await db.delete(chunk)
     await clear_cache(CacheKeys.memory_stats_prefix(current_user.id))
 
 

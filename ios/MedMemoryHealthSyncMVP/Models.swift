@@ -13,7 +13,7 @@ struct DailyStepSample: Identifiable, Hashable {
 }
 
 struct SyncConfig {
-    var baseURL: String = "http://192.168.1.25:8000"
+    var baseURL: String = "http://127.0.0.1:8000"
     var patientIDText: String = ""
     var bearerToken: String = ""
     var daysBack: Int = 14
@@ -54,6 +54,27 @@ struct MobileTokenResponseDTO: Decodable {
     let expires_in: Int
     let patient_id: Int
     let scopes: [String]
+}
+
+struct UserLoginPayload: Encodable {
+    let email: String
+    let password: String
+}
+
+struct TokenResponseDTO: Decodable {
+    let access_token: String
+    let refresh_token: String
+    let token_type: String
+    let expires_in: Int
+    let user_id: Int
+    let email: String
+}
+
+struct CurrentUserDTO: Decodable {
+    let id: Int
+    let email: String
+    let full_name: String
+    let is_active: Bool
 }
 
 struct RefreshTokenRequestPayload: Encodable {
@@ -236,6 +257,37 @@ struct ConditionCreatePayload: Encodable {
     let condition_name: String
     let status: String
     let diagnosed_date: String?
+}
+
+struct ProviderCreatePayload: Encodable {
+    let provider_type: String
+    let specialty: String?
+    let name: String
+    let clinic_name: String?
+    let phone: String?
+    let email: String?
+    let address: String?
+    let is_primary: Bool
+    let notes: String?
+}
+
+struct FamilyHistoryCreatePayload: Encodable {
+    let relation: String
+    let condition: String
+    let age_of_onset: Int?
+    let is_deceased: Bool
+    let notes: String?
+}
+
+struct LifestyleUpdatePayload: Encodable {
+    let smoking_status: String?
+    let smoking_frequency: String?
+    let alcohol_use: String?
+    let exercise_frequency: String?
+    let diet_type: String?
+    let sleep_hours: Double?
+    let occupation: String?
+    let stress_level: String?
 }
 
 struct DashboardSummaryDTO: Decodable {

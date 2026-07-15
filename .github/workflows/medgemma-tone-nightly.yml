@@ -111,6 +111,140 @@ jobs:
                 npm exec playwright test e2e/chat-tone-eval.spec.ts --workers=1 --reporter=line
             )
           done
+      - name: Run Swahili refusal regression guard
+        run: |
+          set -euo pipefail
+
+          BACKEND_PATTERN='uvicorn app.main:app --host 0.0.0.0 --port 8000'
+
+          stop_backend() {
+            pkill -f "${BACKEND_PATTERN}" >/dev/null 2>&1 || true
+          }
+
+          trap stop_backend EXIT
+          stop_backend
+          (
+            cd backend
+            env LLM_PROMPT_PROFILE="warm_concise_v1" uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+              > "../artifacts/medgemma-chat-eval/backend-warm_concise_v1-swahili-guard.log" 2>&1 &
+          )
+
+          for i in {1..45}; do
+            if curl -sf http://localhost:8000/health >/dev/null; then
+              echo "Backend is up for Swahili refusal guard"
+              break
+            fi
+            if [[ "$i" == "45" ]]; then
+              echo "Backend did not start in time for Swahili refusal guard"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          (
+            cd frontend
+            npm exec playwright test e2e/swahili-refusal-smoke.spec.ts --workers=1 --reporter=line --output=test-results/swahili-refusal-nightly
+          )
+      - name: Upload Swahili refusal nightly artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medgemma-swahili-refusal-nightly-${{ github.run_id }}
+          path: frontend/test-results/swahili-refusal-nightly
+          if-no-files-found: ignore
+      - name: Provision Swahili TTS model for speech smoke
+        working-directory: backend
+        run: |
+          mkdir -p models/mms-tts-swh
+          uv run python - <<'PY'
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id="facebook/mms-tts-swh",
+              local_dir="models/mms-tts-swh",
+          )
+          PY
+      - name: Run Swahili speech-output regression guard
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifacts/medgemma-chat-eval
+          BACKEND_PATTERN='uvicorn app.main:app --host 0.0.0.0 --port 8000'
+          SPEECH_PATTERN='uvicorn app.speech_service:app --host 0.0.0.0 --port 8010'
+
+          stop_backend() {
+            pkill -f "${BACKEND_PATTERN}" >/dev/null 2>&1 || true
+          }
+
+          stop_speech_worker() {
+            pkill -f "${SPEECH_PATTERN}" >/dev/null 2>&1 || true
+          }
+
+          trap 'stop_backend; stop_speech_worker' EXIT
+
+          stop_backend
+          stop_speech_worker
+
+          (
+            cd backend
+            env \
+              SPEECH_SYNTHESIS_MODEL_PATH="models/mms-tts-swh" \
+              SPEECH_SERVICE_INTERNAL_API_KEY="nightly-speech-key" \
+              uv run uvicorn app.speech_service:app --host 0.0.0.0 --port 8010 \
+                > "../artifacts/medgemma-chat-eval/swahili-speech-output-worker-nightly.log" 2>&1 &
+          )
+
+          for i in {1..45}; do
+            if curl -sf -H 'X-Speech-Service-Key: nightly-speech-key' http://localhost:8010/internal/v1/health >/dev/null; then
+              echo "Speech worker is up for Swahili speech guard"
+              break
+            fi
+            if [[ "$i" == "45" ]]; then
+              echo "Speech worker did not start in time for Swahili speech guard"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          (
+            cd backend
+            env \
+              LLM_PROMPT_PROFILE="warm_concise_v1" \
+              SPEECH_SYNTHESIS_BACKEND="http" \
+              SPEECH_SYNTHESIS_MODEL_PATH="models/mms-tts-swh" \
+              SPEECH_SYNTHESIS_SERVICE_BASE_URL="http://127.0.0.1:8010" \
+              SPEECH_SYNTHESIS_SERVICE_TIMEOUT_SECONDS="30" \
+              SPEECH_SERVICE_INTERNAL_API_KEY="nightly-speech-key" \
+              uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+                > "../artifacts/medgemma-chat-eval/backend-warm_concise_v1-swahili-speech.log" 2>&1 &
+          )
+
+          for i in {1..45}; do
+            if curl -sf http://localhost:8000/health >/dev/null && curl -sf http://localhost:8000/health/speech >/dev/null; then
+              echo "Backend is up for Swahili speech guard"
+              break
+            fi
+            if [[ "$i" == "45" ]]; then
+              echo "Backend did not start in time for Swahili speech guard"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          (
+            cd frontend
+            npm exec playwright test e2e/swahili-speech-output-smoke.spec.ts --workers=1 --reporter=line --output=test-results/swahili-speech-output-nightly
+          )
+      - name: Upload Swahili speech-output nightly artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medgemma-swahili-speech-output-nightly-${{ github.run_id }}
+          path: |
+            frontend/test-results/swahili-speech-output-nightly
+            artifacts/medgemma-chat-eval/swahili-speech-output-worker-nightly.log
+            artifacts/medgemma-chat-eval/backend-warm_concise_v1-swahili-speech.log
+          if-no-files-found: ignore
       - name: Post nightly winner deltas
         run: |
           set -euo pipefail

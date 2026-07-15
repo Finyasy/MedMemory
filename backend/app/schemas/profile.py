@@ -65,7 +65,7 @@ class EmergencyContactResponse(BaseModel):
 class AllergyBase(BaseModel):
     allergen: str = Field(..., min_length=1, max_length=255)
     allergy_type: str = Field(..., pattern="^(food|drug|environmental|other)$")
-    severity: str = Field(..., pattern="^(mild|moderate|severe|life_threatening)$")
+    severity: str = Field(..., pattern="^(mild|moderate|high|severe|life_threatening)$")
     reaction: str | None = None
     diagnosed_date: date | None = None
     notes: str | None = None
@@ -79,7 +79,7 @@ class AllergyUpdate(BaseModel):
     allergen: str | None = Field(None, min_length=1, max_length=255)
     allergy_type: str | None = Field(None, pattern="^(food|drug|environmental|other)$")
     severity: str | None = Field(
-        None, pattern="^(mild|moderate|severe|life_threatening)$"
+        None, pattern="^(mild|moderate|high|severe|life_threatening)$"
     )
     reaction: str | None = None
     diagnosed_date: date | None = None
@@ -178,7 +178,7 @@ class LifestyleBase(BaseModel):
     smoking_frequency: str | None = Field(None, max_length=50)
     alcohol_use: str | None = Field(None, pattern="^(never|occasional|moderate|heavy)$")
     exercise_frequency: str | None = Field(
-        None, pattern="^(none|light|moderate|active)$"
+        None, pattern="^(none|light|moderate|active|weekly)$"
     )
     diet_type: str | None = Field(None, max_length=50)
     sleep_hours: Decimal | None = Field(None, ge=0, le=24)

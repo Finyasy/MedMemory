@@ -7,6 +7,7 @@ Playwright end-to-end tests for MedMemory frontend.
 1. **Backend must be running** on `http://localhost:8000` (or set `E2E_API_BASE_URL`)
 2. **Frontend must be running** on `http://localhost:5173` (or set `PLAYWRIGHT_BASE_URL`)
 3. **Database must be accessible** - the backend needs to connect to the test database
+4. **Node.js 22.x must be active** - the frontend pins this in `frontend/.nvmrc`
 
 ## Running Tests
 
@@ -58,6 +59,7 @@ Useful options:
 Loopback note:
 
 - if the wrapper receives a `localhost` backend URL and the service is reachable on `127.0.0.1`, it automatically switches the smoke run to the IPv4 loopback host
+- the wrapper resolves Node 22 from `frontend/.nvmrc` when available, so Playwright runs with the same runtime as the frontend build
 - before Playwright runs, the wrapper validates that the frontend URL serves the MedMemory app shell; if the local UI is stale or down, rerun with `--restart-frontend`
 
 ## Environment Variables

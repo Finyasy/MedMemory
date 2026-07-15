@@ -5,34 +5,40 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            TabView {
-                PatientDashboardView(viewModel: viewModel)
-                    .tabItem {
-                        Label("Dashboard", systemImage: "square.grid.2x2.fill")
-                    }
+            Group {
+                if viewModel.isAuthenticated {
+                    TabView {
+                        PatientDashboardView(viewModel: viewModel)
+                            .tabItem {
+                                Label("Dashboard", systemImage: "square.grid.2x2.fill")
+                            }
 
-                PatientChatView(viewModel: viewModel)
-                    .tabItem {
-                        Label("Chat", systemImage: "bubble.left.and.bubble.right.fill")
-                    }
+                        PatientChatView(viewModel: viewModel)
+                            .tabItem {
+                                Label("Chat", systemImage: "bubble.left.and.bubble.right.fill")
+                            }
 
-                PatientWorkspaceView(viewModel: viewModel)
-                    .tabItem {
-                        Label("Workspace", systemImage: "folder.fill")
-                    }
+                        PatientWorkspaceView(viewModel: viewModel)
+                            .tabItem {
+                                Label("Workspace", systemImage: "folder.fill")
+                            }
 
-                PatientProfileView(viewModel: viewModel)
-                    .tabItem {
-                        Label("Profile", systemImage: "person.crop.circle.fill")
-                    }
+                        PatientProfileView(viewModel: viewModel)
+                            .tabItem {
+                                Label("Profile", systemImage: "person.crop.circle.fill")
+                            }
 
-                SyncSettingsView(viewModel: viewModel)
-                    .tabItem {
-                        Label("Sync", systemImage: "heart.text.square.fill")
+                        SyncSettingsView(viewModel: viewModel)
+                            .tabItem {
+                                Label("Sync", systemImage: "heart.text.square.fill")
+                            }
                     }
+                } else {
+                    PatientSignInView(viewModel: viewModel)
+                }
             }
             .task {
-                await viewModel.loadPatientExperience()
+                await viewModel.bootstrapAuthenticatedSession()
             }
         }
     }

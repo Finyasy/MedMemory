@@ -16,9 +16,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("documents", sa.Column("ocr_text_raw", sa.Text(), nullable=True))
-    op.add_column("documents", sa.Column("ocr_text_cleaned", sa.Text(), nullable=True))
-    op.add_column("documents", sa.Column("ocr_entities", sa.Text(), nullable=True))
+    op.execute(sa.text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ocr_text_raw TEXT"))
+    op.execute(
+        sa.text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ocr_text_cleaned TEXT")
+    )
+    op.execute(sa.text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ocr_entities TEXT"))
 
 
 def downgrade() -> None:

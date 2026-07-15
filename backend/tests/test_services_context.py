@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.services.context.analyzer import QueryAnalyzer, QueryIntent
+from app.services.context.analyzer import DataSource, QueryAnalyzer, QueryIntent
 from app.services.context.engine import ContextEngine
 from app.services.context.ranker import ContextRanker
 from app.services.context.retriever import (
@@ -23,6 +23,22 @@ def test_query_analyzer_extracts_sources_and_temporal():
     assert analysis.temporal.is_temporal is True
     assert analysis.data_sources
     assert analysis.keywords
+
+
+def test_query_analyzer_detects_apple_health_week_query():
+    analyzer = QueryAnalyzer()
+    analysis = analyzer.analyze("Any Apple Health info across one week?")
+
+    assert DataSource.APPLE_HEALTH in analysis.data_sources
+    assert analysis.temporal.is_temporal is True
+    assert analysis.temporal.relative_days == 7
+
+
+def test_query_analyzer_detects_swahili_apple_health_query():
+    analyzer = QueryAnalyzer()
+    analysis = analyzer.analyze("na mpangilio wa mienenendo ya apple health")
+
+    assert DataSource.APPLE_HEALTH in analysis.data_sources
 
 
 class DummyRetriever(HybridRetriever):
@@ -109,6 +125,20 @@ async def test_hybrid_retriever_uses_structured_for_generic_lab_query():
     assert retriever.structured_calls == 1
     assert response.total_combined >= 1
     assert any(r.source_type == "lab_result" for r in response.results)
+
+
+@pytest.mark.anyio
+async def test_hybrid_retriever_uses_structured_for_apple_health_query():
+    retriever = DummyStructuredRetriever(db=None, embedding_service=None)
+    analyzer = QueryAnalyzer()
+    analysis = analyzer.analyze("Any Apple Health info across one week?")
+    analysis.use_semantic_search = False
+    analysis.use_keyword_search = False
+
+    response = await retriever.retrieve(analysis, patient_id=1, limit=5)
+
+    assert retriever.structured_calls == 1
+    assert response.total_combined >= 1
 
 
 class DummyFallbackRetriever(HybridRetriever):

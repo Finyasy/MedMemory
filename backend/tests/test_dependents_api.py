@@ -84,8 +84,8 @@ def async_session_maker(async_engine):
 async def clear_tables(async_engine):
     Base = _load_base()
     async with async_engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            await conn.execute(table.delete())
+        table_names = ", ".join(table.name for table in reversed(Base.metadata.sorted_tables))
+        await conn.execute(text(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE"))
     await clear_cache()
     yield
 
@@ -187,6 +187,13 @@ async def client(async_session_maker):
                     is_processed=False,
                 ),
             ]
+        )
+        await session.commit()
+        await session.execute(
+            text(
+                "SELECT setval(pg_get_serial_sequence('patients', 'id'), "
+                "(SELECT max(id) FROM patients))"
+            )
         )
         await session.commit()
 

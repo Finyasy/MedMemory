@@ -1,13 +1,13 @@
 import { create } from 'zustand';
+import {
+  clearActiveAuthTokens,
+  readActiveAccessToken,
+  writeActiveAccessToken,
+  writeActiveAuthTokens,
+} from '../utils/authStorage';
 
 const getInitialToken = () => {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem('medmemory_access_token');
-};
-
-const getInitialRefreshToken = () => {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem('medmemory_refresh_token');
+  return readActiveAccessToken();
 };
 
 const getInitialApiKey = () => {
@@ -32,7 +32,6 @@ type AppState = {
   patientSearch: string;
   apiKey: string;
   accessToken: string | null;
-  refreshToken: string | null;
   tokenExpiresAt: number | null;
   user: User;
   isAuthenticated: boolean;
@@ -41,7 +40,7 @@ type AppState = {
   setPatientId: (value: number) => void;
   setPatientSearch: (value: string) => void;
   setApiKey: (value: string) => void;
-  setTokens: (accessToken: string, refreshToken: string, expiresIn: number) => void;
+  setTokens: (accessToken: string, expiresIn: number) => void;
   setAccessToken: (token: string | null) => void;
   setUser: (user: User) => void;
   setClinician: (value: boolean) => void;
@@ -54,7 +53,6 @@ const useAppStore = create<AppState>((set) => ({
   patientSearch: '',
   apiKey: getInitialApiKey(),
   accessToken: getInitialToken(),
-  refreshToken: getInitialRefreshToken(),
   tokenExpiresAt: null,
   user: null,
   isAuthenticated: !!getInitialToken(),
@@ -72,34 +70,21 @@ const useAppStore = create<AppState>((set) => ({
     }
     set({ apiKey: value });
   },
-  setTokens: (accessToken, refreshToken, expiresIn) => {
+  setTokens: (accessToken, expiresIn) => {
     const expiresAt = Date.now() + expiresIn * 1000;
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('medmemory_access_token', accessToken);
-      window.localStorage.setItem('medmemory_refresh_token', refreshToken);
-      window.localStorage.setItem('medmemory_token_expires_at', String(expiresAt));
-    }
+    writeActiveAuthTokens(accessToken, expiresAt);
     set({
       accessToken,
-      refreshToken,
       tokenExpiresAt: expiresAt,
       isAuthenticated: true,
     });
   },
   setAccessToken: (token) => {
-    if (typeof window !== 'undefined') {
-      if (token) {
-        window.localStorage.setItem('medmemory_access_token', token);
-      } else {
-        window.localStorage.removeItem('medmemory_access_token');
-        window.localStorage.removeItem('medmemory_refresh_token');
-        window.localStorage.removeItem('medmemory_token_expires_at');
-      }
-    }
+    if (token) writeActiveAccessToken(token);
+    else clearActiveAuthTokens();
     if (!token) {
       set({
         accessToken: null,
-        refreshToken: null,
         tokenExpiresAt: null,
         isAuthenticated: false,
         user: null,
@@ -132,15 +117,10 @@ const useAppStore = create<AppState>((set) => ({
     set({ theme });
   },
   logout: () => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem('medmemory_access_token');
-      window.localStorage.removeItem('medmemory_refresh_token');
-      window.localStorage.removeItem('medmemory_token_expires_at');
-      window.localStorage.removeItem('medmemory_clinician');
-    }
+    clearActiveAuthTokens();
+    if (typeof window !== 'undefined') window.localStorage.removeItem('medmemory_clinician');
     set({
       accessToken: null,
-      refreshToken: null,
       tokenExpiresAt: null,
       user: null,
       isAuthenticated: false,

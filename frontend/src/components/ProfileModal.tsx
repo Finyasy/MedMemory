@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, buildBackendUrl } from '../api';
 import './ProfileModal.css';
+import {
+  LANGUAGE_OPTIONS,
+  normalizePatientLanguage,
+} from '../utils/patientLanguage';
 
 type ProfileData = {
   id: number;
@@ -17,6 +21,7 @@ type ProfileData = {
   phone: string | null;
   email: string | null;
   address: string | null;
+  preferred_language?: string | null;
   emergency_contacts: EmergencyContact[];
   allergies: Allergy[];
   conditions: Condition[];
@@ -145,6 +150,7 @@ const ProfileModal = ({ isOpen, onClose, patientId }: ProfileModalProps) => {
     phone: '',
     email: '',
     address: '',
+    preferred_language: 'en',
   });
 
   const [newContact, setNewContact] = useState({ name: '', relationship: '', phone: '', is_primary: false });
@@ -217,6 +223,7 @@ const ProfileModal = ({ isOpen, onClose, patientId }: ProfileModalProps) => {
         phone: data.phone || '',
         email: data.email || '',
         address: data.address || '',
+        preferred_language: normalizePatientLanguage(data.preferred_language),
       });
       setLifestyleForm({
         smoking_status: data.lifestyle?.smoking_status || '',
@@ -257,12 +264,23 @@ const ProfileModal = ({ isOpen, onClose, patientId }: ProfileModalProps) => {
       if (basicForm.phone) body.phone = basicForm.phone;
       if (basicForm.email) body.email = basicForm.email;
       if (basicForm.address) body.address = basicForm.address;
+      if (basicForm.preferred_language) body.preferred_language = basicForm.preferred_language;
 
       const res = await fetchWithAuth(url, {
         method: 'PUT',
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('Failed to save profile');
+      const updated = await res.json();
+      setProfile(updated);
+      window.dispatchEvent(
+        new CustomEvent('medmemory:profile-updated', {
+          detail: {
+            patientId: updated.id,
+            preferredLanguage: updated.preferred_language ?? null,
+          },
+        }),
+      );
       await loadProfile();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -758,6 +776,22 @@ const ProfileModal = ({ isOpen, onClose, patientId }: ProfileModalProps) => {
                       rows={2}
                       placeholder="Street address, City, State, ZIP"
                     />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Preferred language</label>
+                    <select
+                      value={basicForm.preferred_language}
+                      onChange={(e) =>
+                        setBasicForm({ ...basicForm, preferred_language: e.target.value })
+                      }
+                    >
+                      {LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="form-actions">

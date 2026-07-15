@@ -11,6 +11,7 @@ from enum import Enum
 class QueryTask(Enum):
     """Types of medical queries."""
 
+    SMALL_TALK = "small_talk"  # Greetings and casual social chat
     DOC_SUMMARY = "doc_summary"  # Latest upload summary
     TREND_ANALYSIS = "trend_analysis"  # "How has HbA1c changed?"
     MEDICATION_RECONCILIATION = "med_reconciliation"  # Active vs stopped
@@ -34,6 +35,12 @@ class QueryRouter:
 
     Uses AND logic for multi-pattern tasks (e.g., trend requires both intent AND entity).
     """
+
+    SMALL_TALK_PATTERNS = [
+        r"(?:hi|hello|hey|hey there|hello there|good morning|good afternoon|good evening|good day)[!. ]*",
+        r"(?:(?:hi|hello|hey|hey there)[,!. ]+)?(?:how are you|how are you doing|how are you today|how's it going|how is it going|how is your day|how was your day|what's up|whats up)\??[!. ]*",
+        r"(?:thanks|thank you|thx|thanks a lot|thank you so much|appreciate it)[!. ]*",
+    ]
 
     # Intent patterns (what the user wants to do)
     TREND_INTENT_PATTERNS = [
@@ -87,7 +94,16 @@ class QueryRouter:
         Returns:
             RoutingResult with task type and metadata
         """
-        q_lower = question.lower()
+        q_normalized = re.sub(r"\s+", " ", question.strip())
+        q_lower = q_normalized.lower()
+
+        if any(re.fullmatch(pattern, q_lower) for pattern in self.SMALL_TALK_PATTERNS):
+            return RoutingResult(
+                task=QueryTask.SMALL_TALK,
+                confidence=0.95,
+                extracted_entities=[],
+                temporal_intent=None,
+            )
 
         # Check for trend analysis: REQUIRES BOTH intent AND entity (AND logic)
         has_trend_intent = any(

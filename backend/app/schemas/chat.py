@@ -1,10 +1,14 @@
 """Pydantic schemas for Chat API."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+ChatInputMode = Literal["text", "voice"]
+ChatResponseMode = Literal["text", "speech", "both"]
+
 
 # ============================================
 # Message Schemas
@@ -18,6 +22,7 @@ class MessageSchema(BaseModel):
     content: str
     timestamp: datetime
     message_id: int | None = None
+    structured_data: dict[str, Any] | None = None
 
 
 # ============================================
@@ -59,6 +64,10 @@ class ChatRequest(BaseModel):
 
     question: str = Field(..., min_length=1, max_length=2000)
     patient_id: int
+    input_mode: ChatInputMode = "text"
+    response_mode: ChatResponseMode = "text"
+    input_language: str | None = Field(None, max_length=10)
+    output_language: str | None = Field(None, max_length=10)
     conversation_id: UUID | None = None
     system_prompt: str | None = None
     max_context_tokens: int = Field(4000, ge=500, le=8000)
@@ -154,6 +163,18 @@ class ChatResponse(BaseModel):
     answer: str
     conversation_id: UUID
     message_id: int | None = None
+    input_mode: ChatInputMode = "text"
+    response_mode: ChatResponseMode = "text"
+    detected_language: str | None = None
+    input_language: str | None = None
+    output_language: str | None = None
+    translated_question: str | None = None
+    translation_applied: bool = False
+    speech_locale: str | None = None
+    audio_asset_id: str | None = None
+    audio_url: str | None = None
+    audio_duration_ms: int | None = Field(None, ge=0)
+    transcript_confidence: float | None = Field(None, ge=0.0, le=1.0)
 
     # Structured data (optional)
     structured_data: StructuredSummaryResponse | None = Field(
@@ -270,6 +291,18 @@ class StreamChatChunk(BaseModel):
     conversation_id: UUID
     is_complete: bool = False
     message_id: int | None = None
+    input_mode: ChatInputMode = "text"
+    response_mode: ChatResponseMode = "text"
+    detected_language: str | None = None
+    input_language: str | None = None
+    output_language: str | None = None
+    translated_question: str | None = None
+    translation_applied: bool = False
+    speech_locale: str | None = None
+    audio_asset_id: str | None = None
+    audio_url: str | None = None
+    audio_duration_ms: int | None = Field(None, ge=0)
+    transcript_confidence: float | None = Field(None, ge=0.0, le=1.0)
     num_sources: int | None = None
     sources: list[SourceInfo] | None = None
     structured_data: dict[str, Any] | None = None
@@ -284,6 +317,18 @@ class LLMInfoResponse(BaseModel):
     """Information about the loaded LLM."""
 
     model_name: str
+    local_model_name: str | None = None
+    openai_model: str | None = None
+    primary_provider: str | None = None
+    fallback_provider: str | None = None
+    provider: str | None = None
+    openai_configured: bool = False
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    runtime: str | None = None
+    model_path: str | None = None
+    use_local_model: bool = False
+    quantization: dict[str, Any] = Field(default_factory=dict)
     device: str
     max_new_tokens: int
     temperature: float

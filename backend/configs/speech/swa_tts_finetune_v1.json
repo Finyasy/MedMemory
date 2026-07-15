@@ -1,0 +1,56 @@
+{
+  "job_name": "swa_tts_v1",
+  "base_model": {
+    "model_id": "facebook/mms-tts-swh",
+    "local_path": "models/mms-tts-swh"
+  },
+  "dataset": {
+    "dataset_id": "google/WaxalNLP",
+    "dataset_sha": "beab143ae6d8a5e054281241afd76565ecb57e03",
+    "audio_base_dir": "data/waxal_swa_tts",
+    "manifests": {
+      "train": "data/waxal_swa_tts/manifests/train.manifest.jsonl",
+      "validation": "data/waxal_swa_tts/manifests/validation.manifest.jsonl",
+      "test": "data/waxal_swa_tts/manifests/test.manifest.jsonl"
+    },
+    "audio_path_field": "audio_path",
+    "text_field": "text",
+    "speaker_field": "speaker_id",
+    "language": "sw"
+  },
+  "training": {
+    "framework": "vits_finetune",
+    "sample_rate_hz": 16000,
+    "learning_rate": 2e-05,
+    "weight_decay": 0.01,
+    "warmup_steps": 200,
+    "max_steps": 4000,
+    "save_every_steps": 500,
+    "eval_every_steps": 250,
+    "per_device_batch_size": 8,
+    "gradient_accumulation_steps": 4,
+    "max_audio_seconds": 20.0,
+    "min_audio_seconds": 1.0,
+    "freeze_text_encoder": false,
+    "mixed_precision": "fp16"
+  },
+  "trainer": {
+    "runtime": "external_command",
+    "workspace_dir": "artifacts/tts_finetune/swa_tts_v1/trainer_workspace",
+    "command_template": "python {backend_root}/scripts/swa_tts_trainer_adapter.py --backend coqui_vits --resolved-config {resolved_config} --dataset-summary {dataset_summary} --audio-base-dir {audio_base_dir} --train-metadata {train_metadata} --validation-metadata {validation_metadata} --test-metadata {test_metadata} --checkpoint-dir {checkpoint_dir} --reports-dir {reports_dir} --base-model-path {base_model_path} --output-json {workspace_dir}/external_command_contract.json"
+  },
+  "outputs": {
+    "root_dir": "artifacts/tts_finetune/swa_tts_v1",
+    "checkpoint_dir": "artifacts/tts_finetune/swa_tts_v1/checkpoints",
+    "reports_dir": "artifacts/tts_finetune/swa_tts_v1/reports"
+  },
+  "regression_set": {
+    "phrases": [
+      "Hemoglobin imepungua.",
+      "Mapigo ya moyo hayapo kwenye rekodi.",
+      "Tafadhali pakia hati mpya.",
+      "Shinikizo la damu linaongezeka.",
+      "Matokeo ya usingizi yanaonyesha mabadiliko kidogo."
+    ]
+  }
+}

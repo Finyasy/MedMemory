@@ -80,9 +80,47 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: uv sync --extra dev --frozen
-      - name: Run backend tests
+      - name: Run backend tests with coverage
         working-directory: backend
-        run: uv run pytest
+        run: |
+          uv run pytest \
+            --cov=app \
+            --cov-report=term \
+            --cov-report=json:coverage/backend-coverage.json \
+            --cov-fail-under=58
+      - name: Upload backend coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage/backend-coverage.json
+          if-no-files-found: ignore
+
+  frontend-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Run frontend unit tests with coverage
+        working-directory: frontend
+        run: |
+          npm run test:coverage -- \
+            --coverage.reporter=text-summary \
+            --coverage.reporter=json-summary
+      - name: Upload frontend coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/coverage-summary.json
+          if-no-files-found: ignore
 
   hallucination-gate:
     runs-on: ubuntu-latest
@@ -283,12 +321,114 @@ jobs:
       - name: Run Playwright smoke tests
         working-directory: frontend
         run: npm exec playwright test e2e/chat.spec.ts e2e/clinician-smoke.spec.ts --workers=1 --reporter=line
+      - name: Run Swahili refusal smoke guard
+        working-directory: frontend
+        run: npm exec playwright test e2e/swahili-refusal-smoke.spec.ts --workers=1 --reporter=line --output=test-results/swahili-refusal-ci
       - name: Run chat tone eval hard gate
         working-directory: frontend
         env:
           E2E_PROMPT_PROFILE: warm_concise_v1
           E2E_EVAL_ENFORCE_HARD_FAIL: "true"
         run: npm exec playwright test e2e/chat-tone-eval.spec.ts --workers=1 --reporter=line
+      - name: Provision Swahili TTS model for speech smoke
+        working-directory: backend
+        run: |
+          mkdir -p models/mms-tts-swh
+          uv run python - <<'PY'
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id="facebook/mms-tts-swh",
+              local_dir="models/mms-tts-swh",
+          )
+          PY
+      - name: Run Swahili speech-output smoke guard
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifacts
+          BACKEND_PATTERN='uvicorn app.main:app --host 0.0.0.0 --port 8000'
+          SPEECH_PATTERN='uvicorn app.speech_service:app --host 0.0.0.0 --port 8010'
+
+          stop_backend() {
+            pkill -f "${BACKEND_PATTERN}" >/dev/null 2>&1 || true
+          }
+
+          stop_speech_worker() {
+            pkill -f "${SPEECH_PATTERN}" >/dev/null 2>&1 || true
+          }
+
+          trap 'stop_backend; stop_speech_worker' EXIT
+
+          stop_backend
+          stop_speech_worker
+
+          (
+            cd backend
+            env \
+              SPEECH_SYNTHESIS_MODEL_PATH="models/mms-tts-swh" \
+              SPEECH_SERVICE_INTERNAL_API_KEY="ci-speech-key" \
+              uv run uvicorn app.speech_service:app --host 0.0.0.0 --port 8010 \
+                > "../artifacts/swahili-speech-output-worker-ci.log" 2>&1 &
+          )
+
+          for i in {1..45}; do
+            if curl -sf -H 'X-Speech-Service-Key: ci-speech-key' http://localhost:8010/internal/v1/health >/dev/null; then
+              echo "Speech worker is up"
+              break
+            fi
+            if [[ "$i" == "45" ]]; then
+              echo "Speech worker did not start in time"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          (
+            cd backend
+            env \
+              SPEECH_SYNTHESIS_BACKEND="http" \
+              SPEECH_SYNTHESIS_MODEL_PATH="models/mms-tts-swh" \
+              SPEECH_SYNTHESIS_SERVICE_BASE_URL="http://127.0.0.1:8010" \
+              SPEECH_SYNTHESIS_SERVICE_TIMEOUT_SECONDS="30" \
+              SPEECH_SERVICE_INTERNAL_API_KEY="ci-speech-key" \
+              uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+                > "../artifacts/swahili-speech-output-backend-ci.log" 2>&1 &
+          )
+
+          for i in {1..45}; do
+            if curl -sf http://localhost:8000/health >/dev/null && curl -sf http://localhost:8000/health/speech >/dev/null; then
+              echo "Backend is up for Swahili speech smoke"
+              break
+            fi
+            if [[ "$i" == "45" ]]; then
+              echo "Backend did not start in time for Swahili speech smoke"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          (
+            cd frontend
+            npm exec playwright test e2e/swahili-speech-output-smoke.spec.ts --workers=1 --reporter=line --output=test-results/swahili-speech-output-ci
+          )
+      - name: Upload Swahili refusal CI artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medgemma-swahili-refusal-ci-${{ github.run_id }}
+          path: frontend/test-results/swahili-refusal-ci
+          if-no-files-found: ignore
+      - name: Upload Swahili speech-output CI artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medgemma-swahili-speech-output-ci-${{ github.run_id }}
+          path: |
+            frontend/test-results/swahili-speech-output-ci
+            artifacts/swahili-speech-output-worker-ci.log
+            artifacts/swahili-speech-output-backend-ci.log
+          if-no-files-found: ignore
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4

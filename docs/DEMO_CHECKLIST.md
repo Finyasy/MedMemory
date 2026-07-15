@@ -19,13 +19,14 @@ This must pass:
 
 ### Environment checks
 
+- Node.js 22.x is active for frontend commands, or `frontend/.nvmrc` resolves through the demo gate
 - backend is running on `http://localhost:8000`, or pass `--backend-url`
 - if `localhost` resolves incorrectly on this machine, use `--backend-url http://127.0.0.1:8000`
 - frontend is running on `http://localhost:5173`, or pass `--frontend-url`
 - if the UI is stale or not serving the MedMemory shell on `:5173`, rerun the gate with `--restart-frontend`
 - database is reachable by the backend
 - clinician test account can log in
-- patient test account exists and can surface a selectable patient
+- if the patient test account or first patient record is missing, the backend smoke auto-provisions them before the browser step
 
 ### Expected outcome
 
@@ -48,3 +49,10 @@ This must pass:
 
 - backend smoke output:
   - `backend/artifacts/clinician_copilot/live_smoke.json`
+
+### Related docs
+
+- production rollout plan:
+  - `/Users/bryan.bosire/anaconda_projects/MedMemory/docs/PRODUCTION_READINESS_PLAN_MAR_2026.md`
+- CI workflow mirror of this local gate:
+  - `/Users/bryan.bosire/anaconda_projects/MedMemory/.github/workflows/clinician-copilot-demo-gate.yml`

@@ -138,6 +138,5 @@ async def delete_patient(
 ):
     """Delete a patient and all associated records."""
     # Delete patient (cascade deletes related records)
-    # Note: db.delete() is synchronous in SQLAlchemy, commit handled by middleware
-    db.delete(patient)
+    await db.delete(patient)
     await clear_cache(CacheKeys.patients_prefix(current_user.id))

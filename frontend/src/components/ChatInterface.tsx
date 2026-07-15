@@ -1,5 +1,13 @@
 import React, { useCallback, useRef, useEffect, useState } from 'react';
-import type { ChatMessage, ChatSource } from '../types';
+import type { ChatMessage, ChatSource, SpeechSynthesisResult } from '../types';
+import useSpeech from '../hooks/useSpeech';
+import {
+  LANGUAGE_OPTIONS,
+  getPatientStrings,
+  getSpeechLocaleForLanguage,
+  normalizePatientLanguage,
+  type SupportedPatientLanguage,
+} from '../utils/patientLanguage';
 
 const FormattedMessage: React.FC<{ content: string }> = ({ content }) => {
   const formatContent = (text: string) => {
@@ -78,6 +86,25 @@ const formatSourceLabel = (source: ChatSource) => {
   return `${base} #${source.source_id}`;
 };
 
+const dedupeSources = (sources: ChatSource[] | undefined): ChatSource[] => {
+  if (!sources || sources.length === 0) return [];
+  const byKey = new Map<string, ChatSource>();
+
+  sources.forEach((source, index) => {
+    const key = `${source.source_type ?? 'source'}:${source.source_id ?? index}`;
+    const existing = byKey.get(key);
+    if (
+      !existing ||
+      (Number.isFinite(source.relevance) &&
+        (!Number.isFinite(existing.relevance) || source.relevance > existing.relevance))
+    ) {
+      byKey.set(key, source);
+    }
+  });
+
+  return Array.from(byKey.values());
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -92,6 +119,68 @@ const toStringList = (value: unknown): string[] => {
   return value
     .map((item) => toText(item))
     .filter((item): item is string => Boolean(item));
+};
+
+const uniqueStringList = (items: string[]): string[] => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const parseStructuredJsonBlock = (rawJson: string): Record<string, unknown> | null => {
+  const normalizedJson = rawJson
+    .trim()
+    .replace(/,\s*([}\]])/g, '$1');
+  try {
+    const parsed = JSON.parse(normalizedJson);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const hasRenderableStructuredData = (value: Record<string, unknown>) =>
+  Boolean(
+    toText(value.overview) ||
+      toStringList(value.findings).length > 0 ||
+      toStringList(value.questions).length > 0 ||
+      toStringList(value.follow_ups).length > 0 ||
+      toStringList(value.concerns).length > 0 ||
+      toStringList(value.what_changed).length > 0 ||
+      toStringList(value.why_it_matters).length > 0 ||
+      toStringList(value.suggested_next_discussion_points).length > 0 ||
+      Array.isArray(value.key_results) ||
+      Array.isArray(value.medications) ||
+      isRecord(value.vital_signs),
+  );
+
+const extractStructuredDataFromContent = (content: string): Record<string, unknown> | null => {
+  const matches = Array.from(content.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi));
+  for (const match of matches) {
+    const parsed = parseStructuredJsonBlock(match[1] ?? '');
+    if (parsed && hasRenderableStructuredData(parsed)) return parsed;
+  }
+  return null;
+};
+
+const cleanAssistantContent = (
+  content: string,
+  parsedStructuredData: Record<string, unknown> | null,
+) => {
+  if (!parsedStructuredData) return content;
+
+  return content
+    .replace(/```(?:json)?\s*([\s\S]*?)```/gi, (block, body) => {
+      const parsed = parseStructuredJsonBlock(body);
+      if (parsed && hasRenderableStructuredData(parsed)) return '';
+      if (/Grounded|Sources\s*\(/i.test(body)) return '';
+      return block;
+    })
+    .trim();
 };
 
 const toSectionSources = (value: unknown): Record<string, string[]> => {
@@ -150,6 +239,9 @@ const buildGuardrailBadges = (message: ChatMessage): MessageBadge[] => {
   ) {
     badges.push({ label: 'No Evidence', tone: 'warn' });
   }
+  if (contentLower.startsWith('i may be missing some record details right now')) {
+    badges.push({ label: 'Best Effort', tone: 'info' });
+  }
   if (
     content.includes('not enough dated values') ||
     content.includes('please specify which test trend')
@@ -189,6 +281,8 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
     : [];
   const followUps = toStringList(structuredData.follow_ups);
   const concerns = toStringList(structuredData.concerns);
+  const findings = uniqueStringList(toStringList(structuredData.findings));
+  const questions = uniqueStringList(toStringList(structuredData.questions));
   const whatChanged = toStringList(structuredData.what_changed);
   const whyItMatters = toStringList(structuredData.why_it_matters);
   const suggestedNext = toStringList(structuredData.suggested_next_discussion_points);
@@ -210,7 +304,8 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
 
   if (!overview && keyResults.length === 0 && medications.length === 0
     && vitalSigns.length === 0 && followUps.length === 0 && concerns.length === 0
-    && whatChanged.length === 0 && whyItMatters.length === 0 && suggestedNext.length === 0) {
+    && findings.length === 0 && questions.length === 0 && whatChanged.length === 0
+    && whyItMatters.length === 0 && suggestedNext.length === 0) {
     return null;
   }
 
@@ -233,6 +328,18 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
             ))}
           </ul>
           {renderSectionSources('key_results')}
+        </div>
+      ) : null}
+
+      {findings.length > 0 ? (
+        <div className="message-structured-section">
+          <span className="message-structured-heading">Findings</span>
+          <ul className="message-structured-list">
+            {findings.slice(0, 8).map((item, idx) => (
+              <li key={`finding-${idx}`}>{item}</li>
+            ))}
+          </ul>
+          {renderSectionSources('findings')}
         </div>
       ) : null}
 
@@ -284,6 +391,18 @@ const StructuredDataView: React.FC<{ structuredData: Record<string, unknown> }> 
         </div>
       ) : null}
 
+      {questions.length > 0 ? (
+        <div className="message-structured-section">
+          <span className="message-structured-heading">Record Gaps</span>
+          <ul className="message-structured-list">
+            {questions.slice(0, 6).map((item, idx) => (
+              <li key={`question-${idx}`}>{item}</li>
+            ))}
+          </ul>
+          {renderSectionSources('questions')}
+        </div>
+      ) : null}
+
       {whatChanged.length > 0 ? (
         <div className="message-structured-section">
           <span className="message-structured-heading">What Changed</span>
@@ -330,6 +449,14 @@ type ChatInterfaceProps = {
   isDisabled?: boolean;
   selectedPatient?: { id: number; full_name: string; age?: number | null; gender?: string | null; is_dependent?: boolean };
   showHeader?: boolean;
+  selectedLanguage?: SupportedPatientLanguage;
+  onLanguageChange?: (value: SupportedPatientLanguage) => void;
+  speechEnabled?: boolean;
+  onSpeechEnabledChange?: (value: boolean) => void;
+  clinicianMode?: boolean;
+  voiceInputEnabled?: boolean;
+  onVoiceSubmit?: (transcript: string) => Promise<void> | void;
+  onError?: (label: string, error: unknown) => void;
   onQuestionChange: (value: string) => void;
   onSend: () => void;
   onUploadFile?: (file: File | File[]) => void;
@@ -343,16 +470,62 @@ const ChatInterface = ({
   isDisabled = false,
   selectedPatient,
   showHeader = true,
+  selectedLanguage = 'en',
+  onLanguageChange,
+  speechEnabled = false,
+  onSpeechEnabledChange,
+  clinicianMode = false,
+  voiceInputEnabled = false,
+  onVoiceSubmit,
+  onError,
   onQuestionChange,
   onSend,
   onUploadFile,
   onLocalizeFile,
 }: ChatInterfaceProps) => {
+  const resolvedLanguage = normalizePatientLanguage(selectedLanguage);
+  const strings = getPatientStrings(resolvedLanguage);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const localizeInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [speakingMessageIndex, setSpeakingMessageIndex] = useState<number | null>(null);
+  const [generatedReplyAudio, setGeneratedReplyAudio] = useState<Record<string, SpeechSynthesisResult>>({});
+  const lastAutoSpokenMessageRef = useRef<string | null>(null);
+  const [isSubmittingTranscript, setIsSubmittingTranscript] = useState(false);
+  const browserSpeechSupported =
+    typeof window !== 'undefined' &&
+    'speechSynthesis' in window &&
+    typeof window.SpeechSynthesisUtterance !== 'undefined';
+  const reportError = useCallback(
+    (label: string, error: unknown) => {
+      onError?.(label, error);
+    },
+    [onError],
+  );
+  const {
+    isRecording,
+    isUploading,
+    audioPlaybackSupported,
+    playingAudioAssetId,
+    recordingSupported,
+    transcriptDraft,
+    setTranscriptDraft,
+    transcriptConfidence,
+    clearTranscript,
+    startRecording,
+    stopRecordingAndTranscribe,
+    playSpeechAsset,
+    stopPlayback,
+    synthesizeSpeech,
+  } = useSpeech({ onError: reportError });
+  const replyPlaybackSupported = browserSpeechSupported || audioPlaybackSupported;
+  const voiceInputVisible =
+    Boolean(voiceInputEnabled) &&
+    resolvedLanguage === 'en' &&
+    Boolean(selectedPatient?.id) &&
+    recordingSupported;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -402,19 +575,77 @@ const ChatInterface = ({
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        if (question.trim() && !isStreaming && !isDisabled) {
+        if (question.trim() && !isStreaming && !isDisabled && !isUploading) {
           onSend();
         }
       }
     },
-    [question, isStreaming, isDisabled, onSend],
+    [question, isStreaming, isDisabled, isUploading, onSend],
   );
 
   const handleSend = useCallback(() => {
-    if (question.trim() && !isStreaming && !isDisabled) {
+    if (question.trim() && !isStreaming && !isDisabled && !isUploading) {
       onSend();
     }
-  }, [question, isStreaming, isDisabled, onSend]);
+  }, [question, isStreaming, isDisabled, isUploading, onSend]);
+
+  const handleVoiceToggle = useCallback(async () => {
+    if (!voiceInputVisible || isDisabled || isStreaming || isSubmittingTranscript) return;
+    if (isRecording) {
+      try {
+        await stopRecordingAndTranscribe({
+          patientId: selectedPatient?.id,
+          clinicianMode,
+          language: 'en',
+        });
+      } catch {
+        return;
+      }
+      return;
+    }
+    try {
+      await startRecording();
+    } catch {
+      return;
+    }
+  }, [
+    clinicianMode,
+    isDisabled,
+    isRecording,
+    isStreaming,
+    isSubmittingTranscript,
+    selectedPatient?.id,
+    startRecording,
+    stopRecordingAndTranscribe,
+    voiceInputVisible,
+  ]);
+
+  const handleTranscriptSubmit = useCallback(async () => {
+    const normalizedTranscript = transcriptDraft.trim();
+    if (!normalizedTranscript || isStreaming || isDisabled || isSubmittingTranscript) return;
+    setIsSubmittingTranscript(true);
+    try {
+      if (onVoiceSubmit) {
+        await onVoiceSubmit(normalizedTranscript);
+      } else {
+        onQuestionChange(normalizedTranscript);
+      }
+      clearTranscript();
+    } catch (error) {
+      reportError('Voice transcript submit failed', error);
+    } finally {
+      setIsSubmittingTranscript(false);
+    }
+  }, [
+    clearTranscript,
+    isDisabled,
+    isStreaming,
+    isSubmittingTranscript,
+    onQuestionChange,
+    onVoiceSubmit,
+    reportError,
+    transcriptDraft,
+  ]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -422,6 +653,96 @@ const ChatInterface = ({
       textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
     }
   }, [question]);
+
+  const stopSpeaking = useCallback(() => {
+    if (browserSpeechSupported) {
+      window.speechSynthesis.cancel();
+    }
+    stopPlayback();
+    setSpeakingMessageIndex(null);
+  }, [browserSpeechSupported, stopPlayback]);
+
+  const getGeneratedReplyAudio = useCallback(
+    (index: number) => generatedReplyAudio[`message-${index}`] ?? null,
+    [generatedReplyAudio],
+  );
+
+  const speakMessage = useCallback(
+    async (message: ChatMessage, index: number) => {
+      if (!message.content.trim()) return;
+      const messageLanguage = normalizePatientLanguage(message.output_language ?? resolvedLanguage);
+      if (messageLanguage === 'sw' && audioPlaybackSupported) {
+        const generatedAudio = getGeneratedReplyAudio(index);
+        const audioAssetId = message.audio_asset_id ?? generatedAudio?.audio_asset_id ?? null;
+        if (audioAssetId && playingAudioAssetId === audioAssetId) return;
+        try {
+          if (audioAssetId) {
+            await playSpeechAsset(audioAssetId);
+            return;
+          }
+          if (!selectedPatient?.id) return;
+          const result = await synthesizeSpeech(message.content, {
+            patientId: selectedPatient.id,
+            messageId: message.message_id ?? undefined,
+            outputLanguage: 'sw',
+            responseMode: 'speech',
+          });
+          setGeneratedReplyAudio((prev) => ({
+            ...prev,
+            [`message-${index}`]: result,
+          }));
+          await playSpeechAsset(result.audio_asset_id);
+        } catch {
+          return;
+        }
+        return;
+      }
+      if (!browserSpeechSupported) return;
+      if (speakingMessageIndex === index) return;
+      window.speechSynthesis.cancel();
+      const utterance = new window.SpeechSynthesisUtterance(message.content);
+      utterance.lang = message.speech_locale || getSpeechLocaleForLanguage(resolvedLanguage);
+      utterance.rate = 1;
+      utterance.onend = () => {
+        setSpeakingMessageIndex((current) => (current === index ? null : current));
+      };
+      utterance.onerror = () => {
+        setSpeakingMessageIndex(null);
+      };
+      setSpeakingMessageIndex(index);
+      window.speechSynthesis.speak(utterance);
+    },
+    [
+      audioPlaybackSupported,
+      browserSpeechSupported,
+      getGeneratedReplyAudio,
+      playSpeechAsset,
+      playingAudioAssetId,
+      resolvedLanguage,
+      selectedPatient?.id,
+      speakingMessageIndex,
+      synthesizeSpeech,
+    ],
+  );
+
+  useEffect(() => {
+    if (!speechEnabled || isStreaming || !replyPlaybackSupported) return;
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage || lastMessage.role !== 'assistant' || !lastMessage.content.trim()) return;
+    const signature = `${messages.length}:${lastMessage.content}:${
+      lastMessage.audio_asset_id ?? getGeneratedReplyAudio(messages.length - 1)?.audio_asset_id ?? ''
+    }`;
+    if (lastAutoSpokenMessageRef.current === signature) return;
+    lastAutoSpokenMessageRef.current = signature;
+    void speakMessage(lastMessage, messages.length - 1);
+  }, [getGeneratedReplyAudio, isStreaming, messages, replyPlaybackSupported, speakMessage, speechEnabled]);
+
+  useEffect(() => () => {
+    if (browserSpeechSupported) {
+      window.speechSynthesis.cancel();
+    }
+    stopPlayback();
+  }, [browserSpeechSupported, stopPlayback]);
 
   return (
     <div className="chat-interface">
@@ -481,8 +802,8 @@ const ChatInterface = ({
                 </>
               ) : (
                 <>
-                  <h2>How can I help you today?</h2>
-                  <p>Ask questions about patient records, upload medical documents, or get insights from lab results.</p>
+                  <h2>{strings.emptyTitle}</h2>
+                  <p>{strings.emptyBody}</p>
                 </>
               )}
               <div className="empty-state-actions">
@@ -495,7 +816,7 @@ const ChatInterface = ({
                   )}
                   type="button"
                 >
-                  {selectedPatient?.is_dependent ? 'Recent lab results' : 'Summarize recent lab results'}
+                  {selectedPatient?.is_dependent ? strings.recentLabsLabel : strings.recentLabsLabel}
                 </button>
                 <button
                   className="example-button"
@@ -506,7 +827,7 @@ const ChatInterface = ({
                   )}
                   type="button"
                 >
-                  Current medications
+                  {strings.medicationsLabel}
                 </button>
                 <button
                   className="example-button"
@@ -517,13 +838,40 @@ const ChatInterface = ({
                   )}
                   type="button"
                 >
-                  {selectedPatient?.is_dependent ? 'Vaccination history' : 'Abnormal values'}
+                  {selectedPatient?.is_dependent ? 'Vaccination history' : strings.abnormalValuesLabel}
                 </button>
               </div>
             </div>
           ) : (
             messages.map((message, index) => {
-              const guardrailBadges = buildGuardrailBadges(message);
+              const parsedStructuredData =
+                message.role === 'assistant' && message.content
+                  ? extractStructuredDataFromContent(message.content)
+                  : null;
+              const displayStructuredData = isRecord(message.structured_data)
+                ? message.structured_data
+                : parsedStructuredData;
+              const displayContent =
+                message.role === 'assistant'
+                  ? cleanAssistantContent(message.content, parsedStructuredData)
+                  : message.content;
+              const displaySources =
+                message.role === 'assistant' ? dedupeSources(message.sources) : [];
+              const guardrailBadges = buildGuardrailBadges({
+                ...message,
+                content: displayContent,
+                sources: displaySources,
+                structured_data: displayStructuredData,
+              });
+              const messageLanguage = normalizePatientLanguage(message.output_language ?? resolvedLanguage);
+              const generatedAudio = getGeneratedReplyAudio(index);
+              const effectiveAudioAssetId = message.audio_asset_id ?? generatedAudio?.audio_asset_id ?? null;
+              const replyAudioEnabled =
+                messageLanguage === 'sw' ? audioPlaybackSupported : browserSpeechSupported;
+              const replyAudioActive =
+                messageLanguage === 'sw'
+                  ? Boolean(effectiveAudioAssetId && playingAudioAssetId === effectiveAudioAssetId)
+                  : speakingMessageIndex === index;
               return (
                 <div key={`message-${index}`} className={`message message-${message.role}`}>
                   <div className="message-avatar">
@@ -538,10 +886,39 @@ const ChatInterface = ({
                     )}
                   </div>
                   <div className="message-content">
+                    {message.role === 'assistant' && replyAudioEnabled && displayContent ? (
+                      <div className="message-toolbar">
+                        <button
+                          type="button"
+                          className={`message-audio-button ${replyAudioActive ? 'active' : ''}`}
+                          onClick={() => {
+                            if (replyAudioActive) {
+                              stopSpeaking();
+                              return;
+                            }
+                            void speakMessage(message, index);
+                          }}
+                          title={replyAudioActive ? strings.stopReplyLabel : strings.playReplyLabel}
+                          aria-label={replyAudioActive ? strings.stopReplyLabel : strings.playReplyLabel}
+                          data-testid="message-speak-button"
+                        >
+                          {replyAudioActive ? (
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                              <rect x="6" y="5" width="4" height="14" rx="1.5" />
+                              <rect x="14" y="5" width="4" height="14" rx="1.5" />
+                            </svg>
+                          ) : (
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polygon points="5 3 19 12 5 21 5 3" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="message-text">
-                      {message.role === 'assistant' && message.content ? (
-                        <FormattedMessage content={message.content} />
-                      ) : message.content || (isStreaming && message.role === 'assistant' && index === messages.length - 1 ? (
+                      {message.role === 'assistant' && displayContent ? (
+                        <FormattedMessage content={displayContent} />
+                      ) : displayContent || (isStreaming && message.role === 'assistant' && index === messages.length - 1 ? (
                         <span className="streaming-indicator">
                           <span></span>
                           <span></span>
@@ -561,13 +938,13 @@ const ChatInterface = ({
                         ))}
                       </div>
                     ) : null}
-                    {message.role === 'assistant' && message.sources && message.sources.length > 0 ? (
+                    {message.role === 'assistant' && displaySources.length > 0 ? (
                       <div className="message-sources">
                         <span className="message-sources-label">
-                          Sources {typeof message.num_sources === 'number' ? `(${message.num_sources})` : ''}
+                          {strings.sourcesLabel} ({displaySources.length})
                         </span>
                         <div className="message-source-list">
-                          {message.sources.slice(0, 5).map((source, sourceIndex) => (
+                          {displaySources.slice(0, 5).map((source, sourceIndex) => (
                             <span className="message-source-chip" key={`${formatSourceLabel(source)}-${sourceIndex}`}>
                               {formatSourceLabel(source)}
                               {Number.isFinite(source.relevance)
@@ -578,8 +955,8 @@ const ChatInterface = ({
                         </div>
                       </div>
                     ) : null}
-                    {message.role === 'assistant' && isRecord(message.structured_data) ? (
-                      <StructuredDataView structuredData={message.structured_data} />
+                    {message.role === 'assistant' && displayStructuredData ? (
+                      <StructuredDataView structuredData={displayStructuredData} />
                     ) : null}
                   </div>
                 </div>
@@ -612,12 +989,113 @@ const ChatInterface = ({
 
       {/* Input Area */}
       <div className="chat-input-container">
+        {(onLanguageChange || onSpeechEnabledChange) ? (
+          <div className="chat-language-controls">
+            {onLanguageChange ? (
+              <label className="chat-control-group">
+                <span>{strings.languageLabel}</span>
+                <select
+                  className="chat-language-select"
+                  value={resolvedLanguage}
+                  onChange={(event) => onLanguageChange(event.target.value as SupportedPatientLanguage)}
+                  disabled={isStreaming || isDisabled}
+                  data-testid="chat-language-select"
+                >
+                  {LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {onSpeechEnabledChange && replyPlaybackSupported ? (
+              <label className="chat-toggle">
+                <input
+                  type="checkbox"
+                  checked={speechEnabled}
+                  onChange={(event) => onSpeechEnabledChange(event.target.checked)}
+                  disabled={isStreaming || isDisabled}
+                />
+                <span>{strings.autoSpeakLabel}</span>
+              </label>
+            ) : null}
+          </div>
+        ) : null}
+        {transcriptDraft ? (
+          <div className="chat-transcript-review" data-testid="chat-transcript-review">
+            <div className="chat-transcript-header">
+              <strong>{strings.transcriptTitle}</strong>
+              {typeof transcriptConfidence === 'number' ? (
+                <span className="chat-transcript-confidence">
+                  {strings.transcriptConfidenceLabel}: {Math.round(transcriptConfidence * 100)}%
+                </span>
+              ) : null}
+            </div>
+            <p className="chat-transcript-hint">
+              {transcriptConfidence !== null && transcriptConfidence < 0.7
+                ? strings.transcriptLowConfidenceLabel
+                : strings.transcriptHint}
+            </p>
+            <textarea
+              className="chat-transcript-textarea"
+              value={transcriptDraft}
+              onChange={(event) => setTranscriptDraft(event.target.value)}
+              disabled={isStreaming || isDisabled || isSubmittingTranscript}
+              rows={3}
+            />
+            <div className="chat-transcript-actions">
+              <button
+                type="button"
+                className="chat-transcript-button ghost"
+                onClick={clearTranscript}
+                disabled={isStreaming || isDisabled || isSubmittingTranscript}
+              >
+                {strings.transcriptDiscardLabel}
+              </button>
+              <button
+                type="button"
+                className="chat-transcript-button primary"
+                onClick={handleTranscriptSubmit}
+                disabled={!transcriptDraft.trim() || isStreaming || isDisabled || isSubmittingTranscript}
+              >
+                {strings.transcriptSendLabel}
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="chat-input-wrapper">
           <div className="chat-input-actions">
+            {voiceInputVisible ? (
+              <button
+                className={`chat-action-button ${isRecording ? 'recording' : ''}`}
+                onClick={() => {
+                  void handleVoiceToggle();
+                }}
+                disabled={isStreaming || isDisabled || isUploading || isSubmittingTranscript}
+                type="button"
+                aria-label={isRecording ? strings.stopVoiceLabel : strings.startVoiceLabel}
+                title={isRecording ? strings.stopVoiceLabel : strings.startVoiceLabel}
+                data-testid="chat-voice-toggle"
+              >
+                {isRecording ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="7" y="7" width="10" height="10" rx="2" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z" />
+                    <path d="M19 10a7 7 0 01-14 0" />
+                    <path d="M12 17v4" />
+                    <path d="M8 21h8" />
+                  </svg>
+                )}
+              </button>
+            ) : null}
             <button
               className="chat-action-button tooltip"
               onClick={() => fileInputRef.current?.click()}
-              disabled={isStreaming || isDisabled}
+              disabled={isStreaming || isDisabled || isUploading}
               type="button"
               data-tooltip="Upload image(s), document, CT/MRI volume (.nii/.zip), WSI patches, or a CXR"
               aria-label="Upload image, document, CT/MRI volume, WSI patches, or a CXR"
@@ -630,7 +1108,7 @@ const ChatInterface = ({
               <button
                 className="chat-action-button tooltip"
                 onClick={() => localizeInputRef.current?.click()}
-                disabled={isStreaming || isDisabled}
+                disabled={isStreaming || isDisabled || isUploading}
                 type="button"
                 data-tooltip="Localize findings in an image"
                 aria-label="Localize findings in an image"
@@ -648,18 +1126,22 @@ const ChatInterface = ({
           <textarea
             ref={textareaRef}
             className="chat-textarea"
-            placeholder={isDisabled ? 'Select a patient to start chatting...' : 'Message MedMemory...'}
+            placeholder={
+              isUploading
+                ? strings.sendingVoiceLabel
+                : (isDisabled ? strings.disabledPlaceholder : strings.placeholder)
+            }
             value={question}
             onChange={(e) => onQuestionChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isStreaming || isDisabled}
+            disabled={isStreaming || isDisabled || isUploading || isSubmittingTranscript}
             rows={1}
             data-testid="chat-input"
           />
           <button
             className="chat-send-button"
             onClick={handleSend}
-            disabled={!question.trim() || isStreaming || isDisabled}
+            disabled={!question.trim() || isStreaming || isDisabled || isUploading || isSubmittingTranscript}
             type="button"
             title="Send message"
             data-testid="chat-send"
@@ -681,7 +1163,7 @@ const ChatInterface = ({
           </button>
         </div>
         <div className="chat-input-footer">
-          <p>MedMemory can make mistakes. Verify important medical information.</p>
+          <p>{strings.disclaimer}</p>
         </div>
         <input
           ref={fileInputRef}

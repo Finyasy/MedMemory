@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
 FRONTEND_DIR="${ROOT_DIR}/frontend"
 FRONTEND_COMPOSE_FILE="${ROOT_DIR}/docker-compose.local-backend.dev.yml"
+FRONTEND_NODE_VERSION_FILE="${FRONTEND_DIR}/.nvmrc"
 
 BACKEND_BASE_URL="${MEDMEMORY_BASE_URL:-http://localhost:8000}"
 FRONTEND_BASE_URL="${PLAYWRIGHT_BASE_URL:-http://localhost:5173}"
@@ -86,6 +87,42 @@ if [[ ! -d "${FRONTEND_DIR}" ]]; then
   exit 1
 fi
 
+resolve_frontend_node_bin() {
+  local requested_version=""
+  if [[ -f "${FRONTEND_NODE_VERSION_FILE}" ]]; then
+    requested_version="$(tr -d '[:space:]' < "${FRONTEND_NODE_VERSION_FILE}")"
+  fi
+
+  local candidates=()
+  if [[ -n "${MEDMEMORY_NODE_BIN:-}" ]]; then
+    candidates+=("${MEDMEMORY_NODE_BIN}")
+  fi
+  if [[ -n "${requested_version}" ]]; then
+    candidates+=("${HOME}/.nvm/versions/node/v${requested_version}/bin/node")
+    candidates+=("${HOME}/.nvm/versions/node/${requested_version}/bin/node")
+  fi
+  if command -v node >/dev/null 2>&1; then
+    candidates+=("$(command -v node)")
+  fi
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "${candidate}" ]]; then
+      "${candidate}" -e 'const major = Number(process.versions.node.split(".")[0]); process.exit(major === 22 ? 0 : 1);' >/dev/null 2>&1 && {
+        printf '%s' "${candidate}"
+        return 0
+      }
+    fi
+  done
+
+  echo "Node.js 22.x is required for the frontend. Install/use Node 22 or set MEDMEMORY_NODE_BIN." >&2
+  exit 1
+}
+
+FRONTEND_NODE_BIN="$(resolve_frontend_node_bin)"
+FRONTEND_NODE_DIR="$(dirname "${FRONTEND_NODE_BIN}")"
+export PATH="${FRONTEND_NODE_DIR}:${PATH}"
+
 if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
   PYTHON_BIN="${BACKEND_DIR}/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
@@ -97,10 +134,13 @@ else
   exit 1
 fi
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "npx is required but was not found in PATH." >&2
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required but was not found beside Node 22." >&2
   exit 1
 fi
+
+NODE_VERSION="$("${FRONTEND_NODE_BIN}" -v)"
+echo "Using frontend Node: ${NODE_VERSION} (${FRONTEND_NODE_BIN})"
 
 if command -v curl >/dev/null 2>&1; then
   maybe_resolve_ipv4_url() {
@@ -200,7 +240,7 @@ if (( SKIP_BROWSER == 0 )); then
     cd "${FRONTEND_DIR}"
     PLAYWRIGHT_BASE_URL="${FRONTEND_BASE_URL}" \
     E2E_API_BASE_URL="${BACKEND_BASE_URL}" \
-    npx playwright test e2e/clinician-copilot.spec.ts --reporter=line
+    npm exec -- playwright test e2e/clinician-copilot.spec.ts --reporter=line
   )
 fi
 

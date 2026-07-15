@@ -1,0 +1,129 @@
+name: Clinician Copilot Demo Gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  clinician-copilot-demo-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: medmemory
+          POSTGRES_PASSWORD: medmemory_dev
+          POSTGRES_DB: medmemory_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medmemory -d medmemory_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://medmemory:medmemory_dev@127.0.0.1:5432/medmemory_test
+      TEST_DATABASE_URL: postgresql+asyncpg://medmemory:medmemory_dev@127.0.0.1:5432/medmemory_test
+      JWT_SECRET_KEY: ci-secret
+      DEBUG: "true"
+      FRONTEND_BASE_URL: http://127.0.0.1:5173
+      CORS_ORIGINS: '["http://127.0.0.1:5173","http://localhost:5173"]'
+      STARTUP_REQUIRE_EMBEDDINGS: "false"
+      PRELOAD_LLM_ON_STARTUP: "0"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      MEDMEMORY_BASE_URL: http://127.0.0.1:8000
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+      E2E_API_BASE_URL: http://127.0.0.1:8000
+      VITE_API_BASE: http://127.0.0.1:8000
+      E2E_EMAIL: demo@medmemory.ai
+      E2E_PASSWORD: demo-password
+      E2E_CLINICIAN_EMAIL: qa.clinician+20260218@example.com
+      E2E_CLINICIAN_PASSWORD: DemoPass123!
+      E2E_CLINICIAN_NAME: Dr QA Clinician
+      E2E_CLINICIAN_REG: REG-2026-001
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra dev --frozen
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare schema
+        working-directory: backend
+        run: uv run python scripts/ensure_schema_ready.py
+
+      - name: Start backend
+        run: |
+          mkdir -p artifacts
+          (
+            cd backend
+            uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+              > ../artifacts/clinician-copilot-backend-ci.log 2>&1 &
+          )
+
+      - name: Start frontend
+        run: |
+          mkdir -p artifacts
+          (
+            cd frontend
+            npm run dev -- --host 0.0.0.0 --port 5173 \
+              > ../artifacts/clinician-copilot-frontend-ci.log 2>&1 &
+          )
+
+      - name: Wait for services
+        run: |
+          set -euo pipefail
+          for url in http://127.0.0.1:8000/health http://127.0.0.1:5173/; do
+            for attempt in {1..45}; do
+              if curl -fsS "${url}" >/dev/null; then
+                break
+              fi
+              if [[ "${attempt}" == "45" ]]; then
+                echo "Service did not become ready: ${url}" >&2
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+
+      - name: Run clinician copilot demo gate
+        run: |
+          bash ./scripts/run_clinician_copilot_demo_check.sh \
+            --backend-url http://127.0.0.1:8000 \
+            --frontend-url http://127.0.0.1:5173
+
+      - name: Upload clinician copilot demo artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinician-copilot-demo-gate
+          path: |
+            artifacts/clinician-copilot-backend-ci.log
+            artifacts/clinician-copilot-frontend-ci.log
+            backend/artifacts/clinician_copilot/live_smoke.json
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore

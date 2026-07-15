@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-02-27T06:50:52.675792+00:00",
+  "output_dir": "data/rag_benchmark",
+  "split_strategy": "example_overlap",
+  "seed": 42,
+  "config": {
+    "eval_patient_ratio": 0.25,
+    "eval_example_ratio": 0.2,
+    "min_indexed_chunks_per_patient": 5,
+    "max_patients": 0,
+    "max_records_per_subdomain_per_patient": 25,
+    "min_gold_chunks": 1,
+    "max_retrieval_eval_examples": 1000,
+    "max_train_queries": 3000,
+    "max_positive_chunks_per_query": 2,
+    "hard_negatives_per_query": 3,
+    "random_negatives_per_query": 1,
+    "max_evidence_chunks": 3
+  },
+  "counts": {
+    "n_total_candidates": 1,
+    "n_train_candidates": 1,
+    "n_eval_candidates": 1,
+    "retrieval_eval_rows": 1,
+    "rerank_train_rows": 6,
+    "rag_sft_train_rows": 1,
+    "train_subdomain_counts": {
+      "documents": 1
+    },
+    "eval_subdomain_counts": {
+      "documents": 1
+    }
+  },
+  "files": {
+    "retrieval_eval": "data/rag_benchmark/retrieval_eval.jsonl",
+    "rerank_train": "data/rag_benchmark/rerank_train.jsonl",
+    "rag_sft_train": "data/rag_benchmark/rag_sft_train.jsonl"
+  }
+}

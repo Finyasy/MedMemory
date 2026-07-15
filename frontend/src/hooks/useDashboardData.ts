@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, api } from '../api';
 import type {
+  AppleHealthStepsTrendResponse,
+  AppleHealthSyncStatusResponse,
   ClinicianAccessRequest,
   ConnectionSyncEvent,
   DataConnection,
@@ -58,6 +60,9 @@ type UseDashboardDataResult = {
   dashboardConnectionLoading: boolean;
   dataConnections: DataConnection[];
   connectionSyncEvents: ConnectionSyncEvent[];
+  appleHealthLoading: boolean;
+  appleHealthStepsTrend: AppleHealthStepsTrendResponse | null;
+  appleHealthSyncStatus: AppleHealthSyncStatusResponse | null;
   activeConnectionSlug: string | null;
   activeSyncConnectionId: number | null;
   ocrAvailable: boolean | null;
@@ -74,6 +79,7 @@ type UseDashboardDataResult = {
   handleAcknowledgeAlert: (alertId: number) => Promise<void>;
   handleApproveAccess: (grantId: number) => Promise<void>;
   handleDenyAccess: (grantId: number) => Promise<void>;
+  refreshAppleHealthOverview: () => Promise<void>;
 };
 
 const useDashboardData = ({
@@ -105,6 +111,9 @@ const useDashboardData = ({
   const [dashboardConnectionLoading, setDashboardConnectionLoading] = useState(false);
   const [dataConnections, setDataConnections] = useState<DataConnection[]>([]);
   const [connectionSyncEvents, setConnectionSyncEvents] = useState<ConnectionSyncEvent[]>([]);
+  const [appleHealthLoading, setAppleHealthLoading] = useState(false);
+  const [appleHealthStepsTrend, setAppleHealthStepsTrend] = useState<AppleHealthStepsTrendResponse | null>(null);
+  const [appleHealthSyncStatus, setAppleHealthSyncStatus] = useState<AppleHealthSyncStatusResponse | null>(null);
   const [activeConnectionSlug, setActiveConnectionSlug] = useState<string | null>(null);
   const [activeSyncConnectionId, setActiveSyncConnectionId] = useState<number | null>(null);
   const [activeWatchMetricId, setActiveWatchMetricId] = useState<number | null>(null);
@@ -179,6 +188,40 @@ const useDashboardData = ({
     }
   }, [patientId, isAuthenticated, handleError]);
 
+  const loadAppleHealthOverview = useCallback(async () => {
+    if (!patientId || patientId <= 0 || !isAuthenticated) {
+      setAppleHealthLoading(false);
+      setAppleHealthStepsTrend(null);
+      setAppleHealthSyncStatus(null);
+      return;
+    }
+    setAppleHealthLoading(true);
+    const [statusResult, trendResult] = await Promise.allSettled([
+      api.getAppleHealthSyncStatus(patientId),
+      api.getAppleHealthStepsTrend(patientId, { days: 14 }),
+    ]);
+
+    if (statusResult.status === 'fulfilled') {
+      setAppleHealthSyncStatus(statusResult.value);
+    } else {
+      setAppleHealthSyncStatus(null);
+      if (!(statusResult.reason instanceof ApiError && statusResult.reason.status === 404)) {
+        console.warn('Apple Health status unavailable', statusResult.reason);
+      }
+    }
+
+    if (trendResult.status === 'fulfilled') {
+      setAppleHealthStepsTrend(trendResult.value);
+    } else {
+      setAppleHealthStepsTrend(null);
+      if (!(trendResult.reason instanceof ApiError && trendResult.reason.status === 404)) {
+        console.warn('Apple Health trend unavailable', trendResult.reason);
+      }
+    }
+
+    setAppleHealthLoading(false);
+  }, [patientId, isAuthenticated]);
+
   const loadWatchMetrics = useCallback(async () => {
     if (!patientId || patientId <= 0 || !isAuthenticated) {
       setWatchMetrics([]);
@@ -217,12 +260,16 @@ const useDashboardData = ({
     if (!isAuthenticated || !patientId || patientId <= 0) {
       setDataConnections([]);
       setConnectionSyncEvents([]);
+      setAppleHealthLoading(false);
+      setAppleHealthStepsTrend(null);
+      setAppleHealthSyncStatus(null);
       setDashboardHighlights(null);
       setWatchMetrics([]);
       setMetricAlerts([]);
       return;
     }
     void loadDashboardConnections();
+    void loadAppleHealthOverview();
     void loadDashboardHighlights();
     void loadWatchMetrics();
     void loadMetricAlerts();
@@ -230,6 +277,7 @@ const useDashboardData = ({
     isAuthenticated,
     patientId,
     loadDashboardConnections,
+    loadAppleHealthOverview,
     loadDashboardHighlights,
     loadWatchMetrics,
     loadMetricAlerts,
@@ -515,6 +563,9 @@ const useDashboardData = ({
     dashboardConnectionLoading,
     dataConnections,
     connectionSyncEvents,
+    appleHealthLoading,
+    appleHealthStepsTrend,
+    appleHealthSyncStatus,
     activeConnectionSlug,
     activeSyncConnectionId,
     ocrAvailable,
@@ -531,6 +582,7 @@ const useDashboardData = ({
     handleAcknowledgeAlert,
     handleApproveAccess,
     handleDenyAccess,
+    refreshAppleHealthOverview: loadAppleHealthOverview,
   };
 };
 

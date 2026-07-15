@@ -9,6 +9,9 @@ FROM node:22-alpine AS builder
 # Set working directory
 WORKDIR /app
 
+ARG VITE_API_BASE=/api/v1
+ENV VITE_API_BASE=${VITE_API_BASE}
+
 # Copy package files
 COPY package*.json ./
 

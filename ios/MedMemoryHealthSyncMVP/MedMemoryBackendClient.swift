@@ -15,6 +15,58 @@ final class MedMemoryBackendClient {
         self.isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     }
 
+    func login(
+        config: SyncConfig,
+        email: String,
+        password: String
+    ) async throws -> TokenResponseDTO {
+        let request = try unauthenticatedRequest(
+            config: config,
+            pathComponents: ["auth", "login"],
+            method: "POST",
+            body: try encoder.encode(
+                UserLoginPayload(
+                    email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                    password: password
+                )
+            )
+        )
+        return try await perform(request)
+    }
+
+    func fetchCurrentUser(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil
+    ) async throws -> CurrentUserDTO {
+        try await fetch(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["auth", "me"]
+        )
+    }
+
+    func listPatients(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil
+    ) async throws -> [PatientProfileSummaryDTO] {
+        try await fetch(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["patients"]
+        )
+    }
+
+    func fetchPrimaryProfile(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil
+    ) async throws -> FullPatientProfileDTO {
+        try await fetch(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile"]
+        )
+    }
+
     func fetchPatientExperienceSnapshot(config: SyncConfig) async throws -> PatientExperienceSnapshotDTO {
         guard let patientID = config.patientID else {
             throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
@@ -91,7 +143,10 @@ final class MedMemoryBackendClient {
         accessTokenOverride: String? = nil
     ) async throws -> FullPatientProfileDTO {
         guard let patientID = config.patientID else {
-            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+            return try await fetchPrimaryProfile(
+                config: config,
+                accessTokenOverride: accessTokenOverride
+            )
         }
         return try await fetch(
             config: config,
@@ -231,6 +286,99 @@ final class MedMemoryBackendClient {
         try await performEmpty(request)
     }
 
+    func addProvider(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: ProviderCreatePayload
+    ) async throws -> ProviderDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "providers"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "POST",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
+    func deleteProvider(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        providerID: Int
+    ) async throws {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "providers", String(providerID)],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "DELETE"
+        )
+        try await performEmpty(request)
+    }
+
+    func addFamilyHistory(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: FamilyHistoryCreatePayload
+    ) async throws -> FamilyHistoryDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "family-history"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "POST",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
+    func deleteFamilyHistory(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        historyID: Int
+    ) async throws {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "family-history", String(historyID)],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "DELETE"
+        )
+        try await performEmpty(request)
+    }
+
+    func updateLifestyle(
+        config: SyncConfig,
+        accessTokenOverride: String? = nil,
+        payload: LifestyleUpdatePayload
+    ) async throws -> LifestyleDTO {
+        guard let patientID = config.patientID else {
+            throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
+        }
+        let request = try authorizedRequest(
+            config: config,
+            accessTokenOverride: accessTokenOverride,
+            pathComponents: ["profile", "lifestyle"],
+            queryItems: [URLQueryItem(name: "patient_id", value: String(patientID))],
+            method: "PUT",
+            body: try encoder.encode(payload)
+        )
+        return try await perform(request)
+    }
+
     func syncDailySteps(
         config: SyncConfig,
         samples: [DailyStepSample],
@@ -317,7 +465,8 @@ final class MedMemoryBackendClient {
         config: SyncConfig,
         accessTokenOverride: String? = nil,
         question: String,
-        conversationID: String? = nil
+        conversationID: String? = nil,
+        preferredLanguage: String? = nil
     ) async throws -> ChatResponseDTO {
         guard let patientID = config.patientID else {
             throw HealthSyncError.invalidConfig("Enter a valid patient ID.")
@@ -326,11 +475,16 @@ final class MedMemoryBackendClient {
             let question: String
             let patient_id: Int
             let conversation_id: String?
+            let input_language: String?
+            let output_language: String?
         }
+        let preferredLanguage = normalizedLanguage(preferredLanguage)
         let payload = Payload(
             question: question,
             patient_id: patientID,
-            conversation_id: conversationID
+            conversation_id: conversationID,
+            input_language: preferredLanguage,
+            output_language: preferredLanguage
         )
         let request = try authorizedRequest(
             config: config,
@@ -473,6 +627,31 @@ final class MedMemoryBackendClient {
         }
     }
 
+    private func unauthenticatedRequest(
+        config: SyncConfig,
+        pathComponents: [String],
+        queryItems: [URLQueryItem] = [],
+        method: String = "GET",
+        body: Data? = nil
+    ) throws -> URLRequest {
+        guard let apiBase = config.normalizedAPIBaseURL else {
+            throw HealthSyncError.invalidConfig("Enter a valid backend URL.")
+        }
+        var request = URLRequest(
+            url: try buildURL(
+                apiBase: apiBase,
+                pathComponents: pathComponents,
+                queryItems: queryItems
+            )
+        )
+        request.httpMethod = method
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        return request
+    }
+
     private func authorizedRequest(
         config: SyncConfig,
         accessTokenOverride: String? = nil,
@@ -486,23 +665,13 @@ final class MedMemoryBackendClient {
         }
         let token = try resolveAccessToken(config: config, accessTokenOverride: accessTokenOverride)
 
-        var components = URLComponents(url: apiBase, resolvingAgainstBaseURL: false)
-        var path = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
-        let suffix = pathComponents.joined(separator: "/")
-        if path.isEmpty {
-            path = suffix
-        } else {
-            path = path + "/" + suffix
-        }
-        components?.path = "/" + path
-        if !queryItems.isEmpty {
-            components?.queryItems = queryItems
-        }
-        guard let url = components?.url else {
-            throw HealthSyncError.invalidConfig("Unable to build backend URL.")
-        }
-
-        var request = URLRequest(url: url)
+        var request = URLRequest(
+            url: try buildURL(
+                apiBase: apiBase,
+                pathComponents: pathComponents,
+                queryItems: queryItems
+            )
+        )
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if body != nil {
@@ -522,6 +691,42 @@ final class MedMemoryBackendClient {
             throw HealthSyncError.invalidConfig("Issue or paste a valid MedMemory token.")
         }
         return token
+    }
+
+    private func buildURL(
+        apiBase: URL,
+        pathComponents: [String],
+        queryItems: [URLQueryItem]
+    ) throws -> URL {
+        var components = URLComponents(url: apiBase, resolvingAgainstBaseURL: false)
+        var path = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        let suffix = pathComponents.joined(separator: "/")
+        if path.isEmpty {
+            path = suffix
+        } else {
+            path = path + "/" + suffix
+        }
+        components?.path = "/" + path
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
+        guard let url = components?.url else {
+            throw HealthSyncError.invalidConfig("Unable to build backend URL.")
+        }
+        return url
+    }
+
+    private func normalizedLanguage(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "sw", "sheng":
+            return normalized
+        default:
+            return "en"
+        }
     }
 
     private func appendFormField(

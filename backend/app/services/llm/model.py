@@ -5,13 +5,16 @@ Optimized for MPS (Apple Silicon) and CUDA.
 """
 
 import asyncio
+import base64
 import importlib.util
 import io
 import logging
+import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import torch
 from PIL import Image
 from transformers import (
@@ -34,10 +37,23 @@ class LLMResponse:
     tokens_input: int
     generation_time_ms: float
     finish_reason: str = "stop"
+    provider: str = "medgemma"
+    model_name: str | None = None
+    fallback_used: bool = False
+    fallback_reason: str | None = None
 
     @property
     def total_tokens(self) -> int:
         return self.tokens_input + self.tokens_generated
+
+
+class OpenAIProviderUnavailableError(RuntimeError):
+    """Raised when OpenAI is unavailable and configured fallback may run."""
+
+    def __init__(self, reason: str, status_code: int | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.status_code = status_code
 
 
 class LLMService:
@@ -125,6 +141,16 @@ class LLMService:
         self.repetition_penalty = settings.llm_repetition_penalty
         # Sampling is configurable but defaults to deterministic for clinical QA.
         self.do_sample = settings.llm_do_sample
+        self.primary_provider = settings.llm_primary_provider
+        self.fallback_provider = settings.llm_fallback_provider
+        self.openai_model = settings.openai_model
+        self._last_provider = (
+            "openai"
+            if self.primary_provider == "openai" and settings.openai_api_key
+            else "medgemma"
+        )
+        self._last_fallback_used = False
+        self._last_fallback_reason: str | None = None
         # Prefer MLX text generation on Apple Silicon when configured and available.
         self.use_mlx_text_backend = bool(settings.llm_use_mlx and self.device == "mps")
         self._mlx_disabled_reason: str | None = None
@@ -384,6 +410,241 @@ class LLMService:
         logger.info("Processor loaded successfully")
         return processor
 
+    def _openai_configured(self) -> bool:
+        return self.primary_provider == "openai" and bool(settings.openai_api_key)
+
+    def _openai_fallback_enabled(self) -> bool:
+        return self.fallback_provider == "medgemma"
+
+    def _mark_provider(
+        self,
+        *,
+        provider: str,
+        fallback_used: bool = False,
+        fallback_reason: str | None = None,
+    ) -> None:
+        self._last_provider = provider
+        self._last_fallback_used = fallback_used
+        self._last_fallback_reason = fallback_reason
+
+    def _decorate_response(
+        self,
+        response: LLMResponse,
+        *,
+        provider: str,
+        model_name: str | None = None,
+        fallback_used: bool = False,
+        fallback_reason: str | None = None,
+    ) -> LLMResponse:
+        response.provider = provider
+        response.model_name = model_name or (
+            self.openai_model if provider == "openai" else self.model_name
+        )
+        response.fallback_used = fallback_used
+        response.fallback_reason = fallback_reason
+        self._mark_provider(
+            provider=provider,
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+        )
+        return response
+
+    def _openai_fallback_reason(self, exc: Exception) -> str:
+        if isinstance(exc, OpenAIProviderUnavailableError):
+            if exc.status_code is not None:
+                return f"openai_http_{exc.status_code}"
+            return exc.reason
+        return exc.__class__.__name__
+
+    def _should_fallback_from_openai(self, exc: Exception) -> bool:
+        if not self._openai_fallback_enabled():
+            return False
+        if isinstance(exc, OpenAIProviderUnavailableError):
+            if exc.status_code is None:
+                return True
+            return int(exc.status_code) in set(settings.openai_fallback_on_statuses)
+        return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+    def _build_openai_text_input(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str | None,
+        conversation_history: list[dict] | None,
+    ) -> str:
+        if system_prompt is None and not conversation_history:
+            return prompt
+        return self._build_prompt(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+        )
+
+    def _extract_openai_text(self, payload: dict) -> str:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str):
+            return output_text
+
+        parts: list[str] = []
+        output = payload.get("output", [])
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for content_item in content:
+                    if not isinstance(content_item, dict):
+                        continue
+                    text = content_item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+        return "".join(parts)
+
+    def _openai_usage(self, payload: dict) -> tuple[int, int]:
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        if not isinstance(usage, dict):
+            return 0, 0
+        input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+        output_tokens = (
+            usage.get("output_tokens") or usage.get("completion_tokens") or 0
+        )
+        return int(input_tokens or 0), int(output_tokens or 0)
+
+    async def _post_openai_response(self, payload: dict) -> dict:
+        headers = {
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        attempts = settings.openai_max_retries + 1
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=settings.openai_timeout_seconds
+                ) as client:
+                    response = await client.post(
+                        "https://api.openai.com/v1/responses",
+                        headers=headers,
+                        json=payload,
+                    )
+                if response.status_code >= 400:
+                    raise OpenAIProviderUnavailableError(
+                        f"OpenAI request failed with HTTP {response.status_code}",
+                        status_code=response.status_code,
+                    )
+                return response.json()
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                if attempt + 1 >= attempts:
+                    raise OpenAIProviderUnavailableError(exc.__class__.__name__) from exc
+                await asyncio.sleep(0.25 * (attempt + 1))
+        raise OpenAIProviderUnavailableError(
+            last_exc.__class__.__name__ if last_exc else "openai_unavailable"
+        )
+
+    async def _generate_with_openai(
+        self,
+        *,
+        prompt: str,
+        max_new_tokens: int | None,
+        system_prompt: str | None,
+        conversation_history: list[dict] | None,
+    ) -> LLMResponse:
+        import time
+
+        if not settings.openai_api_key:
+            raise OpenAIProviderUnavailableError("openai_api_key_missing")
+
+        start_time = time.time()
+        payload = {
+            "model": self.openai_model,
+            "input": self._build_openai_text_input(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                conversation_history=conversation_history,
+            ),
+            "max_output_tokens": max_new_tokens or self.max_new_tokens,
+            "store": False,
+        }
+        data = await self._post_openai_response(payload)
+        text = self._extract_openai_text(data).strip()
+        if not text:
+            raise OpenAIProviderUnavailableError("openai_empty_response")
+        input_tokens, output_tokens = self._openai_usage(data)
+        generation_time = (time.time() - start_time) * 1000
+        return LLMResponse(
+            text=text,
+            tokens_generated=output_tokens,
+            tokens_input=input_tokens,
+            generation_time_ms=generation_time,
+            finish_reason=str(data.get("status") or "stop"),
+            provider="openai",
+            model_name=self.openai_model,
+        )
+
+    def _image_data_url(self, image_bytes: bytes, default_mime: str = "image/png") -> str:
+        mime = default_mime
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                detected = Image.MIME.get(image.format or "")
+                if detected:
+                    mime = detected
+        except Exception:
+            guessed = mimetypes.guess_type("upload.png")[0]
+            mime = guessed or default_mime
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime};base64,{encoded}"
+
+    async def _generate_with_openai_images(
+        self,
+        *,
+        prompt: str,
+        images_bytes: list[bytes],
+        max_new_tokens: int | None,
+        system_prompt: str | None,
+    ) -> LLMResponse:
+        import time
+
+        if not settings.openai_api_key:
+            raise OpenAIProviderUnavailableError("openai_api_key_missing")
+
+        start_time = time.time()
+        content = [
+            {
+                "type": "input_image",
+                "image_url": self._image_data_url(image_bytes),
+                "detail": "auto",
+            }
+            for image_bytes in images_bytes
+        ]
+        content.append({"type": "input_text", "text": prompt})
+        payload = {
+            "model": self.openai_model,
+            "input": [{"role": "user", "content": content}],
+            "max_output_tokens": max_new_tokens or self.max_new_tokens,
+            "store": False,
+        }
+        if system_prompt:
+            payload["instructions"] = system_prompt
+
+        data = await self._post_openai_response(payload)
+        text = self._extract_openai_text(data).strip()
+        if not text:
+            raise OpenAIProviderUnavailableError("openai_empty_response")
+        input_tokens, output_tokens = self._openai_usage(data)
+        generation_time = (time.time() - start_time) * 1000
+        return LLMResponse(
+            text=text,
+            tokens_generated=output_tokens,
+            tokens_input=input_tokens,
+            generation_time_ms=generation_time,
+            finish_reason=str(data.get("status") or "stop"),
+            provider="openai",
+            model_name=self.openai_model,
+        )
+
     async def generate(
         self,
         prompt: str,
@@ -408,18 +669,47 @@ class LLMService:
         Returns:
             LLMResponse with generated text
         """
-        if self.use_mlx_text_backend and self._load_mlx_runtime():
-            return await self._generate_with_mlx(
-                prompt=prompt,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                do_sample=do_sample,
-                top_p=top_p,
-                system_prompt=system_prompt,
-                conversation_history=conversation_history,
-            )
+        if self._openai_configured():
+            try:
+                response = await self._generate_with_openai(
+                    prompt=prompt,
+                    max_new_tokens=max_new_tokens,
+                    system_prompt=system_prompt,
+                    conversation_history=conversation_history,
+                )
+                return self._decorate_response(
+                    response,
+                    provider="openai",
+                    model_name=self.openai_model,
+                )
+            except Exception as exc:
+                if not self._should_fallback_from_openai(exc):
+                    raise
+                fallback_reason = self._openai_fallback_reason(exc)
+                logger.warning(
+                    "OpenAI generation unavailable; falling back to MedGemma: %s",
+                    fallback_reason,
+                )
+                response = await self._generate_with_medgemma_text(
+                    prompt=prompt,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    system_prompt=system_prompt,
+                    conversation_history=conversation_history,
+                )
+                return self._decorate_response(
+                    response,
+                    provider="medgemma",
+                    model_name=self.model_name,
+                    fallback_used=True,
+                    fallback_reason=fallback_reason,
+                )
 
-        return await self._generate_with_transformers(
+        return await self._generate_with_medgemma_text(
             prompt=prompt,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
@@ -429,6 +719,52 @@ class LLMService:
             repetition_penalty=repetition_penalty,
             system_prompt=system_prompt,
             conversation_history=conversation_history,
+        )
+
+    async def _generate_with_medgemma_text(
+        self,
+        *,
+        prompt: str,
+        max_new_tokens: int | None,
+        temperature: float | None,
+        do_sample: bool | None,
+        top_p: float | None,
+        top_k: int | None,
+        repetition_penalty: float | None,
+        system_prompt: str | None,
+        conversation_history: list[dict] | None,
+    ) -> LLMResponse:
+        if self.use_mlx_text_backend and self._load_mlx_runtime():
+            response = await self._generate_with_mlx(
+                prompt=prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=do_sample,
+                top_p=top_p,
+                system_prompt=system_prompt,
+                conversation_history=conversation_history,
+            )
+            return self._decorate_response(
+                response,
+                provider="medgemma",
+                model_name=self.model_name,
+            )
+
+        response = await self._generate_with_transformers(
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=do_sample,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+        )
+        return self._decorate_response(
+            response,
+            provider="medgemma",
+            model_name=self.model_name,
         )
 
     async def _generate_with_transformers(
@@ -680,6 +1016,30 @@ class LLMService:
         conversation_history: list[dict] | None = None,
     ) -> LLMResponse:
         """Generate text from a prompt and image input."""
+        openai_fallback_reason: str | None = None
+        if self._openai_configured():
+            try:
+                response = await self._generate_with_openai_images(
+                    prompt=prompt,
+                    images_bytes=[image_bytes],
+                    max_new_tokens=max_new_tokens,
+                    system_prompt=system_prompt,
+                )
+                return self._decorate_response(
+                    response,
+                    provider="openai",
+                    model_name=self.openai_model,
+                )
+            except Exception as exc:
+                if not self._should_fallback_from_openai(exc):
+                    raise
+                fallback_reason = self._openai_fallback_reason(exc)
+                openai_fallback_reason = fallback_reason
+                logger.warning(
+                    "OpenAI vision generation unavailable; falling back to MedGemma: %s",
+                    fallback_reason,
+                )
+
         import time
 
         start_time = time.time()
@@ -815,11 +1175,18 @@ class LLMService:
         output_tokens = max(int(seq.shape[0] - input_len), 0)
         generation_time = (time.time() - start_time) * 1000
 
-        return LLMResponse(
+        response = LLMResponse(
             text=generated_text.strip(),
             tokens_generated=output_tokens,
             tokens_input=input_tokens,
             generation_time_ms=generation_time,
+        )
+        return self._decorate_response(
+            response,
+            provider="medgemma",
+            model_name=self.model_name,
+            fallback_used=openai_fallback_reason is not None,
+            fallback_reason=openai_fallback_reason,
         )
 
     async def generate_with_images(
@@ -837,6 +1204,29 @@ class LLMService:
         conversation_history: list[dict] | None = None,
     ) -> LLMResponse:
         """Generate text from a prompt and multiple image inputs."""
+        openai_fallback_reason: str | None = None
+        if self._openai_configured():
+            try:
+                response = await self._generate_with_openai_images(
+                    prompt=prompt,
+                    images_bytes=images_bytes,
+                    max_new_tokens=max_new_tokens,
+                    system_prompt=system_prompt,
+                )
+                return self._decorate_response(
+                    response,
+                    provider="openai",
+                    model_name=self.openai_model,
+                )
+            except Exception as exc:
+                if not self._should_fallback_from_openai(exc):
+                    raise
+                openai_fallback_reason = self._openai_fallback_reason(exc)
+                logger.warning(
+                    "OpenAI multi-image generation unavailable; falling back to MedGemma: %s",
+                    openai_fallback_reason,
+                )
+
         import time
 
         start_time = time.time()
@@ -964,11 +1354,18 @@ class LLMService:
         output_tokens = max(int(seq.shape[0] - input_len), 0)
         generation_time = (time.time() - start_time) * 1000
 
-        return LLMResponse(
+        response = LLMResponse(
             text=generated_text.strip(),
             tokens_generated=output_tokens,
             tokens_input=input_tokens,
             generation_time_ms=generation_time,
+        )
+        return self._decorate_response(
+            response,
+            provider="medgemma",
+            model_name=self.model_name,
+            fallback_used=openai_fallback_reason is not None,
+            fallback_reason=openai_fallback_reason,
         )
 
     def _ensure_image_token(self, prompt: str) -> str:
@@ -1102,6 +1499,21 @@ class LLMService:
         Yields:
             Generated text chunks
         """
+        if self._openai_configured():
+            response = await self.generate(
+                prompt=prompt,
+                max_new_tokens=self.max_new_tokens,
+                temperature=temperature,
+                do_sample=do_sample,
+                top_p=top_p,
+                top_k=top_k,
+                system_prompt=system_prompt,
+                conversation_history=conversation_history,
+            )
+            if response.text:
+                yield response.text
+            return
+
         if self.use_mlx_text_backend and self._load_mlx_runtime():
             response = await self._generate_with_mlx(
                 prompt=prompt,
@@ -1210,14 +1622,34 @@ class LLMService:
             tokenizer = self._processor
 
         info = {
-            "model_name": self.model_name,
+            "model_name": self.openai_model
+            if self.primary_provider == "openai" and settings.openai_api_key
+            else self.model_name,
+            "local_model_name": self.model_name,
+            "openai_model": self.openai_model,
+            "primary_provider": self.primary_provider,
+            "fallback_provider": self.fallback_provider,
+            "provider": self._last_provider
+            if self._last_provider
+            else (
+                "openai"
+                if self.primary_provider == "openai" and settings.openai_api_key
+                else "medgemma"
+            ),
+            "openai_configured": bool(settings.openai_api_key),
+            "fallback_used": self._last_fallback_used,
+            "fallback_reason": self._last_fallback_reason,
             "model_path": str(self.model_path) if self.model_path else None,
             "use_local_model": self.use_local_model,
             "device": self.device,
             "runtime": (
-                "mlx"
-                if self.use_mlx_text_backend and self._mlx_model is not None
-                else "transformers"
+                "openai_responses"
+                if self.primary_provider == "openai" and settings.openai_api_key
+                else (
+                    "mlx"
+                    if self.use_mlx_text_backend and self._mlx_model is not None
+                    else "transformers"
+                )
             ),
             "quantization": {
                 "4bit": self.load_in_4bit and self.device == "cuda",
@@ -1233,7 +1665,9 @@ class LLMService:
             "top_k": self.top_k,
             "repetition_penalty": self.repetition_penalty,
             "vocab_size": len(tokenizer) if tokenizer is not None else None,
-            "is_loaded": self._model is not None,
+            "is_loaded": bool(settings.openai_api_key)
+            if self.primary_provider == "openai"
+            else self._model is not None,
         }
 
         # Add memory info if CUDA
