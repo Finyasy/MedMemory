@@ -110,11 +110,18 @@ jobs:
             fi
           done
       - name: Notify nightly failure
-        if: failure() && secrets.HALLUCINATION_ALERT_WEBHOOK != ''
+        # The secrets context is not valid in step-level `if` expressions
+        # (GitHub rejects the whole workflow file), so gate in the shell.
+        if: failure()
         env:
           HALLUCINATION_ALERT_WEBHOOK: ${{ secrets.HALLUCINATION_ALERT_WEBHOOK }}
         run: |
           set -euo pipefail
+
+          if [ -z "${HALLUCINATION_ALERT_WEBHOOK}" ]; then
+            echo "HALLUCINATION_ALERT_WEBHOOK not configured; skipping alert."
+            exit 0
+          fi
 
           payload=$(
             cat <<'JSON'
