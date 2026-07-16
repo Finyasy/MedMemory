@@ -172,6 +172,9 @@ function PatientApp() {
   } | null>(null);
   const [primaryPatientId, setPrimaryPatientId] = useState<number | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<SupportedPatientLanguage>('en');
+  // A manual language pick must survive the async profile fetch resolving
+  // afterwards with the (possibly different) stored preference.
+  const hasManualLanguageChoice = useRef(false);
   const [autoSpeakReplies, setAutoSpeakReplies] = useState(false);
   const [viewMode, setViewMode] = useState<'chat' | 'dashboard'>('chat');
   const [dashboardSection, setDashboardSection] = useState<DashboardSection>('overview');
@@ -530,8 +533,18 @@ function PatientApp() {
   }, [isAuthenticated, patientId]);
 
   useEffect(() => {
+    hasManualLanguageChoice.current = false;
+  }, [patientId]);
+
+  useEffect(() => {
+    if (hasManualLanguageChoice.current) return;
     setSelectedLanguage(normalizePatientLanguage(profileSummary?.preferred_language));
   }, [profileSummary?.preferred_language, patientId]);
+
+  const handleLanguageChange = useCallback((value: SupportedPatientLanguage) => {
+    hasManualLanguageChoice.current = true;
+    setSelectedLanguage(value);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !patientId) return;
@@ -551,6 +564,8 @@ function PatientApp() {
       if (!detail) return;
       if (typeof detail.patientId === 'number' && detail.patientId !== patientId) return;
       const normalized = normalizePatientLanguage(detail.preferredLanguage);
+      // An explicit profile save supersedes any earlier in-chat override.
+      hasManualLanguageChoice.current = false;
       setSelectedLanguage(normalized);
       setProfileSummary((current) =>
         current
@@ -1265,7 +1280,7 @@ function PatientApp() {
         isStreaming={isStreaming}
         isDisabled={!patientId}
         selectedLanguage={selectedLanguage}
-        onLanguageChange={setSelectedLanguage}
+        onLanguageChange={handleLanguageChange}
         speechEnabled={autoSpeakReplies}
         onSpeechEnabledChange={setAutoSpeakReplies}
         voiceInputEnabled={selectedLanguage === 'en'}
