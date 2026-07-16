@@ -118,7 +118,7 @@ test('clinician portal smoke: stable workspace loading and key actions', async (
   await ensureClinicianHasActivePatient(request);
   await ensureClinicianLoggedIn(page);
 
-  const quickActions = page.getByRole('region', { name: 'Clinician quick actions' });
+  const quickActions = page.getByRole('region', { name: 'Clinician workspace command center' });
   await expect(quickActions).toBeVisible();
   const linkPatientButton = quickActions.getByRole('button', { name: 'Link patient' });
   const refreshQueueButton = quickActions.getByRole('button', { name: 'Refresh queue' });

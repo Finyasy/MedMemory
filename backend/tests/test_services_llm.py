@@ -30,6 +30,9 @@ def test_llm_response_total_tokens():
 
 def test_llm_prompt_builder_includes_history():
     service = LLMService(model_name="dummy")
+    # Stub processor without a chat template so the plain-text fallback is
+    # exercised without loading a real model (offline CI has no model cache).
+    service._processor = SimpleNamespace()
     prompt = service._build_prompt(
         prompt="What now?",
         system_prompt="System prompt",
