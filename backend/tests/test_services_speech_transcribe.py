@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import shutil
 import wave
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -266,6 +267,10 @@ def test_build_pipeline_falls_back_when_lm_decoder_is_unavailable(monkeypatch, t
     assert service._decoder_mode == "ctc"
 
 
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None,
+    reason="ffmpeg binary is required to decode uploaded audio",
+)
 def test_decode_audio_array_returns_waveform_for_ffmpeg_ready_clip():
     service = SpeechTranscriptionService(model_name="google/medasr")
     sample_rate = 16000

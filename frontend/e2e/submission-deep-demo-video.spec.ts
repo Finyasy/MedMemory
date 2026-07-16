@@ -176,7 +176,7 @@ test('submission deep demo video: patient + clinician portals', async ({ page, r
   await clinicianLogin(page);
   await pause(page, 6000);
 
-  const quickActions = page.getByRole('region', { name: 'Clinician quick actions' });
+  const quickActions = page.getByRole('region', { name: 'Clinician workspace command center' });
   await expect(quickActions).toBeVisible({ timeout: 20_000 });
   await pause(page, 4000);
 

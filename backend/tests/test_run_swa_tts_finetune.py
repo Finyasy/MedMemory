@@ -109,8 +109,7 @@ def test_execute_job_mock_writes_execution_result(tmp_path):
 
 def test_execute_job_external_command_uses_rendered_template(tmp_path):
     trainer_adapter = (
-        Path("/Users/bryan.bosire/anaconda_projects/MedMemory/backend/scripts")
-        / "swa_tts_trainer_adapter.py"
+        Path(__file__).resolve().parents[1] / "scripts" / "swa_tts_trainer_adapter.py"
     )
     command_template = (
         f"{sys.executable} {trainer_adapter} "
