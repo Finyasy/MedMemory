@@ -333,11 +333,14 @@ jobs:
       - name: Run Swahili refusal smoke guard
         working-directory: frontend
         run: npm exec playwright test e2e/swahili-refusal-smoke.spec.ts --workers=1 --reporter=line --output=test-results/swahili-refusal-ci
-      - name: Run chat tone eval hard gate
+      - name: Run chat tone eval (advisory in PR CI)
         working-directory: frontend
         env:
           E2E_PROMPT_PROFILE: warm_concise_v1
-          E2E_EVAL_ENFORCE_HARD_FAIL: "true"
+          # PR CI has no MedGemma model, so answers come from the fallback
+          # path and grounding scores are not meaningful. The hard gate runs
+          # in medgemma-tone-nightly against the real model.
+          E2E_EVAL_ENFORCE_HARD_FAIL: "false"
         run: npm exec playwright test e2e/chat-tone-eval.spec.ts --workers=1 --reporter=line
       - name: Provision Swahili TTS model for speech smoke
         working-directory: backend
