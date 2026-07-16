@@ -128,6 +128,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend-tests
     env:
+      # The eval scripts import app settings, which require these even though
+      # the offline eval itself never touches the database.
+      DATABASE_URL: postgresql+asyncpg://medmemory:medmemory_dev@localhost:5432/medmemory_test
+      DEBUG: "true"
       HALLUCINATION_EVAL_FILE: data/hallucination_rag_eval/eval.jsonl
       HALLUCINATION_EVAL_OUTPUT_DIR: artifacts/hallucination_eval/current
       HALLUCINATION_CANDIDATE_METRICS: artifacts/hallucination_eval/current/metrics_summary.json
@@ -277,6 +281,9 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://medmemory:medmemory_dev@localhost:5432/medmemory_test
       DEBUG: "true"
       JWT_SECRET_KEY: "ci-secret"
+      # The e2e suite logs in repeatedly from one IP; keep the auth rate
+      # limiter from tripping mid-suite.
+      AUTH_RATE_LIMIT_MAX_REQUESTS: "1000"
       PLAYWRIGHT_BASE_URL: http://localhost:5173
       E2E_API_BASE_URL: http://localhost:8000
       E2E_EMAIL: demo@medmemory.ai
