@@ -30,6 +30,9 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://medmemory:medmemory_dev@127.0.0.1:5432/medmemory_test
       JWT_SECRET_KEY: ci-secret
       DEBUG: "true"
+      # The demo smoke performs many rapid auth calls from one IP; keep the
+      # auth rate limiter from tripping mid-run.
+      AUTH_RATE_LIMIT_MAX_REQUESTS: "1000"
       FRONTEND_BASE_URL: http://127.0.0.1:5173
       CORS_ORIGINS: '["http://127.0.0.1:5173","http://localhost:5173"]'
       STARTUP_REQUIRE_EMBEDDINGS: "false"

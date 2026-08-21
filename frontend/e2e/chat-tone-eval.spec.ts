@@ -584,14 +584,23 @@ test('chat tone evaluation harness writes variant artifacts', async ({ page, req
       evalTitlePrefix,
     );
     expect(seededRecords.length).toBe(recordFixture.records.length);
-    const seededCheckResponse = await request.get(
-      `${API_BASE}/api/v1/records/?patient_id=${selectedPatientId}&limit=1000`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    expect(seededCheckResponse.ok(), `Seeded records check failed (${seededCheckResponse.status()})`).toBeTruthy();
-    const seededRows = (await seededCheckResponse.json()) as Array<{ title: string }>;
-    const seededVisibleInApi = seededRows.filter((row) => (row.title || '').startsWith(evalTitlePrefix));
-    expect(seededVisibleInApi.length).toBeGreaterThanOrEqual(recordFixture.records.length);
+    // The records list is served from a short-lived response cache that a
+    // concurrent UI poll can repopulate with a stale snapshot, so poll past
+    // the cache TTL instead of asserting on a single read.
+    await expect
+      .poll(
+        async () => {
+          const seededCheckResponse = await request.get(
+            `${API_BASE}/api/v1/records/?patient_id=${selectedPatientId}&limit=1000`,
+            { headers: { Authorization: `Bearer ${token}` } },
+          );
+          if (!seededCheckResponse.ok()) return -1;
+          const seededRows = (await seededCheckResponse.json()) as Array<{ title: string }>;
+          return seededRows.filter((row) => (row.title || '').startsWith(evalTitlePrefix)).length;
+        },
+        { timeout: 30_000, intervals: [1_000, 2_000, 3_000] },
+      )
+      .toBeGreaterThanOrEqual(recordFixture.records.length);
     const indexedChunkCount = await seedEvalMemoryChunks(
       request,
       token,
